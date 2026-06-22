@@ -696,7 +696,13 @@
     "importConflictNewId": "Conserver les deux — importer sous un nouvel id",
     "textNotStoredWarning": "Le texte source n'est pas conservé sur ce serveur — seules les mémoires extraites sont conservées.",
     "labelObservationScopes": "Portées d'observation",
-    "invalidatedFactsTitle": "Faits invalidés"
+    "invalidatedFactsTitle": "Faits invalidés",
+    "uploadStatusProcessing": "Traitement",
+    "uploadStatusFailed": "Échec",
+    "uploadStatusUnavailable": "État du téléversement indisponible",
+    "uploadSourceFile": "Fichier source : {filename}",
+    "uploadStatusConverting": "Conversion",
+    "uploadStatusRetaining": "Rétention"
   },
   "entitiesView": {
     "viewRelations": "Relations",

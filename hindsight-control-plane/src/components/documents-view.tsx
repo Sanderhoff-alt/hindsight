@@ -79,6 +79,18 @@ import {
 
 const ITEMS_PER_PAGE = 50;
 
+type PendingUploadDocument = {
+  operationId: string;
+  documentId: string | null;
+  filename: string | null;
+  contentType: string | null;
+  tags: string[];
+  metadata: Record<string, any> | null;
+  status: "converting" | "retaining" | "failed";
+  errorMessage: string | null;
+  createdAt: string | null;
+};
+
 function formatRelativeTime(dateStr: string): string {
   const now = Date.now();
   const then = new Date(dateStr).getTime();
@@ -118,6 +130,33 @@ function MetadataBadges({ metadata }: { metadata: Record<string, any> }) {
         <span className="text-xs px-2 py-0.5 text-muted-foreground">+{entries.length - 3}</span>
       )}
     </div>
+  );
+}
+
+function StatusBadge({
+  status,
+  label,
+  errorMessage,
+}: {
+  status: PendingUploadDocument["status"];
+  label: string;
+  errorMessage?: string | null;
+}) {
+  if (status === "failed") {
+    return (
+      <span
+        className="inline-flex items-center rounded-full bg-red-500/10 px-2 py-0.5 text-xs font-medium text-red-600 dark:text-red-400"
+        title={errorMessage || undefined}
+      >
+        {label}
+      </span>
+    );
+  }
+
+  return (
+    <span className="inline-flex items-center rounded-full bg-blue-500/10 px-2 py-0.5 text-xs font-medium text-blue-600 dark:text-blue-400">
+      {label}
+    </span>
   );
 }
 
@@ -576,6 +615,7 @@ export function DocumentsView() {
   const { currentBank } = useBank();
   const { features } = useFeatures();
   const [documents, setDocuments] = useState<any[]>([]);
+  const [pendingUploads, setPendingUploads] = useState<PendingUploadDocument[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [total, setTotal] = useState(0);
@@ -631,10 +671,10 @@ export function DocumentsView() {
     null
   );
 
-  const loadDocuments = async (page: number = 1) => {
+  const loadDocuments = async (page: number = 1, showLoading = true) => {
     if (!currentBank) return;
 
-    setLoading(true);
+    if (showLoading) setLoading(true);
     try {
       const pageOffset = (page - 1) * ITEMS_PER_PAGE;
       const data: any = await client.listDocuments({
@@ -648,9 +688,196 @@ export function DocumentsView() {
     } catch (error) {
       // Error toast is shown automatically by the API client interceptor
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   };
+
+  const loadPendingUploadOperations = useCallback(
+    async (operationIds: string[]) => {
+      if (!currentBank || operationIds.length === 0) return;
+
+      const updates = await Promise.all(
+        operationIds.map(async (operationId): Promise<PendingUploadDocument | null> => {
+          try {
+            const op = await client.getOperationStatus(currentBank, operationId, {
+              includePayload: true,
+            });
+            const payload = (op.task_payload || {}) as Record<string, any>;
+            const metadata =
+              payload.metadata && typeof payload.metadata === "object"
+                ? (payload.metadata as Record<string, any>)
+                : null;
+            const tags = Array.isArray(payload.tags)
+              ? payload.tags.filter((tag: unknown): tag is string => typeof tag === "string")
+              : [];
+
+            const operationMissing = op.status === "not_found";
+            return {
+              operationId,
+              documentId: typeof payload.document_id === "string" ? payload.document_id : null,
+              filename:
+                typeof payload.original_filename === "string" ? payload.original_filename : null,
+              contentType: typeof payload.content_type === "string" ? payload.content_type : null,
+              tags,
+              metadata,
+              status:
+                op.status === "failed" || op.status === "cancelled" || operationMissing
+                  ? "failed"
+                  : "converting",
+              errorMessage: operationMissing ? t("uploadStatusUnavailable") : op.error_message,
+              createdAt: op.created_at,
+            };
+          } catch (error) {
+            console.error("Error loading pending upload operation:", error);
+            return null;
+          }
+        })
+      );
+
+      const next = updates.filter((row): row is PendingUploadDocument => row !== null);
+      setPendingUploads((prev) => {
+        const byId = new Map(prev.map((row) => [row.operationId, row]));
+        for (const row of next) byId.set(row.operationId, row);
+        return Array.from(byId.values());
+      });
+    },
+    [currentBank, t]
+  );
+
+  const loadActiveUploadOperations = useCallback(
+    async (trackedOperationIds: string[] = []) => {
+      if (!currentBank) return;
+
+      const listActive = async (type: "file_convert_retain" | "retain") => {
+        const [pending, processing] = await Promise.all([
+          client.listOperations(currentBank, {
+            type,
+            status: "pending",
+            limit: 50,
+            excludeParents: true,
+          }),
+          client.listOperations(currentBank, {
+            type,
+            status: "processing",
+            limit: 50,
+            excludeParents: true,
+          }),
+        ]);
+        return [...(pending.operations || []), ...(processing.operations || [])];
+      };
+
+      try {
+        const [convertOps, retainOps] = await Promise.all([
+          listActive("file_convert_retain"),
+          listActive("retain"),
+        ]);
+        const operationIds = Array.from(
+          new Set([...convertOps, ...retainOps].map((op) => op.id).concat(trackedOperationIds))
+        );
+        const details = await Promise.all(
+          operationIds.map((operationId) =>
+            client
+              .getOperationStatus(currentBank, operationId, { includePayload: true })
+              .catch((error) => {
+                console.error("Error loading active upload operation:", error);
+                return null;
+              })
+          )
+        );
+
+        const activeRows: PendingUploadDocument[] = [];
+        for (const op of details) {
+          if (!op) continue;
+          const payload = (op.task_payload || {}) as Record<string, any>;
+          if (op.operation_type === "file_convert_retain") {
+            if (
+              op.status !== "pending" &&
+              op.status !== "processing" &&
+              op.status !== "failed" &&
+              op.status !== "cancelled"
+            ) {
+              continue;
+            }
+            const metadata =
+              payload.metadata && typeof payload.metadata === "object"
+                ? (payload.metadata as Record<string, any>)
+                : null;
+            const tags = Array.isArray(payload.tags)
+              ? payload.tags.filter((tag: unknown): tag is string => typeof tag === "string")
+              : [];
+            activeRows.push({
+              operationId: op.operation_id,
+              documentId: typeof payload.document_id === "string" ? payload.document_id : null,
+              filename:
+                typeof payload.original_filename === "string" ? payload.original_filename : null,
+              contentType: typeof payload.content_type === "string" ? payload.content_type : null,
+              tags,
+              metadata,
+              status: op.status === "failed" || op.status === "cancelled" ? "failed" : "converting",
+              errorMessage: op.error_message,
+              createdAt: op.created_at,
+            });
+            continue;
+          }
+
+          if (op.operation_type === "retain") {
+            if (
+              op.status !== "pending" &&
+              op.status !== "processing" &&
+              op.status !== "failed" &&
+              op.status !== "cancelled"
+            ) {
+              continue;
+            }
+            const contents = Array.isArray(payload.contents) ? payload.contents : [];
+            const firstContent =
+              contents[0] && typeof contents[0] === "object" ? contents[0] : null;
+            const fileMetadata =
+              payload._file_metadata && typeof payload._file_metadata === "object"
+                ? (payload._file_metadata as Record<string, any>)
+                : null;
+            if (!firstContent || !fileMetadata) continue;
+            const item = firstContent as Record<string, any>;
+            const metadata =
+              item.metadata && typeof item.metadata === "object"
+                ? (item.metadata as Record<string, any>)
+                : null;
+            const tags = Array.isArray(item.tags)
+              ? item.tags.filter((tag: unknown): tag is string => typeof tag === "string")
+              : [];
+            activeRows.push({
+              operationId: op.operation_id,
+              documentId: typeof item.document_id === "string" ? item.document_id : null,
+              filename:
+                typeof fileMetadata.file_original_name === "string"
+                  ? fileMetadata.file_original_name
+                  : null,
+              contentType:
+                typeof fileMetadata.file_content_type === "string"
+                  ? fileMetadata.file_content_type
+                  : null,
+              tags,
+              metadata,
+              status: op.status === "failed" || op.status === "cancelled" ? "failed" : "retaining",
+              errorMessage: op.error_message,
+              createdAt: op.created_at,
+            });
+          }
+        }
+
+        setPendingUploads((prev) => {
+          const failedRows = prev.filter((row) => row.status === "failed");
+          const byId = new Map<string, PendingUploadDocument>();
+          for (const row of failedRows) byId.set(row.operationId, row);
+          for (const row of activeRows) byId.set(row.operationId, row);
+          return Array.from(byId.values());
+        });
+      } catch (error) {
+        console.error("Error loading active upload operations:", error);
+      }
+    },
+    [currentBank]
+  );
 
   // Handle page change
   const handlePageChange = (newPage: number) => {
@@ -848,8 +1075,82 @@ export function DocumentsView() {
     if (currentBank) {
       setCurrentPage(1);
       loadDocuments(1);
+      loadActiveUploadOperations();
     }
-  }, [currentBank]);
+  }, [currentBank, loadActiveUploadOperations]);
+
+  useEffect(() => {
+    if (!currentBank) return;
+
+    const searchParams = new URLSearchParams(window.location.search);
+    const pendingParam = searchParams.get("pending_uploads");
+    if (!pendingParam) return;
+
+    const operationIds = pendingParam
+      .split(",")
+      .map((id) => id.trim())
+      .filter(Boolean);
+    if (operationIds.length > 0) {
+      setPendingUploads((prev) => {
+        const byId = new Map(prev.map((row) => [row.operationId, row]));
+        for (const operationId of operationIds) {
+          if (!byId.has(operationId)) {
+            byId.set(operationId, {
+              operationId,
+              documentId: null,
+              filename: null,
+              contentType: null,
+              tags: [],
+              metadata: null,
+              status: "converting",
+              errorMessage: null,
+              createdAt: null,
+            });
+          }
+        }
+        return Array.from(byId.values());
+      });
+      loadPendingUploadOperations(operationIds);
+    }
+
+    // pending_uploads is only a handoff from the upload dialog into this mounted
+    // Documents view. Removing it keeps refresh/login behavior as a pure documents-table view.
+    searchParams.delete("pending_uploads");
+    const nextQuery = searchParams.toString();
+    window.history.replaceState(
+      null,
+      "",
+      `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}${window.location.hash}`
+    );
+  }, [currentBank, loadPendingUploadOperations]);
+
+  useEffect(() => {
+    if (documents.length === 0 || pendingUploads.length === 0) return;
+    const documentIds = new Set(documents.map((doc) => doc.id));
+    setPendingUploads((prev) =>
+      prev.filter((row) => {
+        if (!row.documentId || !documentIds.has(row.documentId)) return true;
+        return row.status === "retaining" || row.status === "failed";
+      })
+    );
+  }, [documents, pendingUploads.length]);
+
+  useEffect(() => {
+    if (!currentBank) return;
+    const hasActiveUploads = pendingUploads.some(
+      (row) => row.status === "converting" || row.status === "retaining"
+    );
+    if (!hasActiveUploads) return;
+
+    const interval = setInterval(() => {
+      const activeOperationIds = pendingUploads
+        .filter((row) => row.status === "converting" || row.status === "retaining")
+        .map((row) => row.operationId);
+      loadActiveUploadOperations(activeOperationIds);
+      loadDocuments(currentPage, false);
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [currentBank, currentPage, loadActiveUploadOperations, pendingUploads]);
 
   // Reload when search query changes (with debounce)
   useEffect(() => {
@@ -933,6 +1234,24 @@ export function DocumentsView() {
 
   const canExport = features?.document_export_api ?? false;
   const canImport = features?.document_import_api ?? false;
+  const uploadStatusLabel = (row: PendingUploadDocument) => {
+    if (row.status === "failed") return t("uploadStatusFailed");
+    if (row.status === "retaining") return t("uploadStatusRetaining");
+    return t("uploadStatusConverting");
+  };
+  const documentIds = new Set(documents.map((doc) => doc.id));
+  const uploadRowsByDocumentId = new Map(
+    pendingUploads.filter((row) => row.documentId).map((row) => [row.documentId as string, row])
+  );
+  const visiblePendingUploads = pendingUploads.filter((row) => {
+    if (row.documentId && documentIds.has(row.documentId)) return false;
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return true;
+    return (
+      row.documentId?.toLowerCase().includes(query) || row.filename?.toLowerCase().includes(query)
+    );
+  });
+  const hasRows = documents.length > 0 || visiblePendingUploads.length > 0;
 
   return (
     <div>
@@ -1090,7 +1409,7 @@ export function DocumentsView() {
             <div className="text-sm text-muted-foreground">{t("loadingDocuments")}</div>
           </div>
         </div>
-      ) : documents.length > 0 ? (
+      ) : hasRows ? (
         <>
           <div className="mb-4 text-sm text-muted-foreground">{t("totalDocuments", { total })}</div>
           {/* Documents Table */}
@@ -1119,65 +1438,145 @@ export function DocumentsView() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {documents.length > 0 ? (
-                    documents.map((doc) => (
-                      <TableRow
-                        key={doc.id}
-                        className={`cursor-pointer hover:bg-muted/50 ${selectedDocument?.id === doc.id ? "bg-primary/10" : ""}`}
-                        onClick={() => viewDocumentText(doc.id)}
-                      >
-                        <TableCell className="text-card-foreground font-mono text-xs break-all">
-                          {doc.id}
-                        </TableCell>
-                        <TableCell
-                          className="text-card-foreground"
-                          title={doc.created_at ? new Date(doc.created_at).toLocaleString() : ""}
+                  {hasRows ? (
+                    <>
+                      {visiblePendingUploads.map((row) => (
+                        <TableRow
+                          key={`pending-${row.operationId}`}
+                          className="bg-muted/20"
+                          title={row.errorMessage || undefined}
                         >
-                          {doc.created_at ? formatRelativeTime(doc.created_at) : "N/A"}
-                        </TableCell>
-                        <TableCell
-                          className="text-card-foreground"
-                          title={doc.updated_at ? new Date(doc.updated_at).toLocaleString() : ""}
-                        >
-                          {doc.updated_at ? formatRelativeTime(doc.updated_at) : "N/A"}
-                        </TableCell>
-                        <TableCell className="text-card-foreground">
-                          {doc.tags && doc.tags.length > 0 ? (
-                            <div className="flex flex-wrap gap-1">
-                              {doc.tags.slice(0, 3).map((tag: string, i: number) => (
-                                <span
-                                  key={i}
-                                  className="text-xs px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 font-medium"
-                                >
-                                  {tag}
-                                </span>
-                              ))}
-                              {doc.tags.length > 3 && (
-                                <span className="text-xs px-2 py-0.5 text-muted-foreground">
-                                  +{doc.tags.length - 3}
+                          <TableCell className="text-card-foreground font-mono text-xs break-all">
+                            <div className="flex flex-col gap-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span>{row.documentId || row.operationId}</span>
+                                <StatusBadge
+                                  status={row.status}
+                                  label={uploadStatusLabel(row)}
+                                  errorMessage={row.errorMessage}
+                                />
+                              </div>
+                              {row.filename && (
+                                <span className="font-sans text-xs text-muted-foreground">
+                                  {t("uploadSourceFile", { filename: row.filename })}
                                 </span>
                               )}
                             </div>
-                          ) : (
-                            "-"
-                          )}
-                        </TableCell>
-                        <TableCell className="text-card-foreground">
-                          {doc.document_metadata &&
-                          Object.keys(doc.document_metadata).length > 0 ? (
-                            <MetadataBadges metadata={doc.document_metadata} />
-                          ) : (
-                            "-"
-                          )}
-                        </TableCell>
-                        <TableCell className="text-card-foreground">
-                          {formatBytes(doc.text_length || 0)}
-                        </TableCell>
-                        <TableCell className="text-card-foreground">
-                          {doc.memory_unit_count}
-                        </TableCell>
-                      </TableRow>
-                    ))
+                          </TableCell>
+                          <TableCell
+                            className="text-card-foreground"
+                            title={row.createdAt ? new Date(row.createdAt).toLocaleString() : ""}
+                          >
+                            {row.createdAt ? formatRelativeTime(row.createdAt) : "N/A"}
+                          </TableCell>
+                          <TableCell className="text-card-foreground">-</TableCell>
+                          <TableCell className="text-card-foreground">
+                            {row.tags.length > 0 ? (
+                              <div className="flex flex-wrap gap-1">
+                                {row.tags.slice(0, 3).map((tag, i) => (
+                                  <span
+                                    key={i}
+                                    className="text-xs px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 font-medium"
+                                  >
+                                    {tag}
+                                  </span>
+                                ))}
+                                {row.tags.length > 3 && (
+                                  <span className="text-xs px-2 py-0.5 text-muted-foreground">
+                                    +{row.tags.length - 3}
+                                  </span>
+                                )}
+                              </div>
+                            ) : (
+                              "-"
+                            )}
+                          </TableCell>
+                          <TableCell className="text-card-foreground">
+                            {row.metadata && Object.keys(row.metadata).length > 0 ? (
+                              <MetadataBadges metadata={row.metadata} />
+                            ) : (
+                              "-"
+                            )}
+                          </TableCell>
+                          <TableCell className="text-card-foreground">-</TableCell>
+                          <TableCell className="text-card-foreground">-</TableCell>
+                        </TableRow>
+                      ))}
+                      {documents.map((doc) => {
+                        const uploadRow = uploadRowsByDocumentId.get(doc.id);
+                        return (
+                          <TableRow
+                            key={doc.id}
+                            className={`cursor-pointer hover:bg-muted/50 ${selectedDocument?.id === doc.id ? "bg-primary/10" : ""}`}
+                            onClick={() => viewDocumentText(doc.id)}
+                          >
+                            <TableCell className="text-card-foreground font-mono text-xs break-all">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span>{doc.id}</span>
+                                {uploadRow && (
+                                  <StatusBadge
+                                    status={uploadRow.status}
+                                    label={uploadStatusLabel(uploadRow)}
+                                    errorMessage={uploadRow.errorMessage}
+                                  />
+                                )}
+                              </div>
+                            </TableCell>
+                            <TableCell
+                              className="text-card-foreground"
+                              title={
+                                doc.created_at ? new Date(doc.created_at).toLocaleString() : ""
+                              }
+                            >
+                              {doc.created_at ? formatRelativeTime(doc.created_at) : "N/A"}
+                            </TableCell>
+                            <TableCell
+                              className="text-card-foreground"
+                              title={
+                                doc.updated_at ? new Date(doc.updated_at).toLocaleString() : ""
+                              }
+                            >
+                              {doc.updated_at ? formatRelativeTime(doc.updated_at) : "N/A"}
+                            </TableCell>
+                            <TableCell className="text-card-foreground">
+                              {doc.tags && doc.tags.length > 0 ? (
+                                <div className="flex flex-wrap gap-1">
+                                  {doc.tags.slice(0, 3).map((tag: string, i: number) => (
+                                    <span
+                                      key={i}
+                                      className="text-xs px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 font-medium"
+                                    >
+                                      {tag}
+                                    </span>
+                                  ))}
+                                  {doc.tags.length > 3 && (
+                                    <span className="text-xs px-2 py-0.5 text-muted-foreground">
+                                      +{doc.tags.length - 3}
+                                    </span>
+                                  )}
+                                </div>
+                              ) : (
+                                "-"
+                              )}
+                            </TableCell>
+                            <TableCell className="text-card-foreground">
+                              {doc.document_metadata &&
+                              Object.keys(doc.document_metadata).length > 0 ? (
+                                <MetadataBadges metadata={doc.document_metadata} />
+                              ) : (
+                                "-"
+                              )}
+                            </TableCell>
+                            <TableCell className="text-card-foreground">
+                              {formatBytes(doc.text_length || 0)}
+                            </TableCell>
+                            <TableCell className="text-card-foreground">
+                              {doc.memory_unit_count}
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </>
                   ) : (
                     <TableRow>
                       <TableCell colSpan={7} className="text-center">

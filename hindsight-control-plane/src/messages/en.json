@@ -696,7 +696,13 @@
     "importConflictNewId": "Keep both — import under a new id",
     "textNotStoredWarning": "Source text isn't stored on this server — only the extracted memories are kept.",
     "labelObservationScopes": "Observation scopes",
-    "invalidatedFactsTitle": "Invalidated facts"
+    "invalidatedFactsTitle": "Invalidated facts",
+    "uploadStatusProcessing": "Processing",
+    "uploadStatusFailed": "Failed",
+    "uploadStatusUnavailable": "Upload status unavailable",
+    "uploadSourceFile": "Source file: {filename}",
+    "uploadStatusConverting": "Converting",
+    "uploadStatusRetaining": "Retaining"
   },
   "entitiesView": {
     "viewRelations": "Relations",

@@ -361,7 +361,7 @@ function BankSelectorInner() {
         ...(meta.strategy && { strategy: meta.strategy }),
       }));
 
-      await client.uploadFiles({
+      const result = await client.uploadFiles({
         bank_id: currentBank,
         files: selectedFiles,
         async: true,
@@ -376,8 +376,14 @@ function BankSelectorInner() {
       setDocAsync(false);
       setUploadProgress("");
 
+      const operationIds = Array.isArray(result.operation_ids) ? result.operation_ids : [];
+      const pendingParam =
+        operationIds.length > 0
+          ? `&pending_uploads=${encodeURIComponent(operationIds.join(","))}`
+          : "";
+
       // Navigate to documents view
-      router.push(bankRoute(currentBank!, "?view=documents"));
+      router.push(bankRoute(currentBank!, `?view=documents${pendingParam}`));
     } catch {
       // Error toast is shown automatically by the API client interceptor
     } finally {

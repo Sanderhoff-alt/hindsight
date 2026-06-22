@@ -696,7 +696,13 @@
     "importConflictNewId": "兩者都保留 — 以新 id 匯入",
     "textNotStoredWarning": "呢個伺服器唔會儲存原始文字，淨係保留擷取到嘅記憶。",
     "labelObservationScopes": "觀測範圍",
-    "invalidatedFactsTitle": "已失效嘅事實"
+    "invalidatedFactsTitle": "已失效嘅事實",
+    "uploadStatusProcessing": "處理緊",
+    "uploadStatusFailed": "失敗",
+    "uploadStatusUnavailable": "上載狀態未能取得",
+    "uploadSourceFile": "來源檔案：{filename}",
+    "uploadStatusConverting": "轉換緊",
+    "uploadStatusRetaining": "保留緊"
   },
   "entitiesView": {
     "viewRelations": "關係",

@@ -696,7 +696,13 @@
     "importConflictNewId": "两者都保留 — 以新 id 导入",
     "textNotStoredWarning": "此服务器不存储原始文本，仅保留提取的记忆。",
     "labelObservationScopes": "观测范围",
-    "invalidatedFactsTitle": "已失效的事实"
+    "invalidatedFactsTitle": "已失效的事实",
+    "uploadStatusProcessing": "处理中",
+    "uploadStatusFailed": "失败",
+    "uploadStatusUnavailable": "上传状态不可用",
+    "uploadSourceFile": "源文件：{filename}",
+    "uploadStatusConverting": "转换中",
+    "uploadStatusRetaining": "保留中"
   },
   "entitiesView": {
     "viewRelations": "关系",
