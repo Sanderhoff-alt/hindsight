@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import {
+  SUPABASE_ORG_ACCESS_TOKEN_COOKIE,
+  SUPABASE_ORG_SELECTED_ORG_COOKIE,
+} from "@/lib/auth-profiles/supabase-org/constants";
 import { getDataplaneHeadersForRequest } from "@/lib/hindsight-client";
 
 function requestWithCookie(cookie: string): Request {
@@ -31,4 +35,19 @@ describe("getDataplaneHeadersForRequest", () => {
     expect(headers.Authorization).toBeUndefined();
   });
 
+  it("forwards Supabase JWT and selected tenant in supabase_org mode", () => {
+    vi.stubEnv("HINDSIGHT_CP_AUTH_PROVIDER", "supabase_org");
+    vi.stubEnv("HINDSIGHT_CP_DATAPLANE_API_KEY", "");
+
+    const headers = getDataplaneHeadersForRequest(
+      requestWithCookie(
+        `${SUPABASE_ORG_ACCESS_TOKEN_COOKIE}=jwt-token; ${SUPABASE_ORG_SELECTED_ORG_COOKIE}=org_123`
+      )
+    );
+
+    expect(headers).toMatchObject({
+      Authorization: "Bearer jwt-token",
+      "X-Hindsight-Tenant-Id": "org_123",
+    });
+  });
 });

@@ -33,9 +33,18 @@ describe("control-plane auth provider", () => {
     expect(() => assertValidControlPlaneAuthConfig()).toThrow(/requires HINDSIGHT_CP_ACCESS_KEY/);
   });
 
-  it("rejects unknown auth providers", () => {
-    vi.stubEnv("HINDSIGHT_CP_AUTH_PROVIDER", "unknown_profile");
+  it("uses supabase_org as an auth profile", () => {
+    vi.stubEnv("HINDSIGHT_CP_AUTH_PROVIDER", "supabase_org");
+    vi.stubEnv("HINDSIGHT_CP_ACCESS_KEY", "");
 
-    expect(() => getControlPlaneAuthProvider()).toThrow(/Unsupported HINDSIGHT_CP_AUTH_PROVIDER/);
+    expect(getControlPlaneAuthProvider()).toBe("supabase_org");
+    expect(getExpectedDataplaneAuthProfile()).toBe("supabase_org");
+  });
+
+  it("rejects supabase_org combined with the access key provider secret", () => {
+    vi.stubEnv("HINDSIGHT_CP_AUTH_PROVIDER", "supabase_org");
+    vi.stubEnv("HINDSIGHT_CP_ACCESS_KEY", "secret");
+
+    expect(() => assertValidControlPlaneAuthConfig()).toThrow(/must not be combined/);
   });
 });
