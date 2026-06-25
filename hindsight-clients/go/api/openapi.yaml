@@ -4284,6 +4284,9 @@ components:
         bank_id:
           title: Bank Id
           type: string
+        internal_id:
+          nullable: true
+          type: string
         name:
           nullable: true
           type: string

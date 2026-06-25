@@ -1,7 +1,14 @@
 import { NextResponse } from "next/server";
 import { localizeApiErrorPayload } from "@/lib/i18n/api-errors";
 import { sdk, createDataplaneClientForRequest } from "@/lib/hindsight-client";
+import { getControlPlaneAuthProvider } from "@/lib/auth/provider";
 import { respondWithSdk } from "@/lib/sdk-response";
+import { deleteApiKeyBankScopesByInternalId } from "@/lib/supabase-org/store";
+
+interface BankListItem {
+  bank_id: string;
+  internal_id?: string | null;
+}
 
 export async function PUT(request: Request, { params }: { params: Promise<{ bankId: string }> }) {
   const { bankId } = await params;
@@ -93,9 +100,34 @@ export async function DELETE(
     );
   }
 
+  const shouldCleanupApiKeyScopes = getControlPlaneAuthProvider() === "supabase_org";
+  const bankInternalId = shouldCleanupApiKeyScopes
+    ? await resolveBankInternalId(request, bankId)
+    : null;
   const response = await sdk.deleteBank({
     client: createDataplaneClientForRequest(request),
     path: { bank_id: bankId },
   });
+  if (response.error === undefined && response.data !== undefined && bankInternalId) {
+    await cleanupDeletedBankApiKeyScopes(bankInternalId);
+  }
   return respondWithSdk(response, "Failed to delete bank", { request });
+}
+
+async function cleanupDeletedBankApiKeyScopes(bankInternalId: string): Promise<void> {
+  try {
+    await deleteApiKeyBankScopesByInternalId(bankInternalId);
+  } catch (error) {
+    console.warn("Failed to clean deleted bank API key scopes", {
+      bankInternalId,
+      error,
+    });
+  }
+}
+
+async function resolveBankInternalId(request: Request, bankId: string): Promise<string | null> {
+  const response = await sdk.listBanks({ client: createDataplaneClientForRequest(request) });
+  if (response.error || !response.data) return null;
+  const banks = (response.data as { banks?: BankListItem[] }).banks ?? [];
+  return banks.find((bank) => bank.bank_id === bankId)?.internal_id ?? null;
 }

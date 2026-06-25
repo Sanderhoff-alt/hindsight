@@ -128,7 +128,7 @@ export const supabaseOrgAuthProvider: ControlPlaneAuthProviderAdapter = {
         ? await acceptInviteForUser(session.user, body.invite_token)
         : null;
       const organizations =
-        mode === "signup"
+        mode === "signup" && !acceptedInvite
           ? [await ensureInitialOrganizationForSignup(session.user, body.organization_name)]
           : await listOrganizationsForUser(session.user.id);
       if (organizations.length === 0) {

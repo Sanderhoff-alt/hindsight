@@ -7,6 +7,7 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -45,8 +46,17 @@ interface ApiKeySummary {
   id: string;
   name: string;
   allowed_operations?: string[] | null;
+  bank_scope_mode?: "all" | "selected";
+  scoped_bank_ids?: string[];
   revoked_at?: string | null;
   created_at: string;
+  can_view_secret?: boolean;
+}
+
+interface BankSummary {
+  bank_id?: string;
+  id?: string;
+  name?: string;
 }
 
 interface VersionInfo {
@@ -57,6 +67,76 @@ interface VersionInfo {
 }
 
 const API_BASE = "/api/auth-profiles/supabase-org";
+const READ_OPERATIONS = [
+  "get_bank_config",
+  "get_bank_profile",
+  "get_bank_stats",
+  "get_chunk",
+  "get_directive",
+  "get_document",
+  "get_entity",
+  "get_entity_graph",
+  "get_entity_state",
+  "get_graph_data",
+  "get_memories_timeseries",
+  "get_memory_unit",
+  "get_observation_history",
+  "get_operation_status",
+  "list_directives",
+  "list_document_chunks",
+  "list_documents",
+  "list_entities",
+  "list_memory_units",
+  "list_mental_models",
+  "list_mental_model_tags",
+  "list_observation_scopes",
+  "list_operations",
+  "list_tags",
+  "list_webhook_deliveries",
+  "list_webhooks",
+  "recall",
+  "reflect",
+] as const;
+const WRITE_OPERATIONS = [
+  "cancel_operation",
+  "clear_mental_model",
+  "clear_observations",
+  "clear_observations_for_memory",
+  "create_directive",
+  "create_mental_model",
+  "create_webhook",
+  "delete_bank",
+  "delete_directive",
+  "delete_document",
+  "delete_mental_model",
+  "delete_webhook",
+  "merge_bank_mission",
+  "reprocess_document",
+  "reset_bank_config",
+  "retain",
+  "retry_operation",
+  "retry_failed_consolidation",
+  "run_consolidation",
+  "set_bank_mission",
+  "submit_async_consolidation",
+  "submit_async_graph_maintenance",
+  "update_bank",
+  "update_bank_config",
+  "update_bank_disposition",
+  "update_directive",
+  "update_document",
+  "update_memory_unit",
+  "update_mental_model",
+  "update_webhook",
+] as const;
+const MEMBER_WRITE_OPERATIONS = [
+  "create_mental_model",
+  "retain",
+  "update_document",
+  "update_memory_unit",
+  "update_mental_model",
+] as const;
+type ApiKeyOperationName = (typeof READ_OPERATIONS)[number] | (typeof WRITE_OPERATIONS)[number];
 const COPY: Record<string, string> = {
   organizationSettings: "Organization settings",
   noOrganizationSelected: "No organization selected",
@@ -68,6 +148,7 @@ const COPY: Record<string, string> = {
     "Copy this link now. It is only shown after creation and will not be available after you leave or refresh this page.",
   apiKeys: "API keys",
   keyName: "Key name",
+  allAllowedOperations: "All allowed operations",
 };
 
 export default function SettingsPage() {
@@ -78,12 +159,15 @@ export default function SettingsPage() {
   const [members, setMembers] = useState<Member[]>([]);
   const [invites, setInvites] = useState<Invite[]>([]);
   const [apiKeys, setApiKeys] = useState<ApiKeySummary[]>([]);
+  const [banks, setBanks] = useState<BankSummary[]>([]);
   const [orgName, setOrgName] = useState("");
   const [newOrgName, setNewOrgName] = useState("");
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState<Role>("member");
   const [apiKeyName, setApiKeyName] = useState("");
-  const [apiKeyBanks, setApiKeyBanks] = useState("");
+  const [apiKeyOperations, setApiKeyOperations] = useState<ApiKeyOperationName[]>([]);
+  const [apiKeyBankScopeMode, setApiKeyBankScopeMode] = useState<"all" | "selected">("all");
+  const [apiKeyBankIds, setApiKeyBankIds] = useState<string[]>([]);
   const [newInviteLink, setNewInviteLink] = useState<string | null>(null);
   const [newApiKey, setNewApiKey] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -94,6 +178,13 @@ export default function SettingsPage() {
   );
   const canAdmin = currentOrg?.role === "owner" || currentOrg?.role === "admin";
   const canOwner = currentOrg?.role === "owner";
+  const availableApiKeyOperations = useMemo(
+    () =>
+      currentOrg?.role === "member"
+        ? [...READ_OPERATIONS, ...MEMBER_WRITE_OPERATIONS]
+        : [...READ_OPERATIONS, ...WRITE_OPERATIONS],
+    [currentOrg?.role]
+  );
 
   async function loadAll() {
     setLoading(true);
@@ -117,14 +208,16 @@ export default function SettingsPage() {
       setOrgName(
         me.organizations.find((organization) => organization.id === nextOrgId)?.name || ""
       );
-      const [team, inviteList, keyList] = await Promise.all([
+      const [team, inviteList, keyList, bankList] = await Promise.all([
         fetchJson<{ members: Member[] }>(`${API_BASE}/team`),
         fetchJson<{ invites: Invite[] }>(`${API_BASE}/team/invites`),
         fetchJson<{ api_keys: ApiKeySummary[] }>(`${API_BASE}/api-keys`),
+        fetchJson<{ banks: BankSummary[] }>("/api/banks"),
       ]);
       setMembers(team.members);
       setInvites(inviteList.invites);
       setApiKeys(keyList.api_keys);
+      setBanks(bankList.banks || []);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to load settings");
     } finally {
@@ -135,6 +228,14 @@ export default function SettingsPage() {
   useEffect(() => {
     loadAll();
   }, []);
+
+  useEffect(() => {
+    setApiKeyOperations((operations) =>
+      operations.length === 0
+        ? [...availableApiKeyOperations]
+        : operations.filter((operation) => availableApiKeyOperations.includes(operation))
+    );
+  }, [availableApiKeyOperations]);
 
   async function createOrg(event: FormEvent) {
     event.preventDefault();
@@ -212,23 +313,50 @@ export default function SettingsPage() {
 
   async function createApiKey(event: FormEvent) {
     event.preventDefault();
-    const bankIds = apiKeyBanks
-      .split(",")
-      .map((item) => item.trim())
-      .filter(Boolean);
     const response = await fetchJson<{ api_key: { key: string } }>(`${API_BASE}/api-keys`, {
       method: "POST",
-      body: JSON.stringify({ name: apiKeyName, bank_ids: bankIds.length > 0 ? bankIds : null }),
+      body: JSON.stringify({
+        name: apiKeyName,
+        allowed_operations: apiKeyOperations,
+        bank_scope_mode: apiKeyBankScopeMode,
+        bank_ids: apiKeyBankScopeMode === "selected" ? apiKeyBankIds : null,
+      }),
     });
     setApiKeyName("");
-    setApiKeyBanks("");
+    setApiKeyOperations([...availableApiKeyOperations]);
+    setApiKeyBankScopeMode("all");
+    setApiKeyBankIds([]);
     setNewApiKey(response.api_key.key);
     await loadAll();
+  }
+
+  function toggleApiKeyOperation(operation: ApiKeyOperationName, checked: boolean) {
+    setApiKeyOperations((operations) =>
+      checked
+        ? Array.from(new Set([...operations, operation]))
+        : operations.filter((item) => item !== operation)
+    );
+  }
+
+  function toggleApiKeyBank(bankId: string, checked: boolean) {
+    setApiKeyBankIds((bankIds) =>
+      checked
+        ? Array.from(new Set([...bankIds, bankId]))
+        : bankIds.filter((item) => item !== bankId)
+    );
   }
 
   async function revokeApiKey(id: string) {
     await fetchJson(`${API_BASE}/api-keys/${encodeURIComponent(id)}`, { method: "DELETE" });
     await loadAll();
+  }
+
+  async function copyApiKey(id: string) {
+    const response = await fetchJson<{ api_key: { key: string } }>(
+      `${API_BASE}/api-keys/${encodeURIComponent(id)}`
+    );
+    await navigator.clipboard.writeText(response.api_key.key);
+    toast.success("API key copied");
   }
 
   return (
@@ -416,24 +544,103 @@ export default function SettingsPage() {
                 <h2 className="text-lg font-medium">{t("apiKeys")}</h2>
               </CardHeader>
               <CardContent className="space-y-4">
-                {canAdmin && (
-                  <form className="grid gap-2 md:grid-cols-[1fr_1fr_auto]" onSubmit={createApiKey}>
+                <form className="space-y-3" onSubmit={createApiKey}>
+                  <div className="grid gap-2 md:grid-cols-[1fr_auto]">
                     <Input
                       value={apiKeyName}
                       onChange={(event) => setApiKeyName(event.target.value)}
                       placeholder={t("keyName")}
                     />
-                    <Input
-                      value={apiKeyBanks}
-                      onChange={(event) => setApiKeyBanks(event.target.value)}
-                      placeholder="Bank ids, comma separated"
-                    />
-                    <Button type="submit" disabled={!apiKeyName.trim()}>
+                    <Button
+                      type="submit"
+                      disabled={!apiKeyName.trim() || apiKeyOperations.length === 0}
+                    >
                       <KeyRound className="mr-2 h-4 w-4" />
                       Create
                     </Button>
-                  </form>
-                )}
+                  </div>
+                  <div className="rounded-md border p-3">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <span className="text-sm font-medium">Operations</span>
+                      <div className="flex gap-1">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setApiKeyOperations([...availableApiKeyOperations])}
+                        >
+                          All allowed
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setApiKeyOperations([])}
+                        >
+                          None
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="grid max-h-56 gap-2 overflow-y-auto pr-1 md:grid-cols-2">
+                      {availableApiKeyOperations.map((operation) => (
+                        <label key={operation} className="flex min-w-0 items-center gap-2 text-sm">
+                          <Checkbox
+                            checked={apiKeyOperations.includes(operation)}
+                            onCheckedChange={(checked) =>
+                              toggleApiKeyOperation(operation, checked === true)
+                            }
+                          />
+                          <span className="truncate">{operation}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="rounded-md border p-3">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <span className="text-sm font-medium">Banks</span>
+                      <Select
+                        value={apiKeyBankScopeMode}
+                        onValueChange={(value) =>
+                          setApiKeyBankScopeMode(value as "all" | "selected")
+                        }
+                      >
+                        <SelectTrigger className="w-36">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">All banks</SelectItem>
+                          <SelectItem value="selected">Selected</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    {apiKeyBankScopeMode === "selected" && (
+                      <div className="grid max-h-40 gap-2 overflow-y-auto pr-1 md:grid-cols-2">
+                        {banks.length === 0 ? (
+                          <span className="text-sm text-muted-foreground">No banks yet</span>
+                        ) : (
+                          banks.map((bank) => {
+                            const bankId = bank.bank_id || bank.id || "";
+                            if (!bankId) return null;
+                            return (
+                              <label
+                                key={bankId}
+                                className="flex min-w-0 items-center gap-2 text-sm"
+                              >
+                                <Checkbox
+                                  checked={apiKeyBankIds.includes(bankId)}
+                                  onCheckedChange={(checked) =>
+                                    toggleApiKeyBank(bankId, checked === true)
+                                  }
+                                />
+                                <span className="truncate">{bank.name || bankId}</span>
+                              </label>
+                            );
+                          })
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </form>
                 {newApiKey && (
                   <div className="flex items-center gap-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
                     <code className="min-w-0 flex-1 truncate">{newApiKey}</code>
@@ -455,20 +662,36 @@ export default function SettingsPage() {
                       <div>
                         <div className="font-medium">{apiKey.name}</div>
                         <div className="text-xs text-muted-foreground">
-                          {apiKey.allowed_operations?.join(", ") || "all operations"}
+                          {apiKey.allowed_operations?.length
+                            ? `${apiKey.allowed_operations.length} operations`
+                            : t("allAllowedOperations")}
+                          {" · "}
+                          {apiKey.bank_scope_mode === "selected"
+                            ? `${apiKey.scoped_bank_ids?.length ?? 0} banks`
+                            : "all banks"}
                         </div>
                       </div>
                       <span className="text-sm text-muted-foreground">
                         {apiKey.revoked_at ? "revoked" : "active"}
                       </span>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        disabled={!canAdmin || Boolean(apiKey.revoked_at)}
-                        onClick={() => revokeApiKey(apiKey.id)}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
+                      <div className="flex justify-end gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          disabled={!apiKey.can_view_secret || Boolean(apiKey.revoked_at)}
+                          onClick={() => copyApiKey(apiKey.id)}
+                        >
+                          <Copy className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          disabled={Boolean(apiKey.revoked_at)}
+                          onClick={() => revokeApiKey(apiKey.id)}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
                     </div>
                   ))}
                 </div>

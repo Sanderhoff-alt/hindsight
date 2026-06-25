@@ -11,6 +11,8 @@ import {
   createInvite,
   createOrganization,
   getCurrentOrgContext,
+  listApiKeys,
+  revealApiKey,
   removeMember,
   updateOrganizationName,
   updateMemberRole,
@@ -21,6 +23,7 @@ const serviceEnv = {
   HINDSIGHT_CP_AUTH_PROVIDER: "supabase_org",
   HINDSIGHT_AUTH_SUPABASE_URL: "http://supabase.local",
   HINDSIGHT_AUTH_SUPABASE_SERVICE_KEY: "service-key",
+  HINDSIGHT_AUTH_API_KEY_ENCRYPTION_KEY: "test-api-key-encryption-secret",
   HINDSIGHT_AUTH_PUBLIC_BASE_URL: "http://control.local",
 };
 
@@ -44,6 +47,14 @@ function adminContext(role: "owner" | "admin" = "owner"): CurrentOrgContext {
     user: { id: "user_owner", email: "owner@example.com" },
     selectedOrgId: "org_1",
     membership: { org_id: "org_1", user_id: "user_owner", email: "owner@example.com", role },
+  };
+}
+
+function memberContext(): CurrentOrgContext {
+  return {
+    user: { id: "user_member", email: "member@example.com" },
+    selectedOrgId: "org_1",
+    membership: { org_id: "org_1", user_id: "user_member", email: "member@example.com", role: "member" },
   };
 }
 
@@ -127,6 +138,22 @@ describe("supabase org store", () => {
     });
   });
 
+  it("allows only owners to create owner invites", async () => {
+    await expect(createInvite(adminContext("admin"), "owner@example.com", "owner")).rejects.toThrow(
+      /Only organization owners/
+    );
+
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse([{ id: "invite_owner", expires_at: "2099-01-01T00:00:00.000Z" }]));
+
+    await expect(createInvite(adminContext("owner"), "owner@example.com", "owner")).resolves.toMatchObject({
+      id: "invite_owner",
+    });
+    const request = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(JSON.parse(String(request.body))).toMatchObject({ role: "owner" });
+  });
+
   it("rejects expired invites before creating membership", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
@@ -157,31 +184,173 @@ describe("supabase org store", () => {
     await expect(removeMember(adminContext("owner"), "user_owner")).rejects.toThrow(/remove themselves/);
   });
 
-  it("creates bank-scoped API keys with validated operations", async () => {
+  it("creates operation-scoped API keys with validated operations", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse([{ id: "api_key_1" }]));
+
+    const created = await createApiKey(adminContext("owner"), "Agent key", ["recall"]);
+
+    expect(created).toMatchObject({ id: "api_key_1" });
+    expect(created.key).toMatch(/^hs_/);
+    const keyRequest = fetchMock.mock.calls[0][1] as RequestInit;
+    const keyBody = JSON.parse(String(keyRequest.body));
+    expect(keyBody).toMatchObject({
+      org_id: "org_1",
+      name: "Agent key",
+      role: "owner",
+      allowed_operations: ["recall"],
+      bank_scope_mode: "all",
+    });
+    expect(keyBody.encrypted_key).toMatch(/^v1\./);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("creates selected-bank API key scopes", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(jsonResponse([{ id: "api_key_1" }]))
       .mockResolvedValueOnce(jsonResponse([{ api_key_id: "api_key_1", bank_id: "bank_a" }]));
 
-    const created = await createApiKey(adminContext("owner"), "Agent key", ["bank_a", "bank_a"], ["recall"]);
+    const created = await createApiKey(
+      adminContext("owner"),
+      "Scoped key",
+      ["recall"],
+      "selected",
+      [
+        { bank_id: "bank_a", bank_internal_id: "internal_a" },
+        { bank_id: "bank_a", bank_internal_id: "internal_a" },
+      ]
+    );
 
     expect(created).toMatchObject({ id: "api_key_1" });
-    expect(created.key).toMatch(/^hs_/);
     const keyRequest = fetchMock.mock.calls[0][1] as RequestInit;
-    expect(JSON.parse(String(keyRequest.body))).toMatchObject({
+    const keyBody = JSON.parse(String(keyRequest.body));
+    expect(keyBody).toMatchObject({
       org_id: "org_1",
-      name: "Agent key",
-      role: "admin",
+      name: "Scoped key",
       allowed_operations: ["recall"],
+      bank_scope_mode: "selected",
     });
     const scopeRequest = fetchMock.mock.calls[1][1] as RequestInit;
-    expect(JSON.parse(String(scopeRequest.body))).toEqual([{ api_key_id: "api_key_1", bank_id: "bank_a" }]);
+    expect(JSON.parse(String(scopeRequest.body))).toEqual([
+      { api_key_id: "api_key_1", bank_id: "bank_a", bank_internal_id: "internal_a" },
+    ]);
+  });
+
+  it("allows members to create read-only API keys", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse([{ id: "api_key_member" }]));
+
+    const created = await createApiKey(memberContext(), "Read key", null);
+
+    expect(created).toMatchObject({ id: "api_key_member" });
+    const keyRequest = fetchMock.mock.calls[0][1] as RequestInit;
+    const keyBody = JSON.parse(String(keyRequest.body));
+    expect(keyBody.role).toBe("member");
+    expect(keyBody.allowed_operations).toContain("list_documents");
+    expect(keyBody.allowed_operations).toContain("recall");
+    expect(keyBody.allowed_operations).toContain("reflect");
+    expect(keyBody.allowed_operations).toContain("retain");
+    expect(keyBody.allowed_operations).toContain("create_mental_model");
+    expect(keyBody.allowed_operations).toContain("update_mental_model");
+    expect(keyBody.allowed_operations).toContain("update_document");
+    expect(keyBody.allowed_operations).toContain("update_memory_unit");
+    expect(keyBody.allowed_operations).not.toContain("delete_bank");
+  });
+
+  it("prevents member API keys from exceeding member operations", async () => {
+    await expect(createApiKey(memberContext(), "Bad key", ["delete_bank"])).rejects.toThrow(
+      /exceeds creator permissions/
+    );
+  });
+
+  it("reveals stored API key secrets to admins and owning members only", async () => {
+    const createdFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse([{ id: "api_key_1" }]));
+    const created = await createApiKey(adminContext("owner"), "Agent key", ["recall"]);
+    const keyRequest = createdFetch.mock.calls[0][1] as RequestInit;
+    const encryptedKey = JSON.parse(String(keyRequest.body)).encrypted_key;
+    vi.restoreAllMocks();
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      jsonResponse([{ id: "api_key_1", org_id: "org_1", name: "Agent key", encrypted_key: encryptedKey }])
+    );
+    await expect(revealApiKey(adminContext("admin"), "api_key_1")).resolves.toEqual(created);
+    vi.restoreAllMocks();
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      jsonResponse([
+        {
+          id: "api_key_1",
+          org_id: "org_1",
+          created_by_user_id: "user_other",
+          name: "Agent key",
+          encrypted_key: encryptedKey,
+        },
+      ])
+    );
+    await expect(revealApiKey(memberContext(), "api_key_1")).rejects.toThrow(/not owned/);
+    vi.restoreAllMocks();
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      jsonResponse([
+        {
+          id: "api_key_1",
+          org_id: "org_1",
+          created_by_user_id: "user_member",
+          name: "Agent key",
+          encrypted_key: encryptedKey,
+        },
+      ])
+    );
+    await expect(revealApiKey(memberContext(), "api_key_1")).resolves.toEqual(created);
+  });
+
+  it("lists all API keys for admins and only owned keys for members", async () => {
+    const keys = [
+      {
+        id: "key_a",
+        org_id: "org_1",
+        created_by_user_id: "user_owner",
+        name: "A",
+        role: "owner",
+        bank_scope_mode: "selected",
+        created_at: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "key_b",
+        org_id: "org_1",
+        created_by_user_id: "user_member",
+        name: "B",
+        role: "member",
+        created_at: "2026-01-01T00:00:00Z",
+      },
+    ];
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse(keys));
+    await expect(listApiKeys(memberContext())).resolves.toMatchObject([
+      { id: "key_b", bank_scope_mode: "all", can_view_secret: true },
+    ]);
+    vi.restoreAllMocks();
+
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse(keys))
+      .mockResolvedValueOnce(
+        jsonResponse([{ api_key_id: "key_a", bank_id: "bank_a", bank_internal_id: "internal_a" }])
+      );
+    await expect(listApiKeys(adminContext("owner"))).resolves.toMatchObject([
+      { id: "key_a", bank_scope_mode: "selected", scoped_bank_ids: ["bank_a"], can_view_secret: true },
+      { id: "key_b", bank_scope_mode: "all", can_view_secret: true },
+    ]);
   });
 
   it("validates roles and API key operations", async () => {
     expect(() => assertOrganizationRole("owner")).not.toThrow();
     expect(() => assertOrganizationRole("viewer")).toThrow(/Invalid organization role/);
-    await expect(createApiKey(adminContext("owner"), "Bad key", null, ["delete"])).rejects.toThrow(
+    await expect(createApiKey(adminContext("owner"), "Bad key", ["delete"])).rejects.toThrow(
       /Invalid API key operation/
     );
   });

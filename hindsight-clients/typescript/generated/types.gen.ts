@@ -250,6 +250,10 @@ export type BankListItem = {
    */
   bank_id: string;
   /**
+   * Internal Id
+   */
+  internal_id?: string | null;
+  /**
    * Name
    */
   name?: string | null;

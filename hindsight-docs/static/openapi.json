@@ -6206,6 +6206,17 @@
             "type": "string",
             "title": "Bank Id"
           },
+          "internal_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Internal Id"
+          },
           "name": {
             "anyOf": [
               {

@@ -40,23 +40,30 @@ create table if not exists hindsight_api_keys (
   created_by_user_id uuid,
   name text not null,
   key_hash text not null unique,
+  encrypted_key text,
   role organization_role not null default 'member',
   allowed_operations jsonb,
+  bank_scope_mode text not null default 'all' check (bank_scope_mode in ('all', 'selected')),
   expires_at timestamptz,
   revoked_at timestamptz,
   created_at timestamptz not null default now()
 );
 
+alter table hindsight_api_keys add column if not exists encrypted_key text;
+alter table hindsight_api_keys add column if not exists bank_scope_mode text not null default 'all';
+
 create table if not exists hindsight_api_key_bank_scopes (
   api_key_id uuid not null references hindsight_api_keys(id) on delete cascade,
   bank_id text not null,
-  primary key (api_key_id, bank_id)
+  bank_internal_id text not null,
+  primary key (api_key_id, bank_internal_id)
 );
 
 create index if not exists organization_members_user_id_idx on organization_members(user_id);
 create index if not exists organization_invites_org_id_idx on organization_invites(org_id);
 create index if not exists hindsight_api_keys_org_id_idx on hindsight_api_keys(org_id);
 create index if not exists hindsight_api_key_bank_scopes_bank_id_idx on hindsight_api_key_bank_scopes(bank_id);
+create index if not exists hindsight_api_key_bank_scopes_bank_internal_id_idx on hindsight_api_key_bank_scopes(bank_internal_id);
 
 alter table organizations enable row level security;
 alter table organization_members enable row level security;

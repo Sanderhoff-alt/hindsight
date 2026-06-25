@@ -1164,6 +1164,7 @@ class BankListItem(BaseModel):
     """Bank list item with profile summary and stats."""
 
     bank_id: str
+    internal_id: str | None = None
     name: str | None = None
     disposition: DispositionTraits
     mission: str | None = None
