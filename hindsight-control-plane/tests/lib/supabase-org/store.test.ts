@@ -93,9 +93,9 @@ describe("supabase org store", () => {
   });
 
   it("keeps API key operations and UI groups aligned", () => {
-    expect(API_KEY_OPERATIONS).toHaveLength(61);
+    expect(API_KEY_OPERATIONS).toHaveLength(62);
     expect(new Set(API_KEY_OPERATIONS).size).toBe(API_KEY_OPERATIONS.length);
-    expect(API_KEY_OPERATIONS).not.toContain("run_consolidation");
+    expect(API_KEY_OPERATIONS).toContain("run_consolidation");
     expect(UNSCOPED_DATAPLANE_OPERATIONS).toEqual(["create_bank"]);
     expect(BANK_SCOPED_OPERATIONS).not.toContain("create_bank");
     expect(OPERATION_DEFINITIONS.every((operation) => API_KEY_OPERATIONS.includes(operation.name))).toBe(

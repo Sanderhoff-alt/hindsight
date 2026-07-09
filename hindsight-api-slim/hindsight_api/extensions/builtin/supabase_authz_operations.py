@@ -57,6 +57,7 @@ BANK_WRITE_OPERATION_NAMES: tuple[str, ...] = (
     "update_directive",
     "delete_directive",
     "update_memory_unit",
+    "run_consolidation",
     "submit_async_consolidation",
     "retry_failed_consolidation",
     "clear_observations",

@@ -121,12 +121,10 @@ def test_special_hook_operations_are_separate_from_bank_read_write_operations() 
 
 def test_manifest_operations_match_hook_enums() -> None:
     assert BANK_READ_OPERATIONS == frozenset(operation.value for operation in BankReadOperation)
-    assert BANK_WRITE_OPERATIONS == frozenset(
-        operation.value for operation in BankWriteOperation if operation is not BankWriteOperation.RUN_CONSOLIDATION
-    )
-    assert "run_consolidation" not in ALL_DATAPLANE_OPERATIONS
+    assert BANK_WRITE_OPERATIONS == frozenset(operation.value for operation in BankWriteOperation)
+    assert "run_consolidation" in ALL_DATAPLANE_OPERATIONS
     assert UNSCOPED_DATAPLANE_OPERATIONS == frozenset({"create_bank"})
-    assert len(ALL_DATAPLANE_OPERATIONS) == 61
+    assert len(ALL_DATAPLANE_OPERATIONS) == 62
 
 
 @pytest.mark.asyncio
@@ -406,7 +404,7 @@ async def test_authorization_accepts_bank_operation_enums() -> None:
     validator.resolver.resolve = AsyncMock(
         return_value=_policy(
             role="admin",
-            allowed_operations=frozenset({"get_bank_profile", "delete_bank"}),
+            allowed_operations=frozenset({"get_bank_profile", "delete_bank", "run_consolidation"}),
         )
     )  # type: ignore[method-assign]
 
@@ -424,9 +422,17 @@ async def test_authorization_accepts_bank_operation_enums() -> None:
             request_context=_jwt_context(),
         )
     )
+    consolidation_result = await validator.validate_bank_write(
+        BankWriteContext(
+            bank_id="bank_a",
+            operation=BankWriteOperation.RUN_CONSOLIDATION,
+            request_context=_jwt_context(),
+        )
+    )
 
     assert read_result.allowed is True
     assert write_result.allowed is True
+    assert consolidation_result.allowed is True
 
 
 @pytest.mark.asyncio

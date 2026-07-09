@@ -6837,10 +6837,12 @@ class MemoryEngine(MemoryEngineInterface):
         """
         await self._authenticate_tenant(request_context)
         if self._operation_validator:
-            from hindsight_api.extensions import ConsolidateContext
+            from hindsight_api.extensions import BankWriteContext, BankWriteOperation
 
-            ctx = ConsolidateContext(bank_id=bank_id, request_context=request_context)
-            await self._validate_operation(self._operation_validator.validate_consolidate(ctx))
+            ctx = BankWriteContext(
+                bank_id=bank_id, operation=BankWriteOperation.RUN_CONSOLIDATION, request_context=request_context
+            )
+            await self._validate_operation(self._operation_validator.validate_bank_write(ctx))
 
         from .consolidation import run_consolidation_job
 
