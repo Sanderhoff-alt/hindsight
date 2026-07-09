@@ -93,9 +93,12 @@ describe("supabase org store", () => {
   });
 
   it("keeps API key operations and UI groups aligned", () => {
-    expect(API_KEY_OPERATIONS).toHaveLength(62);
+    expect(API_KEY_OPERATIONS).toHaveLength(58);
     expect(new Set(API_KEY_OPERATIONS).size).toBe(API_KEY_OPERATIONS.length);
-    expect(API_KEY_OPERATIONS).toContain("run_consolidation");
+    expect(API_KEY_OPERATIONS).not.toContain("consolidate");
+    expect(API_KEY_OPERATIONS).not.toContain("get_entity_state");
+    expect(API_KEY_OPERATIONS).not.toContain("run_consolidation");
+    expect(API_KEY_OPERATIONS).not.toContain("set_bank_mission");
     expect(UNSCOPED_DATAPLANE_OPERATIONS).toEqual(["create_bank"]);
     expect(BANK_SCOPED_OPERATIONS).not.toContain("create_bank");
     expect(OPERATION_DEFINITIONS.every((operation) => API_KEY_OPERATIONS.includes(operation.name))).toBe(
@@ -399,8 +402,8 @@ describe("supabase org store", () => {
     expect(keyBody.allowed_operations).toContain("update_memory_unit");
     expect(keyBody.allowed_operations).toContain("delete_bank");
     expect(keyBody.allowed_operations).toContain("mental_model_refresh");
-    expect(keyBody.allowed_operations).toContain("consolidate");
     expect(keyBody.allowed_operations).not.toContain("create_bank");
+    expect(keyBody.allowed_operations).not.toContain("consolidate");
   });
 
   it("prevents member API keys from exceeding member operations", async () => {

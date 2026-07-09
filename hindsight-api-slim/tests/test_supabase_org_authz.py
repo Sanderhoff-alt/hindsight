@@ -107,7 +107,6 @@ def _admin_api_key_policy() -> CallerPolicy:
 def test_special_hook_operations_are_separate_from_bank_read_write_operations() -> None:
     assert SPECIAL_BANK_OPERATIONS == frozenset(
         {
-            "consolidate",
             "mental_model_get",
             "mental_model_refresh",
             "recall",
@@ -120,11 +119,27 @@ def test_special_hook_operations_are_separate_from_bank_read_write_operations() 
 
 
 def test_manifest_operations_match_hook_enums() -> None:
-    assert BANK_READ_OPERATIONS == frozenset(operation.value for operation in BankReadOperation)
-    assert BANK_WRITE_OPERATIONS == frozenset(operation.value for operation in BankWriteOperation)
-    assert "run_consolidation" in ALL_DATAPLANE_OPERATIONS
+    api_unreachable_read_operations = frozenset({BankReadOperation.GET_ENTITY_STATE})
+    api_unreachable_write_operations = frozenset(
+        {
+            BankWriteOperation.RUN_CONSOLIDATION,
+            BankWriteOperation.SET_BANK_MISSION,
+        }
+    )
+    api_unreachable_special_operations = frozenset({"consolidate"})
+
+    assert BANK_READ_OPERATIONS == frozenset(
+        operation.value for operation in BankReadOperation if operation not in api_unreachable_read_operations
+    )
+    assert BANK_WRITE_OPERATIONS == frozenset(
+        operation.value for operation in BankWriteOperation if operation not in api_unreachable_write_operations
+    )
+    assert api_unreachable_special_operations.isdisjoint(ALL_DATAPLANE_OPERATIONS)
+    assert "get_entity_state" not in ALL_DATAPLANE_OPERATIONS
+    assert "run_consolidation" not in ALL_DATAPLANE_OPERATIONS
+    assert "set_bank_mission" not in ALL_DATAPLANE_OPERATIONS
     assert UNSCOPED_DATAPLANE_OPERATIONS == frozenset({"create_bank"})
-    assert len(ALL_DATAPLANE_OPERATIONS) == 62
+    assert len(ALL_DATAPLANE_OPERATIONS) == 58
 
 
 @pytest.mark.asyncio
