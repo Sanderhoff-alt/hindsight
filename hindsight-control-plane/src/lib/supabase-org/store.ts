@@ -7,6 +7,14 @@ import {
 } from "@/lib/auth-profiles/supabase-org/constants";
 import { getControlPlaneAuthProvider, getOrgCreationPolicy } from "@/lib/auth/provider";
 import { sessionCookieOptions } from "@/lib/auth/session";
+import {
+  API_KEY_OPERATIONS,
+  BANK_READ_OPERATIONS,
+  BANK_WRITE_OPERATIONS,
+  SPECIAL_BANK_OPERATIONS,
+  UNSCOPED_DATAPLANE_OPERATIONS,
+} from "@/lib/supabase-org/operations";
+import type { ApiKeyOperation } from "@/lib/supabase-org/operations";
 
 export type OrganizationRole = "owner" | "admin" | "member";
 export type ApiKeyBankScopeMode = "all" | "selected";
@@ -14,65 +22,18 @@ export interface ApiKeyBankScopeInput {
   bank_id: string;
   bank_internal_id: string;
 }
-export type ApiKeyOperation =
-  | "cancel_operation"
-  | "clear_mental_model"
-  | "clear_observations"
-  | "clear_observations_for_memory"
-  | "create_directive"
-  | "create_mental_model"
-  | "create_webhook"
-  | "delete_bank"
-  | "delete_directive"
-  | "delete_document"
-  | "delete_mental_model"
-  | "delete_webhook"
-  | "get_bank_config"
-  | "get_bank_profile"
-  | "get_bank_stats"
-  | "get_chunk"
-  | "get_directive"
-  | "get_document"
-  | "get_entity"
-  | "get_entity_graph"
-  | "get_entity_state"
-  | "get_graph_data"
-  | "get_memories_timeseries"
-  | "get_memory_unit"
-  | "get_observation_history"
-  | "get_operation_status"
-  | "list_directives"
-  | "list_document_chunks"
-  | "list_documents"
-  | "list_entities"
-  | "list_memory_units"
-  | "list_mental_models"
-  | "list_mental_model_tags"
-  | "list_observation_scopes"
-  | "list_operations"
-  | "list_tags"
-  | "list_webhook_deliveries"
-  | "list_webhooks"
-  | "merge_bank_mission"
-  | "recall"
-  | "reflect"
-  | "reprocess_document"
-  | "reset_bank_config"
-  | "retain"
-  | "retry_operation"
-  | "retry_failed_consolidation"
-  | "run_consolidation"
-  | "set_bank_mission"
-  | "submit_async_consolidation"
-  | "submit_async_graph_maintenance"
-  | "update_bank"
-  | "update_bank_config"
-  | "update_bank_disposition"
-  | "update_directive"
-  | "update_document"
-  | "update_memory_unit"
-  | "update_mental_model"
-  | "update_webhook";
+export interface ApiKeyOperationScopeInput {
+  operation: ApiKeyOperation;
+  bank_scope_mode?: ApiKeyBankScopeMode;
+  bank_scopes?: ApiKeyBankScopeInput[] | null;
+}
+export interface ApiKeyOperationScopeSummary {
+  operation: ApiKeyOperation;
+  bank_scope_mode: ApiKeyBankScopeMode;
+  scoped_bank_ids?: string[];
+  scoped_bank_internal_ids?: string[];
+}
+export type { ApiKeyOperation };
 
 export interface SupabaseUser {
   id: string;
@@ -118,13 +79,19 @@ export interface HindsightApiKeySummary {
   name: string;
   role: OrganizationRole;
   allowed_operations?: ApiKeyOperation[] | null;
-  bank_scope_mode?: ApiKeyBankScopeMode;
-  scoped_bank_ids?: string[];
-  scoped_bank_internal_ids?: string[];
+  operation_scopes?: ApiKeyOperationScopeSummary[];
+  owned_banks?: OwnedBankSummary[];
   expires_at?: string | null;
   revoked_at?: string | null;
   created_at: string;
   can_view_secret?: boolean;
+}
+
+export interface OwnedBankSummary {
+  bank_id: string;
+  bank_internal_id: string;
+  created_at?: string | null;
+  name?: string | null;
 }
 
 export interface CurrentOrgContext {
@@ -135,77 +102,6 @@ export interface CurrentOrgContext {
 
 const API_KEY_PREFIX = "hs_";
 const ORGANIZATION_ROLES: OrganizationRole[] = ["owner", "admin", "member"];
-const BANK_READ_OPERATIONS: ApiKeyOperation[] = [
-  "get_bank_config",
-  "get_bank_profile",
-  "get_bank_stats",
-  "get_chunk",
-  "get_directive",
-  "get_document",
-  "get_entity",
-  "get_entity_graph",
-  "get_entity_state",
-  "get_graph_data",
-  "get_memories_timeseries",
-  "get_memory_unit",
-  "get_observation_history",
-  "get_operation_status",
-  "list_directives",
-  "list_document_chunks",
-  "list_documents",
-  "list_entities",
-  "list_memory_units",
-  "list_mental_models",
-  "list_mental_model_tags",
-  "list_observation_scopes",
-  "list_operations",
-  "list_tags",
-  "list_webhook_deliveries",
-  "list_webhooks",
-  "recall",
-  "reflect",
-];
-const BANK_WRITE_OPERATIONS: ApiKeyOperation[] = [
-  "cancel_operation",
-  "clear_mental_model",
-  "clear_observations",
-  "clear_observations_for_memory",
-  "create_directive",
-  "create_mental_model",
-  "create_webhook",
-  "delete_bank",
-  "delete_directive",
-  "delete_document",
-  "delete_mental_model",
-  "delete_webhook",
-  "merge_bank_mission",
-  "reprocess_document",
-  "reset_bank_config",
-  "retain",
-  "retry_operation",
-  "retry_failed_consolidation",
-  "run_consolidation",
-  "set_bank_mission",
-  "submit_async_consolidation",
-  "submit_async_graph_maintenance",
-  "update_bank",
-  "update_bank_config",
-  "update_bank_disposition",
-  "update_directive",
-  "update_document",
-  "update_memory_unit",
-  "update_mental_model",
-  "update_webhook",
-];
-const API_KEY_OPERATIONS: ApiKeyOperation[] = [...BANK_READ_OPERATIONS, ...BANK_WRITE_OPERATIONS];
-const MEMBER_WRITE_OPERATIONS: ApiKeyOperation[] = [
-  "create_mental_model",
-  "retain",
-  "update_document",
-  "update_memory_unit",
-  "update_mental_model",
-];
-
 function requireSupabaseOrgProvider(): void {
   if (getControlPlaneAuthProvider() !== "supabase_org") {
     throw new Error(
@@ -524,10 +420,24 @@ interface HindsightApiKeyRow extends HindsightApiKeySummary {
   encrypted_key?: string | null;
 }
 
-interface HindsightApiKeyBankScope {
+interface HindsightApiKeyOperationScope {
   api_key_id: string;
+  operation: ApiKeyOperation;
+  bank_scope_mode: ApiKeyBankScopeMode;
+}
+
+interface HindsightApiKeyOperationBankScope {
+  api_key_id: string;
+  operation: ApiKeyOperation;
   bank_id: string;
   bank_internal_id?: string | null;
+}
+
+interface HindsightApiKeyCreatedBank {
+  api_key_id: string;
+  bank_id: string;
+  bank_internal_id: string;
+  created_at?: string | null;
 }
 
 export async function listApiKeys(context: CurrentOrgContext): Promise<HindsightApiKeySummary[]> {
@@ -535,39 +445,92 @@ export async function listApiKeys(context: CurrentOrgContext): Promise<Hindsight
   const keys = await restGet<HindsightApiKeySummary>("hindsight_api_keys", {
     org_id: `eq.${context.selectedOrgId}`,
     select:
-      "id,org_id,created_by_user_id,name,role,allowed_operations,bank_scope_mode,expires_at,revoked_at,created_at",
+      "id,org_id,created_by_user_id,name,role,allowed_operations,expires_at,revoked_at,created_at",
     order: "created_at.desc",
   });
   const visibleKeys = keys.filter((key) => isAdmin || key.created_by_user_id === context.user.id);
-  const selectedKeyIds = visibleKeys
-    .filter((key) => key.bank_scope_mode === "selected")
-    .map((key) => key.id);
-  const scopes =
-    selectedKeyIds.length > 0
-      ? await restGet<HindsightApiKeyBankScope>("hindsight_api_key_bank_scopes", {
-          api_key_id: `in.(${selectedKeyIds.join(",")})`,
-          select: "api_key_id,bank_id,bank_internal_id",
+  const visibleKeyIds = visibleKeys.map((key) => key.id);
+  const operationScopes =
+    visibleKeyIds.length > 0
+      ? await restGet<HindsightApiKeyOperationScope>("hindsight_api_key_operation_scopes", {
+          api_key_id: `in.(${visibleKeyIds.join(",")})`,
+          select: "api_key_id,operation,bank_scope_mode",
         })
       : [];
-  const bankIdsByKey = new Map<string, string[]>();
-  const bankInternalIdsByKey = new Map<string, string[]>();
-  for (const scope of scopes) {
-    const bankIds = bankIdsByKey.get(scope.api_key_id) ?? [];
-    bankIds.push(scope.bank_id);
-    bankIdsByKey.set(scope.api_key_id, bankIds);
-    if (scope.bank_internal_id) {
-      const bankInternalIds = bankInternalIdsByKey.get(scope.api_key_id) ?? [];
-      bankInternalIds.push(scope.bank_internal_id);
-      bankInternalIdsByKey.set(scope.api_key_id, bankInternalIds);
+  const selectedOperationScopes = operationScopes.filter(
+    (scope) => scope.bank_scope_mode === "selected"
+  );
+  const operationBankScopes =
+    selectedOperationScopes.length > 0
+      ? await restGet<HindsightApiKeyOperationBankScope>(
+          "hindsight_api_key_operation_bank_scopes",
+          {
+            api_key_id: `in.(${visibleKeyIds.join(",")})`,
+            select: "api_key_id,operation,bank_id,bank_internal_id",
+          }
+        )
+      : [];
+  const createdBanks =
+    visibleKeyIds.length > 0
+      ? await restGet<HindsightApiKeyCreatedBank>("hindsight_api_key_created_banks", {
+          api_key_id: `in.(${visibleKeyIds.join(",")})`,
+          select: "api_key_id,bank_id,bank_internal_id,created_at",
+        })
+      : [];
+  const operationScopesByKey = new Map<string, ApiKeyOperationScopeSummary[]>();
+  const bankScopesByKeyOperation = new Map<string, HindsightApiKeyOperationBankScope[]>();
+  for (const scope of operationBankScopes) {
+    const key = `${scope.api_key_id}:${scope.operation}`;
+    const scopes = bankScopesByKeyOperation.get(key) ?? [];
+    scopes.push(scope);
+    bankScopesByKeyOperation.set(key, scopes);
+  }
+  for (const scope of operationScopes) {
+    const operationKey = `${scope.api_key_id}:${scope.operation}`;
+    const bankScopes = bankScopesByKeyOperation.get(operationKey) ?? [];
+    const summaries = operationScopesByKey.get(scope.api_key_id) ?? [];
+    summaries.push({
+      operation: scope.operation,
+      bank_scope_mode: scope.bank_scope_mode,
+      scoped_bank_ids:
+        scope.bank_scope_mode === "selected" ? bankScopes.map((bank) => bank.bank_id) : undefined,
+      scoped_bank_internal_ids:
+        scope.bank_scope_mode === "selected"
+          ? bankScopes
+              .map((bank) => bank.bank_internal_id)
+              .filter((bankInternalId): bankInternalId is string => Boolean(bankInternalId))
+          : undefined,
+    });
+    operationScopesByKey.set(scope.api_key_id, summaries);
+  }
+  for (const key of visibleKeys) {
+    const unscoped = (key.allowed_operations ?? []).filter((operation) =>
+      UNSCOPED_DATAPLANE_OPERATIONS.includes(operation)
+    );
+    if (unscoped.length > 0) {
+      const summaries = operationScopesByKey.get(key.id) ?? [];
+      for (const operation of unscoped) {
+        if (!summaries.some((scope) => scope.operation === operation)) {
+          summaries.push({ operation, bank_scope_mode: "all" });
+        }
+      }
+      operationScopesByKey.set(key.id, summaries);
     }
+  }
+  const createdBanksByKey = new Map<string, OwnedBankSummary[]>();
+  for (const bank of createdBanks) {
+    const banks = createdBanksByKey.get(bank.api_key_id) ?? [];
+    banks.push({
+      bank_id: bank.bank_id,
+      bank_internal_id: bank.bank_internal_id,
+      created_at: bank.created_at,
+    });
+    createdBanksByKey.set(bank.api_key_id, banks);
   }
   return visibleKeys.map((key) => ({
     ...key,
-    bank_scope_mode: key.bank_scope_mode ?? "all",
-    scoped_bank_ids:
-      key.bank_scope_mode === "selected" ? (bankIdsByKey.get(key.id) ?? []) : undefined,
-    scoped_bank_internal_ids:
-      key.bank_scope_mode === "selected" ? (bankInternalIdsByKey.get(key.id) ?? []) : undefined,
+    operation_scopes: operationScopesByKey.get(key.id) ?? [],
+    owned_banks: createdBanksByKey.get(key.id) ?? [],
     can_view_secret: true,
   }));
 }
@@ -575,14 +538,14 @@ export async function listApiKeys(context: CurrentOrgContext): Promise<Hindsight
 export async function createApiKey(
   context: CurrentOrgContext,
   name: string,
-  allowedOperations: string[] | null,
-  bankScopeMode: ApiKeyBankScopeMode = "all",
-  bankScopes: ApiKeyBankScopeInput[] | null = null
+  operationScopes: ApiKeyOperationScopeInput[] | null
 ): Promise<{ id: string; key: string }> {
   const keyName = normalizeName(name, "API key name");
-  const operations = normalizeApiKeyOperations(allowedOperations, context.membership.role);
-  const scopeMode = normalizeApiKeyBankScopeMode(bankScopeMode);
-  const scopedBanks = scopeMode === "selected" ? normalizeApiKeyBankScopes(bankScopes) : [];
+  const normalizedOperationScopes = normalizeApiKeyOperationScopes(
+    operationScopes,
+    context.membership.role
+  );
+  const operations = normalizedOperationScopes.map((scope) => scope.operation);
   const rawKey = `${API_KEY_PREFIX}${crypto.randomUUID().replaceAll("-", "")}${crypto.randomUUID().replaceAll("-", "")}`;
   const keyHash = await sha256Hex(rawKey);
   const encryptedKey = await encryptApiKey(rawKey);
@@ -594,18 +557,8 @@ export async function createApiKey(
     encrypted_key: encryptedKey,
     role: context.membership.role,
     allowed_operations: operations,
-    bank_scope_mode: scopeMode,
   });
-  if (scopedBanks.length > 0) {
-    await restPost(
-      "hindsight_api_key_bank_scopes",
-      scopedBanks.map((bank) => ({
-        api_key_id: row.id,
-        bank_id: bank.bank_id,
-        bank_internal_id: bank.bank_internal_id,
-      }))
-    );
-  }
+  await replaceApiKeyOperationScopes(row.id, normalizedOperationScopes);
   return { id: row.id, key: rawKey };
 }
 
@@ -617,7 +570,7 @@ export async function revealApiKey(
     id: `eq.${id}`,
     org_id: `eq.${context.selectedOrgId}`,
     select:
-      "id,org_id,created_by_user_id,name,role,allowed_operations,bank_scope_mode,expires_at,revoked_at,created_at,encrypted_key",
+      "id,org_id,created_by_user_id,name,role,allowed_operations,expires_at,revoked_at,created_at,encrypted_key",
     limit: "1",
   });
   const key = rows[0];
@@ -635,7 +588,7 @@ export async function revokeApiKey(context: CurrentOrgContext, id: string): Prom
       id: `eq.${id}`,
       org_id: `eq.${context.selectedOrgId}`,
       select:
-        "id,org_id,created_by_user_id,name,role,allowed_operations,bank_scope_mode,expires_at,revoked_at,created_at",
+        "id,org_id,created_by_user_id,name,role,allowed_operations,expires_at,revoked_at,created_at",
       limit: "1",
     });
     if (keys[0]?.created_by_user_id !== context.user.id)
@@ -648,9 +601,43 @@ export async function revokeApiKey(context: CurrentOrgContext, id: string): Prom
   );
 }
 
+export async function updateApiKeyPermissions(
+  context: CurrentOrgContext,
+  id: string,
+  operationScopes: ApiKeyOperationScopeInput[] | null
+): Promise<void> {
+  const rows = await restGet<HindsightApiKeySummary>("hindsight_api_keys", {
+    id: `eq.${id}`,
+    org_id: `eq.${context.selectedOrgId}`,
+    select:
+      "id,org_id,created_by_user_id,name,role,allowed_operations,expires_at,revoked_at,created_at",
+    limit: "1",
+  });
+  const key = rows[0];
+  if (!key) throw new Error("API key not found");
+  const isAdmin = context.membership.role === "owner" || context.membership.role === "admin";
+  if (!isAdmin && key.created_by_user_id !== context.user.id)
+    throw new Error("API key is not owned by this user");
+  if (key.revoked_at) throw new Error("Cannot update revoked API key");
+  const normalizedOperationScopes = normalizeApiKeyOperationScopes(
+    operationScopes,
+    context.membership.role
+  );
+  await restPatch(
+    "hindsight_api_keys",
+    { allowed_operations: normalizedOperationScopes.map((scope) => scope.operation) },
+    { id: `eq.${id}`, org_id: `eq.${context.selectedOrgId}` }
+  );
+  await replaceApiKeyOperationScopes(id, normalizedOperationScopes);
+}
+
 export async function deleteApiKeyBankScopesByInternalId(bankInternalId: string): Promise<void> {
-  await restDelete("hindsight_api_key_bank_scopes", {
-    bank_internal_id: `eq.${normalizeName(bankInternalId, "bank internal id")}`,
+  const normalizedBankInternalId = normalizeName(bankInternalId, "bank internal id");
+  await restDelete("hindsight_api_key_operation_bank_scopes", {
+    bank_internal_id: `eq.${normalizedBankInternalId}`,
+  });
+  await restDelete("hindsight_api_key_created_banks", {
+    bank_internal_id: `eq.${normalizedBankInternalId}`,
   });
 }
 
@@ -889,8 +876,64 @@ function normalizeApiKeyOperations(
   return unique as ApiKeyOperation[];
 }
 
+function normalizeApiKeyOperationScopes(
+  operationScopes: ApiKeyOperationScopeInput[] | null,
+  role: OrganizationRole
+): Required<ApiKeyOperationScopeInput>[] {
+  const requestedOperations = operationScopes?.map((scope) => scope.operation) ?? null;
+  const operations = normalizeApiKeyOperations(requestedOperations, role);
+  const scopesByOperation = new Map(
+    (operationScopes ?? []).map((scope) => [scope.operation, scope])
+  );
+  return operations.map((operation) => {
+    const requestedScope = scopesByOperation.get(operation);
+    const bankScopeMode = UNSCOPED_DATAPLANE_OPERATIONS.includes(operation)
+      ? "all"
+      : normalizeApiKeyBankScopeMode(requestedScope?.bank_scope_mode ?? "all");
+    const bankScopes =
+      bankScopeMode === "selected"
+        ? normalizeApiKeyBankScopes(requestedScope?.bank_scopes ?? null)
+        : [];
+    return { operation, bank_scope_mode: bankScopeMode, bank_scopes: bankScopes };
+  });
+}
+
+async function replaceApiKeyOperationScopes(
+  apiKeyId: string,
+  operationScopes: Required<ApiKeyOperationScopeInput>[]
+): Promise<void> {
+  await restDelete("hindsight_api_key_operation_bank_scopes", { api_key_id: `eq.${apiKeyId}` });
+  await restDelete("hindsight_api_key_operation_scopes", { api_key_id: `eq.${apiKeyId}` });
+  const scopedOperations = operationScopes.filter(
+    (scope) => !UNSCOPED_DATAPLANE_OPERATIONS.includes(scope.operation)
+  );
+  if (scopedOperations.length === 0) return;
+  await restPost(
+    "hindsight_api_key_operation_scopes",
+    scopedOperations.map((scope) => ({
+      api_key_id: apiKeyId,
+      operation: scope.operation,
+      bank_scope_mode: scope.bank_scope_mode,
+    }))
+  );
+  const selectedBanks = scopedOperations.flatMap((scope) =>
+    scope.bank_scope_mode === "selected"
+      ? (scope.bank_scopes ?? []).map((bank) => ({
+          api_key_id: apiKeyId,
+          operation: scope.operation,
+          bank_id: bank.bank_id,
+          bank_internal_id: bank.bank_internal_id,
+        }))
+      : []
+  );
+  if (selectedBanks.length > 0) {
+    await restPost("hindsight_api_key_operation_bank_scopes", selectedBanks);
+  }
+}
+
 function operationsForRole(role: OrganizationRole): ApiKeyOperation[] {
-  if (role === "member") return [...BANK_READ_OPERATIONS, ...MEMBER_WRITE_OPERATIONS];
+  if (role === "member")
+    return [...BANK_READ_OPERATIONS, ...BANK_WRITE_OPERATIONS, ...SPECIAL_BANK_OPERATIONS];
   return API_KEY_OPERATIONS;
 }
 

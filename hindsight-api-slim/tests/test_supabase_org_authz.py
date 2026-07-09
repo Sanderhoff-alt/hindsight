@@ -10,6 +10,11 @@ import pytest
 
 from hindsight_api.extensions.auth_profile import validate_auth_profile
 from hindsight_api.extensions.builtin.supabase_org import (
+    ALL_DATAPLANE_OPERATIONS,
+    BANK_READ_OPERATIONS,
+    BANK_WRITE_OPERATIONS,
+    SPECIAL_BANK_OPERATIONS,
+    UNSCOPED_DATAPLANE_OPERATIONS,
     CallerPolicy,
     SupabaseAuthorizationExtension,
     SupabaseOrgTenantExtension,
@@ -18,7 +23,13 @@ from hindsight_api.extensions.builtin.supabase_org import (
 from hindsight_api.extensions.operation_validator import (
     BankListContext,
     BankReadContext,
+    BankReadOperation,
     BankWriteContext,
+    BankWriteOperation,
+    ConsolidateContext,
+    CreateBankContext,
+    MentalModelGetContext,
+    MentalModelRefreshContext,
     RecallContext,
     ReflectContext,
     RetainContext,
@@ -48,18 +59,19 @@ def _policy(
     *,
     role: Literal["owner", "admin", "member"] = "owner",
     allowed_operations: frozenset[str] | None = None,
-    allowed_bank_ids: frozenset[str] | None = None,
-    allowed_bank_internal_ids: frozenset[str] | None = None,
+    operation_bank_scope_modes: dict[str, Literal["all", "selected"]] | None = None,
+    operation_bank_internal_ids: dict[str, frozenset[str]] | None = None,
+    api_key_id: str | None = None,
 ) -> CallerPolicy:
     return CallerPolicy(
         org_id="org_123",
         schema_name="org_org_123",
-        user_id="user_123",
-        api_key_id=None,
+        user_id=None if api_key_id else "user_123",
+        api_key_id=api_key_id,
         role=role,
-        allowed_bank_ids=allowed_bank_ids,
-        allowed_bank_internal_ids=allowed_bank_internal_ids,
         allowed_operations=allowed_operations,
+        operation_bank_scope_modes=operation_bank_scope_modes,
+        operation_bank_internal_ids=operation_bank_internal_ids,
         tenant_config={},
     )
 
@@ -71,9 +83,9 @@ def _api_key_policy() -> CallerPolicy:
         user_id=None,
         api_key_id="key_123",
         role="member",
-        allowed_bank_ids=None,
-        allowed_bank_internal_ids=None,
         allowed_operations=frozenset({"recall"}),
+        operation_bank_scope_modes={"recall": "all"},
+        operation_bank_internal_ids={},
         tenant_config={},
     )
 
@@ -85,11 +97,36 @@ def _admin_api_key_policy() -> CallerPolicy:
         user_id=None,
         api_key_id="key_123",
         role="admin",
-        allowed_bank_ids=None,
-        allowed_bank_internal_ids=None,
         allowed_operations=frozenset({"retain", "recall", "reflect"}),
+        operation_bank_scope_modes={"retain": "all", "recall": "all", "reflect": "all"},
+        operation_bank_internal_ids={},
         tenant_config={},
     )
+
+
+def test_special_hook_operations_are_separate_from_bank_read_write_operations() -> None:
+    assert SPECIAL_BANK_OPERATIONS == frozenset(
+        {
+            "consolidate",
+            "mental_model_get",
+            "mental_model_refresh",
+            "recall",
+            "reflect",
+            "retain",
+        }
+    )
+    assert SPECIAL_BANK_OPERATIONS.isdisjoint(BANK_READ_OPERATIONS)
+    assert SPECIAL_BANK_OPERATIONS.isdisjoint(BANK_WRITE_OPERATIONS)
+
+
+def test_manifest_operations_match_hook_enums() -> None:
+    assert BANK_READ_OPERATIONS == frozenset(operation.value for operation in BankReadOperation)
+    assert BANK_WRITE_OPERATIONS == frozenset(
+        operation.value for operation in BankWriteOperation if operation is not BankWriteOperation.RUN_CONSOLIDATION
+    )
+    assert "run_consolidation" not in ALL_DATAPLANE_OPERATIONS
+    assert UNSCOPED_DATAPLANE_OPERATIONS == frozenset({"create_bank"})
+    assert len(ALL_DATAPLANE_OPERATIONS) == 61
 
 
 @pytest.mark.asyncio
@@ -109,7 +146,7 @@ async def test_resolver_maps_supabase_jwt_to_org_schema() -> None:
     assert policy.schema_name == "org_org_123"
     assert policy.user_id == "user_123"
     assert policy.role == "admin"
-    assert policy.allowed_bank_ids is None
+    assert policy.operation_bank_scope_modes is None
     assert policy.tenant_config == {"llm_model": "gpt-4"}
 
 
@@ -148,6 +185,10 @@ async def test_resolver_maps_hindsight_api_key_to_operation_scoped_policy() -> N
                 }
             ],
             [{"org_id": "org_123", "user_id": "user_123", "role": "member"}],
+            [
+                {"operation": "recall", "bank_scope_mode": "all"},
+                {"operation": "reflect", "bank_scope_mode": "all"},
+            ],
             [{"id": "org_123", "name": "Org", "config": {}}],
         ]
     )
@@ -156,11 +197,11 @@ async def test_resolver_maps_hindsight_api_key_to_operation_scoped_policy() -> N
 
     assert policy.org_id == "org_123"
     assert policy.api_key_id == "key_123"
-    assert policy.allowed_bank_ids is None
     assert policy.allowed_operations == frozenset({"recall", "reflect"})
+    assert policy.operation_bank_scope_modes == {"recall": "all", "reflect": "all"}
     resolver._rest_get.assert_any_call(  # type: ignore[attr-defined]
         "hindsight_api_keys",
-        select="id,org_id,created_by_user_id,role,allowed_operations,bank_scope_mode,revoked_at,expires_at",
+        select="id,org_id,created_by_user_id,role,allowed_operations,revoked_at,expires_at",
         key_hash=f"eq.{key_hash}",
         revoked_at="is.null",
         limit="1",
@@ -203,6 +244,7 @@ async def test_resolver_preserves_empty_api_key_operation_scope() -> None:
                 }
             ],
             [{"org_id": "org_123", "user_id": "user_123", "role": "member"}],
+            [],
             [{"id": "org_123", "name": "Org", "config": {}}],
         ]
     )
@@ -228,6 +270,11 @@ async def test_resolver_intersects_api_key_operations_with_creator_current_role(
                 }
             ],
             [{"org_id": "org_123", "user_id": "user_123", "role": "member"}],
+            [
+                {"operation": "retain", "bank_scope_mode": "all"},
+                {"operation": "recall", "bank_scope_mode": "all"},
+                {"operation": "list_documents", "bank_scope_mode": "all"},
+            ],
             [{"id": "org_123", "name": "Org", "config": {}}],
         ]
     )
@@ -236,6 +283,32 @@ async def test_resolver_intersects_api_key_operations_with_creator_current_role(
 
     assert policy.role == "member"
     assert policy.allowed_operations == frozenset({"retain", "recall", "list_documents"})
+
+
+@pytest.mark.asyncio
+async def test_resolver_preserves_unscoped_create_bank_api_key_operation() -> None:
+    resolver = SupabasePolicyResolver(_resolver_config())
+    resolver._rest_get = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            [
+                {
+                    "id": "key_123",
+                    "org_id": "org_123",
+                    "created_by_user_id": "user_123",
+                    "role": "admin",
+                    "allowed_operations": ["create_bank", "recall"],
+                    "expires_at": "2099-01-01T00:00:00Z",
+                }
+            ],
+            [{"org_id": "org_123", "user_id": "user_123", "role": "admin"}],
+            [{"operation": "recall", "bank_scope_mode": "all"}],
+            [{"id": "org_123", "name": "Org", "config": {}}],
+        ]
+    )
+
+    policy = await resolver.resolve(RequestContext(api_key="hs_test_secret_with_enough_entropy"))
+
+    assert policy.allowed_operations == frozenset({"create_bank", "recall"})
 
 
 @pytest.mark.asyncio
@@ -250,20 +323,23 @@ async def test_resolver_maps_selected_api_key_bank_scope() -> None:
                     "created_by_user_id": "user_123",
                     "role": "admin",
                     "allowed_operations": ["retain", "recall"],
-                    "bank_scope_mode": "selected",
                     "expires_at": "2099-01-01T00:00:00Z",
                 }
             ],
             [{"org_id": "org_123", "user_id": "user_123", "role": "admin"}],
-            [{"bank_id": "bank_a", "bank_internal_id": "internal_a"}],
+            [
+                {"operation": "retain", "bank_scope_mode": "selected"},
+                {"operation": "recall", "bank_scope_mode": "all"},
+            ],
+            [{"operation": "retain", "bank_id": "bank_a", "bank_internal_id": "internal_a"}],
             [{"id": "org_123", "name": "Org", "config": {}}],
         ]
     )
 
     policy = await resolver.resolve(RequestContext(api_key="hs_test_secret_with_enough_entropy"))
 
-    assert policy.allowed_bank_ids == frozenset({"bank_a"})
-    assert policy.allowed_bank_internal_ids == frozenset({"internal_a"})
+    assert policy.operation_bank_scope_modes == {"retain": "selected", "recall": "all"}
+    assert policy.operation_bank_internal_ids == {"retain": frozenset({"internal_a"})}
 
 
 @pytest.mark.asyncio
@@ -325,6 +401,100 @@ async def test_authorization_allows_admin_bank_write() -> None:
 
 
 @pytest.mark.asyncio
+async def test_authorization_accepts_bank_operation_enums() -> None:
+    validator = SupabaseAuthorizationExtension(_resolver_config())
+    validator.resolver.resolve = AsyncMock(
+        return_value=_policy(
+            role="admin",
+            allowed_operations=frozenset({"get_bank_profile", "delete_bank"}),
+        )
+    )  # type: ignore[method-assign]
+
+    read_result = await validator.validate_bank_read(
+        BankReadContext(
+            bank_id="bank_a",
+            operation=BankReadOperation.GET_BANK_PROFILE,
+            request_context=_jwt_context(),
+        )
+    )
+    write_result = await validator.validate_bank_write(
+        BankWriteContext(
+            bank_id="bank_a",
+            operation=BankWriteOperation.DELETE_BANK,
+            request_context=_jwt_context(),
+        )
+    )
+
+    assert read_result.allowed is True
+    assert write_result.allowed is True
+
+
+@pytest.mark.asyncio
+async def test_authorization_allows_admin_create_bank() -> None:
+    validator = SupabaseAuthorizationExtension(_resolver_config())
+    validator.resolver.resolve = AsyncMock(return_value=_policy(role="admin"))  # type: ignore[method-assign]
+
+    result = await validator.validate_create_bank(CreateBankContext(bank_id="bank_new", request_context=_jwt_context()))
+
+    assert result.allowed is True
+
+
+@pytest.mark.asyncio
+async def test_authorization_denies_member_create_bank() -> None:
+    validator = SupabaseAuthorizationExtension(_resolver_config())
+    validator.resolver.resolve = AsyncMock(return_value=_policy(role="member"))  # type: ignore[method-assign]
+
+    result = await validator.validate_create_bank(CreateBankContext(bank_id="bank_new", request_context=_jwt_context()))
+
+    assert result.allowed is False
+    assert result.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_authorization_create_bank_is_unscoped_for_selected_api_key() -> None:
+    validator = SupabaseAuthorizationExtension(_resolver_config())
+    validator.resolver.resolve = AsyncMock(
+        return_value=_policy(
+            role="admin",
+            allowed_operations=frozenset({"create_bank"}),
+            operation_bank_scope_modes={},
+            operation_bank_internal_ids={},
+            api_key_id="key_123",
+        )
+    )  # type: ignore[method-assign]
+    validator._get_bank_internal_id = AsyncMock(side_effect=AssertionError("create_bank must not check bank scope"))  # type: ignore[method-assign]
+
+    result = await validator.validate_create_bank(CreateBankContext(bank_id="bank_new", request_context=_jwt_context()))
+
+    assert result.allowed is True
+    validator._get_bank_internal_id.assert_not_called()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_mcp_filter_keeps_create_bank_when_current_bank_out_of_scope() -> None:
+    validator = SupabaseAuthorizationExtension(_resolver_config())
+    validator.resolver.resolve = AsyncMock(
+        return_value=_policy(
+            role="admin",
+            allowed_operations=frozenset({"create_bank", "recall"}),
+            operation_bank_scope_modes={"recall": "selected"},
+            operation_bank_internal_ids={"recall": frozenset({"internal_a"})},
+            api_key_id="key_123",
+        )
+    )  # type: ignore[method-assign]
+    validator._get_bank_internal_id = AsyncMock(return_value="internal_b")  # type: ignore[method-assign]
+    validator.resolver.api_key_owns_bank_internal_id = AsyncMock(return_value=False)  # type: ignore[method-assign]
+
+    tools = await validator.filter_mcp_tools(
+        "bank_b",
+        _jwt_context(),
+        frozenset({"create_bank", "recall"}),
+    )
+
+    assert tools == frozenset({"create_bank"})
+
+
+@pytest.mark.asyncio
 async def test_authorization_allows_admin_api_key_retain() -> None:
     validator = SupabaseAuthorizationExtension(_resolver_config())
     validator.resolver.resolve = AsyncMock(return_value=_admin_api_key_policy())  # type: ignore[method-assign]
@@ -352,6 +522,39 @@ async def test_authorization_allows_member_read_operations() -> None:
     assert bank_read.allowed is True
     assert recall.allowed is True
     assert reflect.allowed is True
+
+
+@pytest.mark.asyncio
+async def test_authorization_enforces_specialized_validate_hooks() -> None:
+    validator = SupabaseAuthorizationExtension(_resolver_config())
+    context = _jwt_context()
+    context.auth_policy = CallerPolicy(
+        org_id="org_123",
+        schema_name="org_org_123",
+        user_id=None,
+        api_key_id="key_123",
+        role="admin",
+        allowed_operations=frozenset({"mental_model_get", "mental_model_refresh", "consolidate"}),
+        operation_bank_scope_modes={
+            "mental_model_get": "all",
+            "mental_model_refresh": "all",
+            "consolidate": "all",
+        },
+        operation_bank_internal_ids={},
+        tenant_config={},
+    )
+
+    mental_model_get = await validator.validate_mental_model_get(
+        MentalModelGetContext(bank_id="bank_a", mental_model_id="mm_1", request_context=context)
+    )
+    mental_model_refresh = await validator.validate_mental_model_refresh(
+        MentalModelRefreshContext(bank_id="bank_a", mental_model_id="mm_1", request_context=context)
+    )
+    consolidate = await validator.validate_consolidate(ConsolidateContext(bank_id="bank_a", request_context=context))
+
+    assert mental_model_get.allowed is True
+    assert mental_model_refresh.allowed is True
+    assert consolidate.allowed is True
 
 
 @pytest.mark.asyncio
@@ -400,7 +603,7 @@ async def test_authorization_allows_member_usable_writes() -> None:
 
 
 @pytest.mark.asyncio
-async def test_authorization_denies_member_high_risk_write() -> None:
+async def test_authorization_allows_member_bank_scoped_writes() -> None:
     validator = SupabaseAuthorizationExtension(_resolver_config())
     validator.resolver.resolve = AsyncMock(return_value=_policy(role="member"))  # type: ignore[method-assign]
 
@@ -408,8 +611,7 @@ async def test_authorization_denies_member_high_risk_write() -> None:
         BankWriteContext(bank_id="bank_a", operation="delete_bank", request_context=_jwt_context())
     )
 
-    assert result.allowed is False
-    assert result.status_code == 403
+    assert result.allowed is True
 
 
 @pytest.mark.asyncio
@@ -438,9 +640,10 @@ async def test_authorization_denies_selected_api_key_unscoped_existing_bank() ->
     validator.resolver.resolve = AsyncMock(
         return_value=_policy(
             role="admin",
-            allowed_bank_ids=frozenset({"bank_a"}),
-            allowed_bank_internal_ids=frozenset({"internal_a"}),
             allowed_operations=frozenset({"recall"}),
+            operation_bank_scope_modes={"recall": "selected"},
+            operation_bank_internal_ids={"recall": frozenset({"internal_a"})},
+            api_key_id="key_123",
         )
     )  # type: ignore[method-assign]
     validator._get_bank_internal_id = AsyncMock(return_value="internal_b")  # type: ignore[method-assign]
@@ -452,7 +655,7 @@ async def test_authorization_denies_selected_api_key_unscoped_existing_bank() ->
 
 
 @pytest.mark.asyncio
-async def test_authorization_scopes_new_bank_created_by_selected_api_key() -> None:
+async def test_authorization_records_api_key_created_bank_ownership() -> None:
     validator = SupabaseAuthorizationExtension(_resolver_config())
     context = _jwt_context()
     context.auth_policy = CallerPolicy(
@@ -461,22 +664,109 @@ async def test_authorization_scopes_new_bank_created_by_selected_api_key() -> No
         user_id=None,
         api_key_id="key_123",
         role="admin",
-        allowed_bank_ids=frozenset({"bank_a"}),
-        allowed_bank_internal_ids=frozenset({"internal_a"}),
-        allowed_operations=frozenset({"retain"}),
+        allowed_operations=frozenset({"create_bank"}),
+        operation_bank_scope_modes={},
+        operation_bank_internal_ids={},
         tenant_config={},
     )
-    validator._get_bank_internal_id = AsyncMock(side_effect=[None, "internal_new"])  # type: ignore[method-assign]
-    validator._ensure_bank_exists_and_get_internal_id = AsyncMock(return_value="internal_new")  # type: ignore[method-assign]
-    validator.resolver._rest_post = AsyncMock()  # type: ignore[method-assign]
+    validator._get_bank_internal_id = AsyncMock(return_value="internal_new")  # type: ignore[method-assign]
+    validator.resolver.record_api_key_created_bank = AsyncMock()  # type: ignore[method-assign]
 
-    result = await validator.validate_retain(RetainContext(bank_id="bank_new", contents=[], request_context=context))
+    await validator.record_api_key_created_bank("bank_new", context)
+
+    validator.resolver.record_api_key_created_bank.assert_awaited_once_with(  # type: ignore[attr-defined]
+        api_key_id="key_123",
+        bank_id="bank_new",
+        bank_internal_id="internal_new",
+    )
+
+
+@pytest.mark.asyncio
+async def test_authorization_allows_api_key_full_access_to_owned_bank() -> None:
+    validator = SupabaseAuthorizationExtension(_resolver_config())
+    context = _jwt_context()
+    context.auth_policy = CallerPolicy(
+        org_id="org_123",
+        schema_name="org_org_123",
+        user_id=None,
+        api_key_id="key_123",
+        role="admin",
+        allowed_operations=frozenset({"create_bank"}),
+        operation_bank_scope_modes={},
+        operation_bank_internal_ids={},
+        tenant_config={},
+    )
+    validator._get_bank_internal_id = AsyncMock(return_value="internal_owned")  # type: ignore[method-assign]
+    validator.resolver.api_key_owns_bank_internal_id = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+    result = await validator.validate_bank_write(
+        BankWriteContext(bank_id="bank_owned", operation="delete_bank", request_context=context)
+    )
 
     assert result.allowed is True
-    validator.resolver._rest_post.assert_awaited_once_with(  # type: ignore[attr-defined]
-        "hindsight_api_key_bank_scopes",
-        {"api_key_id": "key_123", "bank_id": "bank_new", "bank_internal_id": "internal_new"},
+    validator.resolver.api_key_owns_bank_internal_id.assert_awaited_once_with(  # type: ignore[attr-defined]
+        "key_123",
+        "internal_owned",
     )
+
+
+@pytest.mark.asyncio
+async def test_authorization_allows_specialized_hooks_on_owned_bank() -> None:
+    validator = SupabaseAuthorizationExtension(_resolver_config())
+    context = _jwt_context()
+    context.auth_policy = CallerPolicy(
+        org_id="org_123",
+        schema_name="org_org_123",
+        user_id=None,
+        api_key_id="key_123",
+        role="admin",
+        allowed_operations=frozenset({"create_bank"}),
+        operation_bank_scope_modes={},
+        operation_bank_internal_ids={},
+        tenant_config={},
+    )
+    validator._get_bank_internal_id = AsyncMock(return_value="internal_owned")  # type: ignore[method-assign]
+    validator.resolver.api_key_owns_bank_internal_id = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+    mental_model_get = await validator.validate_mental_model_get(
+        MentalModelGetContext(bank_id="bank_owned", mental_model_id="mm_1", request_context=context)
+    )
+    mental_model_refresh = await validator.validate_mental_model_refresh(
+        MentalModelRefreshContext(bank_id="bank_owned", mental_model_id="mm_1", request_context=context)
+    )
+    consolidate = await validator.validate_consolidate(
+        ConsolidateContext(bank_id="bank_owned", request_context=context)
+    )
+
+    assert mental_model_get.allowed is True
+    assert mental_model_refresh.allowed is True
+    assert consolidate.allowed is True
+
+
+@pytest.mark.asyncio
+async def test_authorization_denies_api_key_unowned_bank_without_operation_scope() -> None:
+    validator = SupabaseAuthorizationExtension(_resolver_config())
+    context = _jwt_context()
+    context.auth_policy = CallerPolicy(
+        org_id="org_123",
+        schema_name="org_org_123",
+        user_id=None,
+        api_key_id="key_123",
+        role="admin",
+        allowed_operations=frozenset({"create_bank"}),
+        operation_bank_scope_modes={},
+        operation_bank_internal_ids={},
+        tenant_config={},
+    )
+    validator._get_bank_internal_id = AsyncMock(return_value="internal_b")  # type: ignore[method-assign]
+    validator.resolver.api_key_owns_bank_internal_id = AsyncMock(return_value=False)  # type: ignore[method-assign]
+
+    result = await validator.validate_bank_write(
+        BankWriteContext(bank_id="bank_b", operation="delete_bank", request_context=context)
+    )
+
+    assert result.allowed is False
+    assert result.status_code == 403
 
 
 @pytest.mark.asyncio
@@ -489,9 +779,9 @@ async def test_filter_bank_list_limits_member_api_key_selected_scope() -> None:
             user_id=None,
             api_key_id="key_123",
             role="member",
-            allowed_bank_ids=frozenset({"bank_a"}),
-            allowed_bank_internal_ids=frozenset({"internal_a"}),
             allowed_operations=frozenset({"recall"}),
+            operation_bank_scope_modes={"recall": "selected"},
+            operation_bank_internal_ids={"recall": frozenset({"internal_a"})},
             tenant_config={},
         )
     )  # type: ignore[method-assign]
@@ -510,6 +800,68 @@ async def test_filter_bank_list_limits_member_api_key_selected_scope() -> None:
 
 
 @pytest.mark.asyncio
+async def test_filter_bank_list_includes_owned_banks_for_selected_api_key() -> None:
+    validator = SupabaseAuthorizationExtension(_resolver_config())
+    validator.resolver.resolve = AsyncMock(
+        return_value=CallerPolicy(
+            org_id="org_123",
+            schema_name="org_org_123",
+            user_id=None,
+            api_key_id="key_123",
+            role="admin",
+            allowed_operations=frozenset({"create_bank"}),
+            operation_bank_scope_modes={"recall": "selected"},
+            operation_bank_internal_ids={"recall": frozenset({"internal_a"})},
+            tenant_config={},
+        )
+    )  # type: ignore[method-assign]
+    validator.resolver.list_api_key_created_bank_internal_ids = AsyncMock(return_value=frozenset({"internal_b"}))  # type: ignore[method-assign]
+
+    result = await validator.filter_bank_list(
+        BankListContext(
+            banks=[
+                {"id": "bank_a", "internal_id": "internal_a"},
+                {"id": "bank_b", "internal_id": "internal_b"},
+                {"id": "bank_c", "internal_id": "internal_c"},
+            ],
+            request_context=_jwt_context(),
+        )
+    )
+
+    assert result.banks == [
+        {"id": "bank_a", "internal_id": "internal_a"},
+        {"id": "bank_b", "internal_id": "internal_b"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mcp_filter_allows_all_tools_on_owned_bank() -> None:
+    validator = SupabaseAuthorizationExtension(_resolver_config())
+    context = _jwt_context()
+    context.auth_policy = CallerPolicy(
+        org_id="org_123",
+        schema_name="org_org_123",
+        user_id=None,
+        api_key_id="key_123",
+        role="admin",
+        allowed_operations=frozenset({"create_bank"}),
+        operation_bank_scope_modes={},
+        operation_bank_internal_ids={},
+        tenant_config={},
+    )
+    validator._get_bank_internal_id = AsyncMock(return_value="internal_owned")  # type: ignore[method-assign]
+    validator.resolver.api_key_owns_bank_internal_id = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+    tools = await validator.filter_mcp_tools(
+        "bank_owned",
+        context,
+        frozenset({"create_bank", "delete_bank", "recall"}),
+    )
+
+    assert tools == frozenset({"create_bank", "delete_bank", "recall"})
+
+
+@pytest.mark.asyncio
 async def test_filter_bank_list_limits_admin_api_key_selected_scope() -> None:
     validator = SupabaseAuthorizationExtension(_resolver_config())
     validator.resolver.resolve = AsyncMock(
@@ -519,9 +871,17 @@ async def test_filter_bank_list_limits_admin_api_key_selected_scope() -> None:
             user_id=None,
             api_key_id="key_123",
             role="admin",
-            allowed_bank_ids=frozenset({"bank_a"}),
-            allowed_bank_internal_ids=frozenset({"internal_a"}),
             allowed_operations=frozenset({"retain", "recall", "reflect"}),
+            operation_bank_scope_modes={
+                "retain": "selected",
+                "recall": "selected",
+                "reflect": "selected",
+            },
+            operation_bank_internal_ids={
+                "retain": frozenset({"internal_a"}),
+                "recall": frozenset({"internal_a"}),
+                "reflect": frozenset({"internal_a"}),
+            },
             tenant_config={},
         )
     )  # type: ignore[method-assign]

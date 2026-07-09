@@ -20,7 +20,13 @@ from hindsight_api.extensions.operation_validator import (
     BankListContext,
     BankListResult,
     BankReadContext,
+    BankReadOperation,
     BankWriteContext,
+    BankWriteOperation,
+    ConsolidateContext,
+    CreateBankContext,
+    MentalModelGetContext,
+    MentalModelRefreshContext,
     OperationValidatorExtension,
     RecallContext,
     ReflectContext,
@@ -29,6 +35,8 @@ from hindsight_api.extensions.operation_validator import (
 )
 from hindsight_api.extensions.tenant import AuthenticationError, Tenant, TenantContext, TenantExtension
 from hindsight_api.models import RequestContext
+
+from .supabase_authz_operations import operation_names_for_scope, operation_names_for_source
 
 logger = logging.getLogger(__name__)
 
@@ -42,84 +50,14 @@ _UUID_OR_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _JWT_SHAPE_RE = re.compile(r"^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$")
 _SCHEMA_PREFIX_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
-BANK_READ_OPERATIONS = frozenset(
-    {
-        "get_bank_config",
-        "get_bank_profile",
-        "get_bank_stats",
-        "get_chunk",
-        "get_directive",
-        "get_document",
-        "get_entity",
-        "get_entity_graph",
-        "get_entity_state",
-        "get_graph_data",
-        "get_memories_timeseries",
-        "get_memory_unit",
-        "get_observation_history",
-        "get_operation_status",
-        "list_directives",
-        "list_document_chunks",
-        "list_documents",
-        "list_entities",
-        "list_memory_units",
-        "list_mental_models",
-        "list_mental_model_tags",
-        "list_observation_scopes",
-        "list_operations",
-        "list_tags",
-        "list_webhook_deliveries",
-        "list_webhooks",
-        "recall",
-        "reflect",
-    }
-)
-
-BANK_WRITE_OPERATIONS = frozenset(
-    {
-        "cancel_operation",
-        "clear_mental_model",
-        "clear_observations",
-        "clear_observations_for_memory",
-        "create_directive",
-        "create_mental_model",
-        "create_webhook",
-        "delete_bank",
-        "delete_directive",
-        "delete_document",
-        "delete_mental_model",
-        "delete_webhook",
-        "merge_bank_mission",
-        "reprocess_document",
-        "reset_bank_config",
-        "retry_operation",
-        "retry_failed_consolidation",
-        "run_consolidation",
-        "set_bank_mission",
-        "submit_async_consolidation",
-        "submit_async_graph_maintenance",
-        "update_bank",
-        "update_bank_config",
-        "update_bank_disposition",
-        "update_directive",
-        "update_document",
-        "update_memory_unit",
-        "update_mental_model",
-        "update_webhook",
-        "retain",
-    }
-)
-
-ALL_BANK_OPERATIONS = BANK_READ_OPERATIONS | BANK_WRITE_OPERATIONS
-MEMBER_BANK_OPERATIONS = BANK_READ_OPERATIONS | frozenset(
-    {
-        "create_mental_model",
-        "retain",
-        "update_document",
-        "update_memory_unit",
-        "update_mental_model",
-    }
-)
+UNSCOPED_DATAPLANE_OPERATIONS = operation_names_for_scope("unscoped")
+BANK_READ_OPERATIONS = operation_names_for_source("bank_read")
+BANK_WRITE_OPERATIONS = operation_names_for_source("bank_write")
+SPECIAL_BANK_OPERATIONS = operation_names_for_source("special_bank")
+ALL_BANK_OPERATIONS = operation_names_for_scope("bank")
+ALL_DATAPLANE_OPERATIONS = ALL_BANK_OPERATIONS | UNSCOPED_DATAPLANE_OPERATIONS
+BankOperationName = str | BankReadOperation | BankWriteOperation
+MEMBER_BANK_OPERATIONS = ALL_BANK_OPERATIONS
 
 
 class OrganizationRow(BaseModel):
@@ -152,7 +90,6 @@ class ApiKeyRow(BaseModel):
     created_by_user_id: str | None = None
     role: Literal["owner", "admin", "member"] = "member"
     allowed_operations: list[str] | None = None
-    bank_scope_mode: Literal["all", "selected"] = "all"
     revoked_at: str | None = None
     expires_at: str | None = None
 
@@ -166,13 +103,33 @@ class ApiKeyRow(BaseModel):
         return None
 
 
-class ApiKeyBankScopeRow(BaseModel):
-    """Bank scope row for a Hindsight scoped API key."""
+class ApiKeyOperationScopeRow(BaseModel):
+    """Effective bank scope mode row for one API key operation."""
 
     model_config = ConfigDict(extra="ignore")
 
+    operation: str
+    bank_scope_mode: Literal["all", "selected"] = "all"
+
+
+class ApiKeyOperationBankScopeRow(BaseModel):
+    """Selected bank scope row for one API key operation."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    operation: str
     bank_id: str
     bank_internal_id: str | None = None
+
+
+class ApiKeyCreatedBankRow(BaseModel):
+    """Bank ownership row for a Hindsight scoped API key."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    api_key_id: str
+    bank_id: str
+    bank_internal_id: str
 
 
 @dataclass(frozen=True)
@@ -184,9 +141,9 @@ class CallerPolicy:
     user_id: str | None
     api_key_id: str | None
     role: Literal["owner", "admin", "member"]
-    allowed_bank_ids: frozenset[str] | None
-    allowed_bank_internal_ids: frozenset[str] | None
     allowed_operations: frozenset[str] | None
+    operation_bank_scope_modes: dict[str, Literal["all", "selected"]] | None = None
+    operation_bank_internal_ids: dict[str, frozenset[str]] | None = None
     tenant_config: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -273,8 +230,6 @@ class SupabasePolicyResolver:
             user_id=user_id,
             api_key_id=None,
             role=member.role,
-            allowed_bank_ids=None,
-            allowed_bank_internal_ids=None,
             allowed_operations=_operations_for_role(member.role),
             tenant_config=organization.config,
         )
@@ -283,7 +238,7 @@ class SupabasePolicyResolver:
         key_hash = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
         rows = await self._rest_get(
             "hindsight_api_keys",
-            select="id,org_id,created_by_user_id,role,allowed_operations,bank_scope_mode,revoked_at,expires_at",
+            select="id,org_id,created_by_user_id,role,allowed_operations,revoked_at,expires_at",
             key_hash=f"eq.{key_hash}",
             revoked_at="is.null",
             limit="1",
@@ -299,22 +254,41 @@ class SupabasePolicyResolver:
             raise AuthenticationError("API key creator is no longer a member of the organization")
         creator_operations = _operations_for_role(creator_member.role)
         key_operations = (
-            frozenset(operation for operation in key.allowed_operations if operation in ALL_BANK_OPERATIONS)
+            frozenset(operation for operation in key.allowed_operations if operation in ALL_DATAPLANE_OPERATIONS)
             if key.allowed_operations is not None
             else creator_operations
         )
         effective_operations = key_operations & creator_operations
-        allowed_bank_ids: frozenset[str] | None = None
-        allowed_bank_internal_ids: frozenset[str] | None = None
-        if key.bank_scope_mode == "selected":
-            scope_rows = await self._rest_get(
-                "hindsight_api_key_bank_scopes",
-                select="bank_id,bank_internal_id",
+        operation_scope_modes: dict[str, Literal["all", "selected"]] = {}
+        operation_bank_internal_ids: dict[str, frozenset[str]] = {}
+        scope_rows = await self._rest_get(
+            "hindsight_api_key_operation_scopes",
+            select="operation,bank_scope_mode",
+            api_key_id=f"eq.{key.id}",
+        )
+        operation_scopes = TypeAdapter(list[ApiKeyOperationScopeRow]).validate_python(scope_rows)
+        operation_scope_modes = {
+            scope.operation: scope.bank_scope_mode
+            for scope in operation_scopes
+            if scope.operation in effective_operations
+        }
+        selected_operations = [operation for operation, mode in operation_scope_modes.items() if mode == "selected"]
+        if selected_operations:
+            bank_scope_rows = await self._rest_get(
+                "hindsight_api_key_operation_bank_scopes",
+                select="operation,bank_id,bank_internal_id",
                 api_key_id=f"eq.{key.id}",
+                operation=f"in.({','.join(selected_operations)})",
             )
-            scopes = TypeAdapter(list[ApiKeyBankScopeRow]).validate_python(scope_rows)
-            allowed_bank_ids = frozenset(scope.bank_id for scope in scopes)
-            allowed_bank_internal_ids = frozenset(scope.bank_internal_id for scope in scopes if scope.bank_internal_id)
+            bank_scopes = TypeAdapter(list[ApiKeyOperationBankScopeRow]).validate_python(bank_scope_rows)
+            by_operation: dict[str, set[str]] = {}
+            for scope in bank_scopes:
+                if scope.operation not in effective_operations or not scope.bank_internal_id:
+                    continue
+                by_operation.setdefault(scope.operation, set()).add(scope.bank_internal_id)
+            operation_bank_internal_ids = {
+                operation: frozenset(internal_ids) for operation, internal_ids in by_operation.items()
+            }
         organization = await self._get_organization(key.org_id)
         if organization is None:
             raise AuthenticationError("API key organization does not exist")
@@ -324,9 +298,9 @@ class SupabasePolicyResolver:
             user_id=None,
             api_key_id=key.id,
             role=creator_member.role,
-            allowed_bank_ids=allowed_bank_ids,
-            allowed_bank_internal_ids=allowed_bank_internal_ids,
             allowed_operations=effective_operations,
+            operation_bank_scope_modes=operation_scope_modes,
+            operation_bank_internal_ids=operation_bank_internal_ids,
             tenant_config=organization.config,
         )
 
@@ -377,6 +351,41 @@ class SupabasePolicyResolver:
             return
         if response.status_code >= 400:
             raise AuthenticationError(f"Supabase policy update failed: {response.status_code}")
+
+    async def record_api_key_created_bank(
+        self,
+        *,
+        api_key_id: str,
+        bank_id: str,
+        bank_internal_id: str,
+    ) -> None:
+        await self._rest_post(
+            "hindsight_api_key_created_banks",
+            {
+                "api_key_id": api_key_id,
+                "bank_id": bank_id,
+                "bank_internal_id": bank_internal_id,
+            },
+        )
+
+    async def list_api_key_created_bank_internal_ids(self, api_key_id: str) -> frozenset[str]:
+        rows = await self._rest_get(
+            "hindsight_api_key_created_banks",
+            select="api_key_id,bank_id,bank_internal_id",
+            api_key_id=f"eq.{api_key_id}",
+        )
+        created_banks = TypeAdapter(list[ApiKeyCreatedBankRow]).validate_python(rows)
+        return frozenset(row.bank_internal_id for row in created_banks)
+
+    async def api_key_owns_bank_internal_id(self, api_key_id: str, bank_internal_id: str) -> bool:
+        rows = await self._rest_get(
+            "hindsight_api_key_created_banks",
+            select="api_key_id,bank_id,bank_internal_id",
+            api_key_id=f"eq.{api_key_id}",
+            bank_internal_id=f"eq.{bank_internal_id}",
+            limit="1",
+        )
+        return bool(TypeAdapter(list[ApiKeyCreatedBankRow]).validate_python(rows))
 
     async def _try_init_jwks(self) -> None:
         try:
@@ -498,7 +507,11 @@ def _is_past_timestamp(value: str) -> bool:
 def _operations_for_role(role: Literal["owner", "admin", "member"]) -> frozenset[str]:
     if role == "member":
         return MEMBER_BANK_OPERATIONS
-    return ALL_BANK_OPERATIONS
+    return ALL_DATAPLANE_OPERATIONS
+
+
+def _operation_name(operation: BankOperationName) -> str:
+    return operation.value if isinstance(operation, BankReadOperation | BankWriteOperation) else str(operation)
 
 
 class SupabaseOrgTenantExtension(TenantExtension):
@@ -529,7 +542,7 @@ class SupabaseOrgTenantExtension(TenantExtension):
         context.subject_type = "user" if policy.user_id is not None else "api_key"
         context.api_key_id = policy.api_key_id
         context.role = policy.role
-        context.allowed_bank_ids = sorted(policy.allowed_bank_ids) if policy.allowed_bank_ids is not None else None
+        context.allowed_bank_ids = None
         context.allowed_operations = (
             sorted(policy.allowed_operations) if policy.allowed_operations is not None else None
         )
@@ -580,13 +593,22 @@ class SupabaseAuthorizationExtension(OperationValidatorExtension):
         await self.resolver.on_shutdown()
 
     async def validate_retain(self, ctx: RetainContext) -> ValidationResult:
-        return await self._validate_bank_operation(ctx.request_context, ctx.bank_id, "retain", write=True)
+        return await self._validate_special_bank_operation(ctx.request_context, ctx.bank_id, "retain")
 
     async def validate_recall(self, ctx: RecallContext) -> ValidationResult:
-        return await self._validate_bank_operation(ctx.request_context, ctx.bank_id, "recall", write=False)
+        return await self._validate_special_bank_operation(ctx.request_context, ctx.bank_id, "recall")
 
     async def validate_reflect(self, ctx: ReflectContext) -> ValidationResult:
-        return await self._validate_bank_operation(ctx.request_context, ctx.bank_id, "reflect", write=False)
+        return await self._validate_special_bank_operation(ctx.request_context, ctx.bank_id, "reflect")
+
+    async def validate_consolidate(self, ctx: ConsolidateContext) -> ValidationResult:
+        return await self._validate_special_bank_operation(ctx.request_context, ctx.bank_id, "consolidate")
+
+    async def validate_mental_model_get(self, ctx: MentalModelGetContext) -> ValidationResult:
+        return await self._validate_special_bank_operation(ctx.request_context, ctx.bank_id, "mental_model_get")
+
+    async def validate_mental_model_refresh(self, ctx: MentalModelRefreshContext) -> ValidationResult:
+        return await self._validate_special_bank_operation(ctx.request_context, ctx.bank_id, "mental_model_refresh")
 
     async def validate_bank_read(self, ctx: BankReadContext) -> ValidationResult:
         return await self._validate_bank_operation(ctx.request_context, ctx.bank_id, ctx.operation, write=False)
@@ -594,13 +616,49 @@ class SupabaseAuthorizationExtension(OperationValidatorExtension):
     async def validate_bank_write(self, ctx: BankWriteContext) -> ValidationResult:
         return await self._validate_bank_operation(ctx.request_context, ctx.bank_id, ctx.operation, write=True)
 
+    async def validate_create_bank(self, ctx: CreateBankContext) -> ValidationResult:
+        policy = await self._resolve_policy(ctx.request_context)
+        allowed_operations = policy.allowed_operations or _operations_for_role(policy.role)
+        if "create_bank" not in allowed_operations:
+            return ValidationResult.reject("Caller is not allowed to create banks", status_code=403)
+        return ValidationResult.accept()
+
+    async def record_api_key_created_bank(self, bank_id: str, request_context: RequestContext) -> None:
+        policy = await self._resolve_policy(request_context)
+        if policy.api_key_id is None:
+            return
+        allowed_operations = policy.allowed_operations or _operations_for_role(policy.role)
+        if "create_bank" not in allowed_operations:
+            return
+        bank_internal_id = await self._get_bank_internal_id(bank_id)
+        if not bank_internal_id:
+            return
+        await self.resolver.record_api_key_created_bank(
+            api_key_id=policy.api_key_id,
+            bank_id=bank_id,
+            bank_internal_id=bank_internal_id,
+        )
+
     async def filter_bank_list(self, ctx: BankListContext) -> BankListResult:
         policy = await self._resolve_policy(ctx.request_context)
-        if policy.allowed_bank_ids is None:
+        if policy.operation_bank_scope_modes is None:
             return BankListResult(banks=ctx.banks)
-        allowed_internal_ids = policy.allowed_bank_internal_ids or frozenset()
-        filtered = [bank for bank in ctx.banks if str(bank.get("internal_id") or "") in allowed_internal_ids]
+        visible_internal_ids = await self._get_visible_bank_internal_ids(policy)
+        if visible_internal_ids is None:
+            return BankListResult(banks=ctx.banks)
+        filtered = [bank for bank in ctx.banks if str(bank.get("internal_id") or "") in visible_internal_ids]
         return BankListResult(banks=filtered)
+
+    async def _get_visible_bank_internal_ids(self, policy: CallerPolicy) -> frozenset[str] | None:
+        if policy.operation_bank_scope_modes is None:
+            return None
+        if any(
+            mode == "all" for operation, mode in policy.operation_bank_scope_modes.items() if operation != "create_bank"
+        ):
+            return None
+        owned_internal_ids = await self._get_owned_bank_internal_ids(policy)
+        selected_internal_ids = frozenset().union(*(policy.operation_bank_internal_ids or {}).values())
+        return selected_internal_ids | owned_internal_ids
 
     async def filter_mcp_tools(
         self,
@@ -609,21 +667,48 @@ class SupabaseAuthorizationExtension(OperationValidatorExtension):
         tools: frozenset[str],
     ) -> frozenset[str]:
         policy = await self._resolve_policy(request_context)
-        if not await self._can_access_bank_for_operation(policy, bank_id, "get_bank_profile", request_context):
-            return frozenset()
-        if policy.allowed_operations is None:
+        if await self._can_access_owned_bank(policy, bank_id):
             return tools
-        return frozenset(tool for tool in tools if self._tool_allowed(tool, policy.allowed_operations))
+        if policy.allowed_operations is None:
+            allowed_tools = tools
+        else:
+            allowed_tools = frozenset(tool for tool in tools if self._tool_allowed(tool, policy.allowed_operations))
+        bank_tools = allowed_tools - frozenset({"create_bank"})
+        create_tools = allowed_tools & frozenset({"create_bank"})
+        if not bank_tools:
+            return create_tools
+        if not await self._can_access_bank_for_operation(policy, bank_id, "get_bank_profile", request_context):
+            return create_tools
+        return allowed_tools
 
     async def _validate_bank_operation(
         self,
         request_context: RequestContext,
         bank_id: str,
-        operation: str,
+        operation: BankOperationName,
         *,
         write: bool,
     ) -> ValidationResult:
+        operation_name = _operation_name(operation)
         policy = await self._resolve_policy(request_context)
+        if await self._can_access_owned_bank(policy, bank_id):
+            return ValidationResult.accept()
+        allowed_operations = policy.allowed_operations or _operations_for_role(policy.role)
+        if operation_name not in allowed_operations:
+            return ValidationResult.reject("Caller is not allowed to perform this operation", status_code=403)
+        if not await self._can_access_bank_for_operation(policy, bank_id, operation_name, request_context):
+            return ValidationResult.reject("Caller is not allowed to access this bank", status_code=403)
+        return ValidationResult.accept()
+
+    async def _validate_special_bank_operation(
+        self,
+        request_context: RequestContext,
+        bank_id: str,
+        operation: str,
+    ) -> ValidationResult:
+        policy = await self._resolve_policy(request_context)
+        if await self._can_access_owned_bank(policy, bank_id):
+            return ValidationResult.accept()
         allowed_operations = policy.allowed_operations or _operations_for_role(policy.role)
         if operation not in allowed_operations:
             return ValidationResult.reject("Caller is not allowed to perform this operation", status_code=403)
@@ -643,30 +728,41 @@ class SupabaseAuthorizationExtension(OperationValidatorExtension):
         self,
         policy: CallerPolicy,
         bank_id: str,
-        operation: str,
+        operation: BankOperationName,
         request_context: RequestContext,
     ) -> bool:
-        if policy.allowed_bank_ids is None:
+        operation_name = _operation_name(operation)
+        if policy.operation_bank_scope_modes is None:
+            return True
+        mode = policy.operation_bank_scope_modes.get(operation_name)
+        if mode is None:
+            return False
+        if mode == "all":
             return True
         current_internal_id = await self._get_bank_internal_id(bank_id)
-        if current_internal_id and current_internal_id in (policy.allowed_bank_internal_ids or frozenset()):
-            return True
-        if policy.api_key_id is None or operation != "retain":
+        return bool(
+            current_internal_id
+            and current_internal_id in (policy.operation_bank_internal_ids or {}).get(operation_name, frozenset())
+        )
+
+    async def _can_access_owned_bank(self, policy: CallerPolicy, bank_id: str) -> bool:
+        if policy.api_key_id is None:
             return False
-        if current_internal_id:
+        allowed_operations = policy.allowed_operations or _operations_for_role(policy.role)
+        if "create_bank" not in allowed_operations:
             return False
-        current_internal_id = await self._ensure_bank_exists_and_get_internal_id(bank_id, request_context)
+        current_internal_id = await self._get_bank_internal_id(bank_id)
         if not current_internal_id:
             return False
-        await self.resolver._rest_post(
-            "hindsight_api_key_bank_scopes",
-            {
-                "api_key_id": policy.api_key_id,
-                "bank_id": bank_id,
-                "bank_internal_id": current_internal_id,
-            },
-        )
-        return True
+        return await self.resolver.api_key_owns_bank_internal_id(policy.api_key_id, current_internal_id)
+
+    async def _get_owned_bank_internal_ids(self, policy: CallerPolicy) -> frozenset[str]:
+        if policy.api_key_id is None:
+            return frozenset()
+        allowed_operations = policy.allowed_operations or _operations_for_role(policy.role)
+        if "create_bank" not in allowed_operations:
+            return frozenset()
+        return await self.resolver.list_api_key_created_bank_internal_ids(policy.api_key_id)
 
     async def _get_bank_internal_id(self, bank_id: str) -> str | None:
         from hindsight_api.engine.retain import bank_utils
@@ -696,7 +792,7 @@ class SupabaseAuthorizationExtension(OperationValidatorExtension):
         if tool_name == "delete_bank":
             return "delete_bank" in allowed_operations
         if tool_name == "create_bank":
-            return "update_bank" in allowed_operations
+            return "create_bank" in allowed_operations
         if tool_name.startswith("reflect"):
             return "reflect" in allowed_operations
         if tool_name.startswith("recall") or tool_name in {"list_banks", "get_bank"}:

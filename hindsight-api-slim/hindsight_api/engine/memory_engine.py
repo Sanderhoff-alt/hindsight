@@ -3837,7 +3837,7 @@ class MemoryEngine(MemoryEngineInterface):
             )
             await self._validate_operation(self._operation_validator.validate_create_bank(ctx))
         resolved_config = await self._config_resolver.resolve_full_config(bank_id, request_context)
-        return await import_bank(
+        result = await import_bank(
             backend=backend,
             embeddings_model=self.embeddings,
             entity_resolver=self.entity_resolver,
@@ -3847,6 +3847,8 @@ class MemoryEngine(MemoryEngineInterface):
             target_bank_id=target_bank_id,
             include_history=include_history,
         )
+        await self._record_api_key_created_bank(result.bank_id, request_context)
+        return result
 
     async def import_documents_async(
         self,
@@ -6835,12 +6837,10 @@ class MemoryEngine(MemoryEngineInterface):
         """
         await self._authenticate_tenant(request_context)
         if self._operation_validator:
-            from hindsight_api.extensions import BankWriteContext, BankWriteOperation
+            from hindsight_api.extensions import ConsolidateContext
 
-            ctx = BankWriteContext(
-                bank_id=bank_id, operation=BankWriteOperation.RUN_CONSOLIDATION, request_context=request_context
-            )
-            await self._validate_operation(self._operation_validator.validate_bank_write(ctx))
+            ctx = ConsolidateContext(bank_id=bank_id, request_context=request_context)
+            await self._validate_operation(self._operation_validator.validate_consolidate(ctx))
 
         from .consolidation import run_consolidation_job
 
@@ -8730,8 +8730,25 @@ class MemoryEngine(MemoryEngineInterface):
 
         result = await bank_utils.get_or_create_bank_profile(backend, bank_id)
         if result.created:
+            await self._record_api_key_created_bank(bank_id, request_context)
             await self._apply_default_bank_template(bank_id, request_context)
         return result.created
+
+    async def _record_api_key_created_bank(
+        self,
+        bank_id: str,
+        request_context: "RequestContext",
+    ) -> None:
+        """Best-effort Supabase API-key ownership recording after bank creation."""
+        if not self._operation_validator:
+            return
+        record_created_bank = getattr(self._operation_validator, "record_api_key_created_bank", None)
+        if record_created_bank is None:
+            return
+        try:
+            await record_created_bank(bank_id, request_context)
+        except Exception as exc:
+            logger.warning("API-key-created bank ownership recording failed (non-fatal): %s", exc)
 
     async def _apply_default_bank_template(
         self,
@@ -10516,6 +10533,7 @@ class MemoryEngine(MemoryEngineInterface):
         # Best-effort default-template hook runs after the bank-create commits
         # (it opens its own connections and can create pinned models).
         if created:
+            await self._record_api_key_created_bank(bank_id, request_context)
             await self._apply_default_bank_template(bank_id, request_context)
 
         logger.info(f"[MENTAL_MODELS] Created pinned mental model '{name}' for bank {bank_id}")
@@ -12112,6 +12130,7 @@ class MemoryEngine(MemoryEngineInterface):
 
         # Best-effort default-template hook runs after the bank-create commits.
         if created:
+            await self._record_api_key_created_bank(bank_id, request_context)
             await self._apply_default_bank_template(bank_id, request_context)
 
         return dict(row) if row is not None else None
@@ -12612,6 +12631,7 @@ class MemoryEngine(MemoryEngineInterface):
 
         # Best-effort default-template hook runs after the bank-create commits.
         if created:
+            await self._record_api_key_created_bank(bank_id, request_context)
             await self._apply_default_bank_template(bank_id, request_context)
 
         logger.info(f"Created parent operation {parent_operation_id} with {len(sub_batches)} child sub-batch(es)")

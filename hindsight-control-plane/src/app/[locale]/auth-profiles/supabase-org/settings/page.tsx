@@ -17,6 +17,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { withBasePath } from "@/lib/base-path";
+import {
+  API_KEY_OPERATIONS,
+  BANK_SCOPED_OPERATIONS,
+  OPERATION_ACTIONS,
+  OPERATION_GROUPS,
+  UNSCOPED_DATAPLANE_OPERATIONS,
+} from "@/lib/supabase-org/operations";
+import type { ApiKeyOperation as ApiKeyOperationName } from "@/lib/supabase-org/operations";
 
 type Role = "owner" | "admin" | "member";
 
@@ -46,8 +54,15 @@ interface ApiKeySummary {
   id: string;
   name: string;
   allowed_operations?: string[] | null;
-  bank_scope_mode?: "all" | "selected";
-  scoped_bank_ids?: string[];
+  operation_scopes?: Array<{
+    operation: string;
+    bank_scope_mode: "all" | "selected";
+    scoped_bank_ids?: string[];
+  }>;
+  owned_banks?: Array<{
+    bank_id: string;
+    name?: string | null;
+  }>;
   revoked_at?: string | null;
   created_at: string;
   can_view_secret?: boolean;
@@ -67,76 +82,10 @@ interface VersionInfo {
 }
 
 const API_BASE = "/api/auth-profiles/supabase-org";
-const READ_OPERATIONS = [
-  "get_bank_config",
-  "get_bank_profile",
-  "get_bank_stats",
-  "get_chunk",
-  "get_directive",
-  "get_document",
-  "get_entity",
-  "get_entity_graph",
-  "get_entity_state",
-  "get_graph_data",
-  "get_memories_timeseries",
-  "get_memory_unit",
-  "get_observation_history",
-  "get_operation_status",
-  "list_directives",
-  "list_document_chunks",
-  "list_documents",
-  "list_entities",
-  "list_memory_units",
-  "list_mental_models",
-  "list_mental_model_tags",
-  "list_observation_scopes",
-  "list_operations",
-  "list_tags",
-  "list_webhook_deliveries",
-  "list_webhooks",
-  "recall",
-  "reflect",
-] as const;
-const WRITE_OPERATIONS = [
-  "cancel_operation",
-  "clear_mental_model",
-  "clear_observations",
-  "clear_observations_for_memory",
-  "create_directive",
-  "create_mental_model",
-  "create_webhook",
-  "delete_bank",
-  "delete_directive",
-  "delete_document",
-  "delete_mental_model",
-  "delete_webhook",
-  "merge_bank_mission",
-  "reprocess_document",
-  "reset_bank_config",
-  "retain",
-  "retry_operation",
-  "retry_failed_consolidation",
-  "run_consolidation",
-  "set_bank_mission",
-  "submit_async_consolidation",
-  "submit_async_graph_maintenance",
-  "update_bank",
-  "update_bank_config",
-  "update_bank_disposition",
-  "update_directive",
-  "update_document",
-  "update_memory_unit",
-  "update_mental_model",
-  "update_webhook",
-] as const;
-const MEMBER_WRITE_OPERATIONS = [
-  "create_mental_model",
-  "retain",
-  "update_document",
-  "update_memory_unit",
-  "update_mental_model",
-] as const;
-type ApiKeyOperationName = (typeof READ_OPERATIONS)[number] | (typeof WRITE_OPERATIONS)[number];
+type BankScopeMode = "all" | "selected";
+type BankScopeSelection = { mode: BankScopeMode; bankIds: string[] };
+type OperationOverrideMap = Partial<Record<ApiKeyOperationName, BankScopeSelection>>;
+const BANK_SCOPED_GROUPS = OPERATION_GROUPS.filter((group) => group.bankScoped);
 const COPY: Record<string, string> = {
   organizationSettings: "Organization settings",
   noOrganizationSelected: "No organization selected",
@@ -150,6 +99,91 @@ const COPY: Record<string, string> = {
   keyName: "Key name",
   allAllowedOperations: "All allowed operations",
 };
+
+function buildOperationScopes(
+  operations: ApiKeyOperationName[],
+  groupScopes: Record<string, BankScopeSelection>,
+  operationOverrides: OperationOverrideMap,
+  excludedBankIds: readonly string[] = []
+) {
+  return operations.map((operation) => ({
+    operation,
+    bank_scope_mode: UNSCOPED_DATAPLANE_OPERATIONS.includes(operation)
+      ? "all"
+      : scopeForOperation(operation, groupScopes, operationOverrides).mode,
+    bank_ids: UNSCOPED_DATAPLANE_OPERATIONS.includes(operation)
+      ? null
+      : selectedBankIdsForScope(
+          scopeForOperation(operation, groupScopes, operationOverrides),
+          excludedBankIds
+        ),
+  }));
+}
+
+function createDefaultGroupScopes(): Record<string, BankScopeSelection> {
+  return Object.fromEntries(
+    BANK_SCOPED_GROUPS.flatMap((group) =>
+      group.sections
+        ? group.sections.map((section) => [
+            sectionScopeKey(group.id, section.id),
+            { mode: "all", bankIds: [] },
+          ])
+        : [[group.id, { mode: "all", bankIds: [] }]]
+    )
+  );
+}
+
+function groupForOperation(operation: ApiKeyOperationName) {
+  return OPERATION_GROUPS.find((group) => group.operations.includes(operation));
+}
+
+function sectionForOperation(operation: ApiKeyOperationName) {
+  const group = groupForOperation(operation);
+  return group?.sections?.find((section) => section.operations.includes(operation));
+}
+
+function sectionScopeKey(groupId: string, sectionId: string): string {
+  return `${groupId}.${sectionId}`;
+}
+
+function scopeKeyForOperation(operation: ApiKeyOperationName): string | null {
+  const group = groupForOperation(operation);
+  if (!group) return null;
+  const section = sectionForOperation(operation);
+  return section ? sectionScopeKey(group.id, section.id) : group.id;
+}
+
+function scopeForOperation(
+  operation: ApiKeyOperationName,
+  groupScopes: Record<string, BankScopeSelection>,
+  operationOverrides: OperationOverrideMap
+): BankScopeSelection {
+  const override = operationOverrides[operation];
+  if (override) return override;
+  const scopeKey = scopeKeyForOperation(operation);
+  return (scopeKey && groupScopes[scopeKey]) || { mode: "all", bankIds: [] };
+}
+
+function selectedBankIdsForScope(
+  scope: BankScopeSelection,
+  excludedBankIds: readonly string[] = []
+): string[] | null {
+  if (scope.mode !== "selected") return null;
+  const excluded = new Set(excludedBankIds);
+  return scope.bankIds.filter((bankId) => !excluded.has(bankId));
+}
+
+function summarizeApiKeyBankScopes(apiKey: ApiKeySummary): string {
+  const bankScopedOperations = (apiKey.operation_scopes ?? []).filter(
+    (scope) => !UNSCOPED_DATAPLANE_OPERATIONS.includes(scope.operation)
+  );
+  if (bankScopedOperations.length === 0) return "no bank scopes";
+  if (bankScopedOperations.some((scope) => scope.bank_scope_mode === "all")) return "all banks";
+  const selectedBankIds = new Set(
+    bankScopedOperations.flatMap((scope) => scope.scoped_bank_ids ?? [])
+  );
+  return `${selectedBankIds.size} banks`;
+}
 
 export default function SettingsPage() {
   const t = (key: string) => COPY[key] || key;
@@ -166,8 +200,19 @@ export default function SettingsPage() {
   const [inviteRole, setInviteRole] = useState<Role>("member");
   const [apiKeyName, setApiKeyName] = useState("");
   const [apiKeyOperations, setApiKeyOperations] = useState<ApiKeyOperationName[]>([]);
-  const [apiKeyBankScopeMode, setApiKeyBankScopeMode] = useState<"all" | "selected">("all");
-  const [apiKeyBankIds, setApiKeyBankIds] = useState<string[]>([]);
+  const [apiKeyGroupScopes, setApiKeyGroupScopes] = useState<Record<string, BankScopeSelection>>(
+    () => createDefaultGroupScopes()
+  );
+  const [apiKeyOperationOverrides, setApiKeyOperationOverrides] = useState<OperationOverrideMap>(
+    {}
+  );
+  const [editingApiKeyId, setEditingApiKeyId] = useState<string | null>(null);
+  const [editApiKeyOperations, setEditApiKeyOperations] = useState<ApiKeyOperationName[]>([]);
+  const [editApiKeyGroupScopes, setEditApiKeyGroupScopes] = useState<
+    Record<string, BankScopeSelection>
+  >(() => createDefaultGroupScopes());
+  const [editApiKeyOperationOverrides, setEditApiKeyOperationOverrides] =
+    useState<OperationOverrideMap>({});
   const [newInviteLink, setNewInviteLink] = useState<string | null>(null);
   const [newApiKey, setNewApiKey] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -179,10 +224,7 @@ export default function SettingsPage() {
   const canAdmin = currentOrg?.role === "owner" || currentOrg?.role === "admin";
   const canOwner = currentOrg?.role === "owner";
   const availableApiKeyOperations = useMemo(
-    () =>
-      currentOrg?.role === "member"
-        ? [...READ_OPERATIONS, ...MEMBER_WRITE_OPERATIONS]
-        : [...READ_OPERATIONS, ...WRITE_OPERATIONS],
+    () => (currentOrg?.role === "member" ? [...BANK_SCOPED_OPERATIONS] : [...API_KEY_OPERATIONS]),
     [currentOrg?.role]
   );
 
@@ -317,15 +359,17 @@ export default function SettingsPage() {
       method: "POST",
       body: JSON.stringify({
         name: apiKeyName,
-        allowed_operations: apiKeyOperations,
-        bank_scope_mode: apiKeyBankScopeMode,
-        bank_ids: apiKeyBankScopeMode === "selected" ? apiKeyBankIds : null,
+        operation_scopes: buildOperationScopes(
+          apiKeyOperations,
+          apiKeyGroupScopes,
+          apiKeyOperationOverrides
+        ),
       }),
     });
     setApiKeyName("");
     setApiKeyOperations([...availableApiKeyOperations]);
-    setApiKeyBankScopeMode("all");
-    setApiKeyBankIds([]);
+    setApiKeyGroupScopes(createDefaultGroupScopes());
+    setApiKeyOperationOverrides({});
     setNewApiKey(response.api_key.key);
     await loadAll();
   }
@@ -338,11 +382,356 @@ export default function SettingsPage() {
     );
   }
 
-  function toggleApiKeyBank(bankId: string, checked: boolean) {
-    setApiKeyBankIds((bankIds) =>
+  function startEditingApiKey(apiKey: ApiKeySummary) {
+    const operations = (apiKey.allowed_operations ?? []).filter((operation) =>
+      availableApiKeyOperations.includes(operation as ApiKeyOperationName)
+    ) as ApiKeyOperationName[];
+    const ownedBankIds = new Set((apiKey.owned_banks ?? []).map((bank) => bank.bank_id));
+    const excludeOwnedBanks = (bankIds: string[] | undefined) =>
+      (bankIds ?? []).filter((bankId) => !ownedBankIds.has(bankId));
+    const nextGroupScopes = createDefaultGroupScopes();
+    const nextOperationOverrides: OperationOverrideMap = {};
+    for (const group of BANK_SCOPED_GROUPS) {
+      const scopeUnits = group.sections ?? [
+        { id: group.id, label: group.label, operations: group.operations },
+      ];
+      for (const scopeUnit of scopeUnits) {
+        const scopeKey = group.sections ? sectionScopeKey(group.id, scopeUnit.id) : group.id;
+        const unitOperations = scopeUnit.operations.filter((operation) =>
+          operations.includes(operation)
+        );
+        const firstScope = apiKey.operation_scopes?.find(
+          (scope) => scope.operation === unitOperations[0]
+        );
+        nextGroupScopes[scopeKey] = {
+          mode: firstScope?.bank_scope_mode ?? "all",
+          bankIds: excludeOwnedBanks(firstScope?.scoped_bank_ids),
+        };
+        for (const operation of unitOperations) {
+          const scope = apiKey.operation_scopes?.find((item) => item.operation === operation);
+          if (!scope || scope.operation === unitOperations[0]) continue;
+          const inherited = nextGroupScopes[scopeKey];
+          const bankIds = excludeOwnedBanks(scope.scoped_bank_ids);
+          const differs =
+            scope.bank_scope_mode !== inherited.mode ||
+            bankIds.join("\u0000") !== inherited.bankIds.join("\u0000");
+          if (differs) {
+            nextOperationOverrides[operation] = { mode: scope.bank_scope_mode, bankIds };
+          }
+        }
+      }
+    }
+    setEditingApiKeyId(apiKey.id);
+    setEditApiKeyOperations(operations);
+    setEditApiKeyGroupScopes(nextGroupScopes);
+    setEditApiKeyOperationOverrides(nextOperationOverrides);
+  }
+
+  function toggleEditApiKeyOperation(operation: ApiKeyOperationName, checked: boolean) {
+    setEditApiKeyOperations((operations) =>
       checked
-        ? Array.from(new Set([...bankIds, bankId]))
-        : bankIds.filter((item) => item !== bankId)
+        ? Array.from(new Set([...operations, operation]))
+        : operations.filter((item) => item !== operation)
+    );
+  }
+
+  async function saveApiKeyPermissions(event: FormEvent) {
+    event.preventDefault();
+    if (!editingApiKeyId) return;
+    const editingApiKey = apiKeys.find((apiKey) => apiKey.id === editingApiKeyId);
+    await fetchJson(`${API_BASE}/api-keys/${encodeURIComponent(editingApiKeyId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        operation_scopes: buildOperationScopes(
+          editApiKeyOperations,
+          editApiKeyGroupScopes,
+          editApiKeyOperationOverrides,
+          (editingApiKey?.owned_banks ?? []).map((bank) => bank.bank_id)
+        ),
+      }),
+    });
+    setEditingApiKeyId(null);
+    await loadAll();
+  }
+
+  function renderOperationGroups(
+    selectedOperations: ApiKeyOperationName[],
+    toggleOperation: (operation: ApiKeyOperationName, checked: boolean) => void,
+    setOperations: (operations: ApiKeyOperationName[]) => void,
+    groupScopes: Record<string, BankScopeSelection>,
+    setGroupScopes: (scopes: Record<string, BankScopeSelection>) => void,
+    operationOverrides: OperationOverrideMap,
+    setOperationOverrides: (overrides: OperationOverrideMap) => void,
+    ownedBanks?: ApiKeySummary["owned_banks"]
+  ) {
+    const availableSet = new Set<ApiKeyOperationName>(availableApiKeyOperations);
+    const ownedBankIds = new Set((ownedBanks ?? []).map((bank) => bank.bank_id));
+    const selectableBanks = banks.filter((bank) => {
+      const bankId = bank.bank_id || bank.id || "";
+      return bankId && !ownedBankIds.has(bankId);
+    });
+    const updateScope = (
+      currentScope: BankScopeSelection,
+      nextScope: Partial<BankScopeSelection>
+    ): BankScopeSelection => ({
+      mode: nextScope.mode ?? currentScope.mode,
+      bankIds: nextScope.bankIds ?? currentScope.bankIds,
+    });
+    const toggleBank = (scope: BankScopeSelection, bankId: string, checked: boolean) =>
+      updateScope(scope, {
+        bankIds: checked
+          ? Array.from(new Set([...scope.bankIds, bankId]))
+          : scope.bankIds.filter((item) => item !== bankId),
+      });
+    const renderBankPicker = (
+      scope: BankScopeSelection,
+      onScopeChange: (scope: BankScopeSelection) => void
+    ) =>
+      scope.mode === "selected" ? (
+        <div className="grid max-h-32 gap-2 overflow-y-auto pr-1 md:grid-cols-2">
+          {selectableBanks.length === 0 ? (
+            <span className="text-sm text-muted-foreground">
+              {banks.length === 0 ? "No banks yet" : "No non-owned banks available"}
+            </span>
+          ) : (
+            selectableBanks.map((bank) => {
+              const bankId = bank.bank_id || bank.id || "";
+              if (!bankId) return null;
+              return (
+                <label key={bankId} className="flex min-w-0 items-center gap-2 text-sm">
+                  <Checkbox
+                    checked={scope.bankIds.includes(bankId)}
+                    onCheckedChange={(checked) =>
+                      onScopeChange(toggleBank(scope, bankId, checked === true))
+                    }
+                  />
+                  <span className="truncate">{bank.name || bankId}</span>
+                </label>
+              );
+            })
+          )}
+        </div>
+      ) : null;
+    const renderOperationCards = (
+      operations: readonly ApiKeyOperationName[],
+      group: (typeof OPERATION_GROUPS)[number],
+      scopeKey: string
+    ) => (
+      <div className="grid gap-2 md:grid-cols-2">
+        {operations.map((operation) => (
+          <div key={operation} className="min-w-0 rounded border p-2">
+            <label className="flex min-w-0 items-center gap-2 text-sm">
+              <Checkbox
+                checked={selectedOperations.includes(operation)}
+                onCheckedChange={(checked) => toggleOperation(operation, checked === true)}
+              />
+              <span className="min-w-0 flex-1 truncate">{operation}</span>
+              <span className="shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted-foreground">
+                {OPERATION_ACTIONS[operation]}
+              </span>
+            </label>
+            {group.bankScoped && selectedOperations.includes(operation) && (
+              <div className="mt-2 space-y-2 pl-6">
+                <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Checkbox
+                    checked={Boolean(operationOverrides[operation])}
+                    onCheckedChange={(checked) => {
+                      const nextOverrides = { ...operationOverrides };
+                      if (checked === true) {
+                        nextOverrides[operation] = {
+                          ...(groupScopes[scopeKey] ?? { mode: "all", bankIds: [] }),
+                        };
+                      } else {
+                        delete nextOverrides[operation];
+                      }
+                      setOperationOverrides(nextOverrides);
+                    }}
+                  />
+                  <span>Override scope</span>
+                </label>
+                {operationOverrides[operation] && (
+                  <div className="space-y-2">
+                    <Select
+                      value={operationOverrides[operation]?.mode ?? "all"}
+                      onValueChange={(value) =>
+                        setOperationOverrides({
+                          ...operationOverrides,
+                          [operation]: updateScope(
+                            operationOverrides[operation] ?? { mode: "all", bankIds: [] },
+                            { mode: value as BankScopeMode }
+                          ),
+                        })
+                      }
+                    >
+                      <SelectTrigger className="h-8 w-36">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All current and future banks</SelectItem>
+                        <SelectItem value="selected">Selected banks only</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {renderBankPicker(
+                      operationOverrides[operation] ?? { mode: "all", bankIds: [] },
+                      (scope) =>
+                        setOperationOverrides({ ...operationOverrides, [operation]: scope })
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    );
+    const renderDefaultScope = (scopeKey: string) => (
+      <div className="space-y-2 rounded-md bg-muted/30 p-2">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs font-medium text-muted-foreground">Default scope</span>
+          <Select
+            value={groupScopes[scopeKey]?.mode ?? "all"}
+            onValueChange={(value) =>
+              setGroupScopes({
+                ...groupScopes,
+                [scopeKey]: updateScope(groupScopes[scopeKey] ?? { mode: "all", bankIds: [] }, {
+                  mode: value as BankScopeMode,
+                }),
+              })
+            }
+          >
+            <SelectTrigger className="h-8 w-36">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All current and future banks</SelectItem>
+              <SelectItem value="selected">Selected banks only</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="text-xs text-muted-foreground">
+          {groupScopes[scopeKey]?.mode === "selected"
+            ? "Applies only to the selected banks."
+            : "Applies to every current bank and any bank created later."}
+        </div>
+        {renderBankPicker(groupScopes[scopeKey] ?? { mode: "all", bankIds: [] }, (scope) =>
+          setGroupScopes({ ...groupScopes, [scopeKey]: scope })
+        )}
+      </div>
+    );
+    return (
+      <div className="space-y-3">
+        {OPERATION_GROUPS.map((group) => {
+          const operations = group.operations.filter((operation) => availableSet.has(operation));
+          if (operations.length === 0) return null;
+          const selectedCount = operations.filter((operation) =>
+            selectedOperations.includes(operation)
+          ).length;
+          const singleUnscopedOperation = !group.bankScoped && operations.length === 1;
+          const operation = operations[0];
+          const showOwnedBanks =
+            singleUnscopedOperation && operation === "create_bank" && ownedBanks;
+          return (
+            <div key={group.id} className="rounded-md border p-3">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                {singleUnscopedOperation ? (
+                  <label className="flex min-w-0 items-center gap-2 text-sm font-medium">
+                    <Checkbox
+                      checked={selectedOperations.includes(operation)}
+                      onCheckedChange={(checked) => toggleOperation(operation, checked === true)}
+                    />
+                    <span>{group.label}</span>
+                  </label>
+                ) : (
+                  <>
+                    <span className="text-sm font-medium">
+                      {group.label} ({selectedCount}/{operations.length})
+                    </span>
+                    <div className="flex gap-1">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() =>
+                          setOperations(Array.from(new Set([...selectedOperations, ...operations])))
+                        }
+                      >
+                        All
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() =>
+                          setOperations(
+                            selectedOperations.filter(
+                              (operation) => !operations.includes(operation)
+                            )
+                          )
+                        }
+                      >
+                        None
+                      </Button>
+                    </div>
+                  </>
+                )}
+              </div>
+              {showOwnedBanks ? (
+                <div className="mt-2 space-y-1 pl-6">
+                  <div className="text-xs font-medium text-muted-foreground">Created banks</div>
+                  {ownedBanks.length > 0 ? (
+                    <div className="flex flex-wrap gap-1">
+                      {ownedBanks.map((ownedBank) => {
+                        const bank = banks.find(
+                          (candidate) =>
+                            candidate.bank_id === ownedBank.bank_id ||
+                            candidate.id === ownedBank.bank_id
+                        );
+                        return (
+                          <span
+                            key={ownedBank.bank_id}
+                            className="max-w-48 truncate rounded border px-1.5 py-0.5 text-xs text-muted-foreground"
+                          >
+                            {ownedBank.name || bank?.name || ownedBank.bank_id}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="text-xs text-muted-foreground">
+                      No banks created by this key
+                    </div>
+                  )}
+                </div>
+              ) : null}
+              {group.bankScoped && !group.sections && (
+                <div className="mb-3">{renderDefaultScope(group.id)}</div>
+              )}
+              {!singleUnscopedOperation && group.sections ? (
+                <div className="space-y-3">
+                  {group.sections.map((section) => {
+                    const sectionOperations = section.operations.filter((operation) =>
+                      operations.includes(operation)
+                    );
+                    if (sectionOperations.length === 0) return null;
+                    const scopeKey = sectionScopeKey(group.id, section.id);
+                    return (
+                      <div key={section.label} className="space-y-2">
+                        <div className="text-xs font-medium text-muted-foreground">
+                          {section.label}
+                        </div>
+                        {renderDefaultScope(scopeKey)}
+                        {renderOperationCards(sectionOperations, group, scopeKey)}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : !singleUnscopedOperation ? (
+                renderOperationCards(operations, group, group.id)
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
     );
   }
 
@@ -581,64 +970,17 @@ export default function SettingsPage() {
                         </Button>
                       </div>
                     </div>
-                    <div className="grid max-h-56 gap-2 overflow-y-auto pr-1 md:grid-cols-2">
-                      {availableApiKeyOperations.map((operation) => (
-                        <label key={operation} className="flex min-w-0 items-center gap-2 text-sm">
-                          <Checkbox
-                            checked={apiKeyOperations.includes(operation)}
-                            onCheckedChange={(checked) =>
-                              toggleApiKeyOperation(operation, checked === true)
-                            }
-                          />
-                          <span className="truncate">{operation}</span>
-                        </label>
-                      ))}
+                    <div className="max-h-72 overflow-y-auto pr-1">
+                      {renderOperationGroups(
+                        apiKeyOperations,
+                        toggleApiKeyOperation,
+                        setApiKeyOperations,
+                        apiKeyGroupScopes,
+                        setApiKeyGroupScopes,
+                        apiKeyOperationOverrides,
+                        setApiKeyOperationOverrides
+                      )}
                     </div>
-                  </div>
-                  <div className="rounded-md border p-3">
-                    <div className="mb-2 flex items-center justify-between gap-2">
-                      <span className="text-sm font-medium">Banks</span>
-                      <Select
-                        value={apiKeyBankScopeMode}
-                        onValueChange={(value) =>
-                          setApiKeyBankScopeMode(value as "all" | "selected")
-                        }
-                      >
-                        <SelectTrigger className="w-36">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="all">All banks</SelectItem>
-                          <SelectItem value="selected">Selected</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    {apiKeyBankScopeMode === "selected" && (
-                      <div className="grid max-h-40 gap-2 overflow-y-auto pr-1 md:grid-cols-2">
-                        {banks.length === 0 ? (
-                          <span className="text-sm text-muted-foreground">No banks yet</span>
-                        ) : (
-                          banks.map((bank) => {
-                            const bankId = bank.bank_id || bank.id || "";
-                            if (!bankId) return null;
-                            return (
-                              <label
-                                key={bankId}
-                                className="flex min-w-0 items-center gap-2 text-sm"
-                              >
-                                <Checkbox
-                                  checked={apiKeyBankIds.includes(bankId)}
-                                  onCheckedChange={(checked) =>
-                                    toggleApiKeyBank(bankId, checked === true)
-                                  }
-                                />
-                                <span className="truncate">{bank.name || bankId}</span>
-                              </label>
-                            );
-                          })
-                        )}
-                      </div>
-                    )}
                   </div>
                 </form>
                 {newApiKey && (
@@ -666,15 +1008,36 @@ export default function SettingsPage() {
                             ? `${apiKey.allowed_operations.length} operations`
                             : t("allAllowedOperations")}
                           {" · "}
-                          {apiKey.bank_scope_mode === "selected"
-                            ? `${apiKey.scoped_bank_ids?.length ?? 0} banks`
-                            : "all banks"}
+                          {summarizeApiKeyBankScopes(apiKey)}
+                          {apiKey.owned_banks?.length
+                            ? ` · ${apiKey.owned_banks.length} owned`
+                            : ""}
                         </div>
+                        {apiKey.owned_banks?.length ? (
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {apiKey.owned_banks.map((bank) => (
+                              <span
+                                key={bank.bank_id}
+                                className="max-w-48 truncate rounded border px-1.5 py-0.5 text-xs text-muted-foreground"
+                              >
+                                {bank.name || bank.bank_id}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
                       </div>
                       <span className="text-sm text-muted-foreground">
                         {apiKey.revoked_at ? "revoked" : "active"}
                       </span>
                       <div className="flex justify-end gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          disabled={Boolean(apiKey.revoked_at)}
+                          onClick={() => startEditingApiKey(apiKey)}
+                        >
+                          <Save className="h-4 w-4" />
+                        </Button>
                         <Button
                           variant="ghost"
                           size="icon"
@@ -692,6 +1055,45 @@ export default function SettingsPage() {
                           <Trash2 className="h-4 w-4" />
                         </Button>
                       </div>
+                      {editingApiKeyId === apiKey.id && (
+                        <form
+                          className="space-y-3 rounded-md border p-3 md:col-span-3"
+                          onSubmit={saveApiKeyPermissions}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-sm font-medium">Permissions</span>
+                            <div className="flex gap-2">
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => setEditingApiKeyId(null)}
+                              >
+                                Cancel
+                              </Button>
+                              <Button
+                                type="submit"
+                                size="sm"
+                                disabled={editApiKeyOperations.length === 0}
+                              >
+                                Save
+                              </Button>
+                            </div>
+                          </div>
+                          <div className="max-h-72 overflow-y-auto pr-1">
+                            {renderOperationGroups(
+                              editApiKeyOperations,
+                              toggleEditApiKeyOperation,
+                              setEditApiKeyOperations,
+                              editApiKeyGroupScopes,
+                              setEditApiKeyGroupScopes,
+                              editApiKeyOperationOverrides,
+                              setEditApiKeyOperationOverrides,
+                              apiKey.owned_banks ?? []
+                            )}
+                          </div>
+                        </form>
+                      )}
                     </div>
                   ))}
                 </div>
