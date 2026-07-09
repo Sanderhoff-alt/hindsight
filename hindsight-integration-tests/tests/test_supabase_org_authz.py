@@ -140,7 +140,23 @@ async def test_supabase_org_resolver_with_real_supabase(supabase_env: SupabaseEn
             "allowed_operations": ["recall"],
         },
     )
-    _insert(client, supabase_env, "hindsight_api_key_bank_scopes", {"api_key_id": api_key_id, "bank_id": "bank_a"})
+    _insert(
+        client,
+        supabase_env,
+        "hindsight_api_key_operation_scopes",
+        {"api_key_id": api_key_id, "operation": "recall", "bank_scope_mode": "selected"},
+    )
+    _insert(
+        client,
+        supabase_env,
+        "hindsight_api_key_operation_bank_scopes",
+        {
+            "api_key_id": api_key_id,
+            "operation": "recall",
+            "bank_id": "bank_a",
+            "bank_internal_id": "bank_a",
+        },
+    )
 
     jwt_token = _sign_in(client, supabase_env, email, password)
     _assert_authz_tables_are_not_publicly_accessible(client, supabase_env, jwt_token)
@@ -154,14 +170,14 @@ async def test_supabase_org_resolver_with_real_supabase(supabase_env: SupabaseEn
         "org_id": org_id,
         "user_id": user["id"],
         "role": "admin",
-        "allowed_bank_ids": None,
         "tenant_config": {"llm_model": "mock"},
     }
     assert resolved["key_policy"] == {
         "org_id": org_id,
         "api_key_id": api_key_id,
-        "allowed_bank_ids": ["bank_a"],
         "allowed_operations": ["recall"],
+        "operation_bank_scope_modes": {"recall": "selected"},
+        "operation_bank_internal_ids": {"recall": ["bank_a"]},
     }
 
 
@@ -202,20 +218,21 @@ async def main():
                         "org_id": jwt_policy.org_id,
                         "user_id": jwt_policy.user_id,
                         "role": jwt_policy.role,
-                        "allowed_bank_ids": sorted(jwt_policy.allowed_bank_ids)
-                        if jwt_policy.allowed_bank_ids is not None
-                        else None,
                         "tenant_config": jwt_policy.tenant_config,
                     },
                     "key_policy": {
                         "org_id": key_policy.org_id,
                         "api_key_id": key_policy.api_key_id,
-                        "allowed_bank_ids": sorted(key_policy.allowed_bank_ids)
-                        if key_policy.allowed_bank_ids is not None
-                        else None,
                         "allowed_operations": sorted(key_policy.allowed_operations)
                         if key_policy.allowed_operations is not None
                         else None,
+                        "operation_bank_scope_modes": key_policy.operation_bank_scope_modes,
+                        "operation_bank_internal_ids": {
+                            operation: sorted(bank_internal_ids)
+                            for operation, bank_internal_ids in (
+                                key_policy.operation_bank_internal_ids or {}
+                            ).items()
+                        },
                     },
                 }
             )
@@ -269,7 +286,9 @@ def _assert_authz_tables_are_not_publicly_accessible(
         "organization_members",
         "organization_invites",
         "hindsight_api_keys",
-        "hindsight_api_key_bank_scopes",
+        "hindsight_api_key_operation_scopes",
+        "hindsight_api_key_operation_bank_scopes",
+        "hindsight_api_key_created_banks",
     ]:
         for headers in [_anon_headers(env), _user_headers(env, jwt_token)]:
             response = client.get(f"{env.url}/rest/v1/{table}", headers=headers)

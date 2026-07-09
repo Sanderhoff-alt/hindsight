@@ -98,6 +98,13 @@ const COPY: Record<string, string> = {
   apiKeys: "API keys",
   keyName: "Key name",
   allAllowedOperations: "All allowed operations",
+  allAllowed: "All allowed",
+  allCurrentAndFutureBanks: "All current and future banks",
+  createdBanks: "Created banks",
+  defaultScope: "Default scope",
+  noBanksCreatedByThisKey: "No banks created by this key",
+  overrideScope: "Override scope",
+  selectedBanksOnly: "Selected banks only",
 };
 
 function buildOperationScopes(
@@ -547,7 +554,7 @@ export default function SettingsPage() {
                       setOperationOverrides(nextOverrides);
                     }}
                   />
-                  <span>Override scope</span>
+                  <span>{t("overrideScope")}</span>
                 </label>
                 {operationOverrides[operation] && (
                   <div className="space-y-2">
@@ -567,8 +574,8 @@ export default function SettingsPage() {
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="all">All current and future banks</SelectItem>
-                        <SelectItem value="selected">Selected banks only</SelectItem>
+                        <SelectItem value="all">{t("allCurrentAndFutureBanks")}</SelectItem>
+                        <SelectItem value="selected">{t("selectedBanksOnly")}</SelectItem>
                       </SelectContent>
                     </Select>
                     {renderBankPicker(
@@ -587,7 +594,7 @@ export default function SettingsPage() {
     const renderDefaultScope = (scopeKey: string) => (
       <div className="space-y-2 rounded-md bg-muted/30 p-2">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-xs font-medium text-muted-foreground">Default scope</span>
+          <span className="text-xs font-medium text-muted-foreground">{t("defaultScope")}</span>
           <Select
             value={groupScopes[scopeKey]?.mode ?? "all"}
             onValueChange={(value) =>
@@ -603,8 +610,8 @@ export default function SettingsPage() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All current and future banks</SelectItem>
-              <SelectItem value="selected">Selected banks only</SelectItem>
+              <SelectItem value="all">{t("allCurrentAndFutureBanks")}</SelectItem>
+              <SelectItem value="selected">{t("selectedBanksOnly")}</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -677,7 +684,9 @@ export default function SettingsPage() {
               </div>
               {showOwnedBanks ? (
                 <div className="mt-2 space-y-1 pl-6">
-                  <div className="text-xs font-medium text-muted-foreground">Created banks</div>
+                  <div className="text-xs font-medium text-muted-foreground">
+                    {t("createdBanks")}
+                  </div>
                   {ownedBanks.length > 0 ? (
                     <div className="flex flex-wrap gap-1">
                       {ownedBanks.map((ownedBank) => {
@@ -698,7 +707,7 @@ export default function SettingsPage() {
                     </div>
                   ) : (
                     <div className="text-xs text-muted-foreground">
-                      No banks created by this key
+                      {t("noBanksCreatedByThisKey")}
                     </div>
                   )}
                 </div>
@@ -958,7 +967,7 @@ export default function SettingsPage() {
                           size="sm"
                           onClick={() => setApiKeyOperations([...availableApiKeyOperations])}
                         >
-                          All allowed
+                          {t("allAllowed")}
                         </Button>
                         <Button
                           type="button"
