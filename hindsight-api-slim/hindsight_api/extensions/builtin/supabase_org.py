@@ -142,6 +142,9 @@ class CallerPolicy:
     api_key_id: str | None
     role: Literal["owner", "admin", "member"]
     allowed_operations: frozenset[str] | None
+    # None means this is a JWT/member policy, which does not use the API-key
+    # per-operation bank-scope model. API-key policies use an explicit mapping
+    # whose values are only "all" or "selected".
     operation_bank_scope_modes: dict[str, Literal["all", "selected"]] | None = None
     operation_bank_internal_ids: dict[str, frozenset[str]] | None = None
     tenant_config: dict[str, Any] = field(default_factory=dict)
