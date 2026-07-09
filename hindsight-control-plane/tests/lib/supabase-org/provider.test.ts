@@ -1,11 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
 import { supabaseOrgAuthProvider } from "@/lib/auth-profiles/supabase-org/provider";
+import { SUPABASE_ORG_ACCESS_TOKEN_COOKIE } from "@/lib/auth-profiles/supabase-org/constants";
 import {
   acceptInviteForUser,
+  clearSupabaseOrgSessionCookies,
   ensureInitialOrganizationForSignup,
   listOrganizationsForUser,
+  signOutSupabaseSession,
   signInWithPassword,
   signUpWithPassword,
 } from "@/lib/supabase-org/store";
@@ -15,8 +18,10 @@ vi.mock("@/lib/supabase-org/store", async (importOriginal) => {
   return {
     ...actual,
     acceptInviteForUser: vi.fn(),
+    clearSupabaseOrgSessionCookies: vi.fn(),
     ensureInitialOrganizationForSignup: vi.fn(),
     listOrganizationsForUser: vi.fn(),
+    signOutSupabaseSession: vi.fn(),
     signInWithPassword: vi.fn(),
     signUpWithPassword: vi.fn(),
   };
@@ -37,8 +42,10 @@ describe("supabase org auth provider", () => {
     vi.mocked(signInWithPassword).mockReset();
     vi.mocked(signUpWithPassword).mockReset();
     vi.mocked(acceptInviteForUser).mockReset();
+    vi.mocked(clearSupabaseOrgSessionCookies).mockReset();
     vi.mocked(ensureInitialOrganizationForSignup).mockReset();
     vi.mocked(listOrganizationsForUser).mockReset();
+    vi.mocked(signOutSupabaseSession).mockReset();
   });
 
   it("does not create an extra initial organization when signup accepts an invite", async () => {
@@ -94,5 +101,29 @@ describe("supabase org auth provider", () => {
     expect(response.status).toBe(200);
     expect(ensureInitialOrganizationForSignup).toHaveBeenCalledWith(user, "Direct Org");
     expect(listOrganizationsForUser).not.toHaveBeenCalled();
+  });
+
+  it("signs out the Supabase session before clearing local cookies", async () => {
+    const request = new NextRequest("http://control.local/api/auth/logout", {
+      headers: { cookie: `${SUPABASE_ORG_ACCESS_TOKEN_COOKIE}=access-token` },
+    });
+    const response = NextResponse.json({ success: true });
+
+    await supabaseOrgAuthProvider.logout(response, request);
+
+    expect(signOutSupabaseSession).toHaveBeenCalledWith("access-token", "local");
+    expect(clearSupabaseOrgSessionCookies).toHaveBeenCalledWith(response, request);
+  });
+
+  it("still clears local cookies when Supabase logout fails", async () => {
+    vi.mocked(signOutSupabaseSession).mockRejectedValueOnce(new Error("logout failed"));
+    const request = new NextRequest("http://control.local/api/auth/logout", {
+      headers: { cookie: `${SUPABASE_ORG_ACCESS_TOKEN_COOKIE}=access-token` },
+    });
+    const response = NextResponse.json({ success: true });
+
+    await expect(supabaseOrgAuthProvider.logout(response, request)).resolves.toBeUndefined();
+
+    expect(clearSupabaseOrgSessionCookies).toHaveBeenCalledWith(response, request);
   });
 });

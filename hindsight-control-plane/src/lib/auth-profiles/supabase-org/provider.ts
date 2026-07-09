@@ -1,18 +1,18 @@
 import { NextResponse, type NextRequest } from "next/server";
 
-import { sessionCookieOptions } from "@/lib/auth/session";
 import type { ControlPlaneAuthProviderAdapter } from "@/lib/auth/provider";
 import {
   acceptInviteForUser,
+  clearSupabaseOrgSessionCookies,
   ensureInitialOrganizationForSignup,
   listOrganizationsForUser,
   setSupabaseOrgSessionCookies,
+  signOutSupabaseSession,
   signInWithPassword,
   signUpWithPassword,
 } from "@/lib/supabase-org/store";
 import {
   SUPABASE_ORG_ACCESS_TOKEN_COOKIE,
-  SUPABASE_ORG_REFRESH_TOKEN_COOKIE,
   SUPABASE_ORG_SELECTED_ORG_COOKIE,
 } from "@/lib/auth-profiles/supabase-org/constants";
 
@@ -168,19 +168,16 @@ export const supabaseOrgAuthProvider: ControlPlaneAuthProviderAdapter = {
     }
   },
 
-  logout(response, request) {
-    for (const name of [
-      SUPABASE_ORG_ACCESS_TOKEN_COOKIE,
-      SUPABASE_ORG_REFRESH_TOKEN_COOKIE,
-      SUPABASE_ORG_SELECTED_ORG_COOKIE,
-    ]) {
-      response.cookies.set({
-        name,
-        value: "",
-        ...sessionCookieOptions(request),
-        maxAge: 0,
-      });
+  async logout(response, request) {
+    try {
+      await signOutSupabaseSession(
+        request.cookies.get(SUPABASE_ORG_ACCESS_TOKEN_COOKIE)?.value,
+        "local"
+      );
+    } catch {
+      // Local logout must still complete even if the remote Supabase session is already gone.
     }
+    clearSupabaseOrgSessionCookies(response, request);
   },
 };
 

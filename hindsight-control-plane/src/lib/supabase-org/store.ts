@@ -47,6 +47,13 @@ export interface SupabasePasswordSession {
   user: SupabaseUser;
 }
 
+export interface SupabaseRefreshedSession {
+  access_token: string;
+  refresh_token?: string;
+  expires_in?: number;
+  user?: SupabaseUser;
+}
+
 export interface OrganizationMembership {
   org_id: string;
   user_id: string;
@@ -119,6 +126,47 @@ export async function getAuthenticatedUser(request: Request): Promise<SupabaseUs
   return getSupabaseUserForToken(token);
 }
 
+export async function getAuthenticatedUserWithRefresh(
+  request: NextRequest,
+  response: NextResponse
+): Promise<SupabaseUser> {
+  return (await getValidSupabaseSession(request, response)).user;
+}
+
+export async function getValidSupabaseSession(
+  request: NextRequest,
+  response: NextResponse
+): Promise<{ accessToken: string; user: SupabaseUser }> {
+  requireSupabaseOrgProvider();
+  const accessToken = getCookie(request, SUPABASE_ORG_ACCESS_TOKEN_COOKIE);
+  if (accessToken) {
+    try {
+      return { accessToken, user: await getSupabaseUserForToken(accessToken) };
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes("401")) throw error;
+    }
+  }
+
+  const refreshToken = getCookie(request, SUPABASE_ORG_REFRESH_TOKEN_COOKIE);
+  if (!refreshToken) {
+    clearSupabaseOrgSessionCookies(response, request);
+    throw new Error("Missing Supabase refresh token");
+  }
+
+  try {
+    const session = await refreshSupabaseSession(refreshToken);
+    setSupabaseOrgSessionCookies(response, request, session);
+    const user =
+      session.user?.id && session.user.email
+        ? session.user
+        : await getSupabaseUserForToken(session.access_token);
+    return { accessToken: session.access_token, user };
+  } catch (error) {
+    clearSupabaseOrgSessionCookies(response, request);
+    throw error;
+  }
+}
+
 export async function getSupabaseUserForToken(token: string): Promise<SupabaseUser> {
   const response = await fetch(`${supabaseUrl()}/auth/v1/user`, {
     headers: {
@@ -141,6 +189,68 @@ export async function signInWithPassword(
   password: string
 ): Promise<SupabasePasswordSession> {
   return supabasePasswordAuth("/auth/v1/token?grant_type=password", email, password);
+}
+
+export async function refreshSupabaseSession(
+  refreshToken: string
+): Promise<SupabaseRefreshedSession> {
+  const response = await fetch(`${supabaseUrl()}/auth/v1/token?grant_type=refresh_token`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      apikey: supabaseAnonOrServiceKey(),
+    },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  });
+  if (!response.ok) throw new Error(`Supabase session refresh failed: ${response.status}`);
+  const data = (await response.json()) as {
+    access_token?: string;
+    refresh_token?: string;
+    expires_in?: number;
+    user?: { id?: string; email?: string };
+  };
+  if (!data.access_token)
+    throw new Error("Supabase session refresh did not return an access token");
+  return {
+    access_token: data.access_token,
+    refresh_token: data.refresh_token,
+    expires_in: data.expires_in,
+    user:
+      data.user?.id && data.user.email ? { id: data.user.id, email: data.user.email } : undefined,
+  };
+}
+
+export async function updateSupabaseUserPassword(
+  accessToken: string,
+  newPassword: string
+): Promise<void> {
+  const response = await fetch(`${supabaseUrl()}/auth/v1/user`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+      apikey: supabaseAnonOrServiceKey(),
+    },
+    body: JSON.stringify({ password: newPassword }),
+  });
+  if (!response.ok) throw new Error(`Supabase password update failed: ${response.status}`);
+}
+
+export async function signOutSupabaseSession(
+  accessToken: string | undefined,
+  scope: "local" | "global" | "others" = "local"
+): Promise<void> {
+  if (!accessToken) return;
+  const response = await fetch(`${supabaseUrl()}/auth/v1/logout?scope=${scope}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      apikey: supabaseAnonOrServiceKey(),
+    },
+  });
+  if (!response.ok && response.status !== 401) {
+    throw new Error(`Supabase logout failed: ${response.status}`);
+  }
 }
 
 export async function signUpWithPassword(
@@ -191,8 +301,8 @@ export async function ensureInitialOrganizationForSignup(
 export function setSupabaseOrgSessionCookies(
   response: NextResponse,
   request: NextRequest,
-  session: SupabasePasswordSession,
-  selectedOrgId: string
+  session: SupabasePasswordSession | SupabaseRefreshedSession,
+  selectedOrgId?: string
 ): void {
   response.cookies.set({
     name: SUPABASE_ORG_ACCESS_TOKEN_COOKIE,
@@ -208,16 +318,56 @@ export function setSupabaseOrgSessionCookies(
       maxAge: 30 * 24 * 60 * 60,
     });
   }
-  response.cookies.set({
-    name: SUPABASE_ORG_SELECTED_ORG_COOKIE,
-    value: selectedOrgId,
-    ...sessionCookieOptions(request),
-    maxAge: 30 * 24 * 60 * 60,
-  });
+  if (selectedOrgId) {
+    response.cookies.set({
+      name: SUPABASE_ORG_SELECTED_ORG_COOKIE,
+      value: selectedOrgId,
+      ...sessionCookieOptions(request),
+      maxAge: 30 * 24 * 60 * 60,
+    });
+  }
+}
+
+export function clearSupabaseOrgSessionCookies(
+  response: NextResponse,
+  request: NextRequest,
+  options: { keepSelectedOrg?: boolean } = {}
+): void {
+  for (const name of [
+    SUPABASE_ORG_ACCESS_TOKEN_COOKIE,
+    SUPABASE_ORG_REFRESH_TOKEN_COOKIE,
+    ...(options.keepSelectedOrg ? [] : [SUPABASE_ORG_SELECTED_ORG_COOKIE]),
+  ]) {
+    response.cookies.set({
+      name,
+      value: "",
+      ...sessionCookieOptions(request),
+      maxAge: 0,
+    });
+  }
+}
+
+export function copySupabaseOrgSessionCookies(from: NextResponse, to: NextResponse): void {
+  for (const cookie of from.cookies.getAll()) to.cookies.set(cookie);
 }
 
 export async function getCurrentOrgContext(request: Request): Promise<CurrentOrgContext> {
   const user = await getAuthenticatedUser(request);
+  return getCurrentOrgContextForUser(request, user);
+}
+
+export async function getCurrentOrgContextWithRefresh(
+  request: NextRequest,
+  response: NextResponse
+): Promise<CurrentOrgContext> {
+  const user = await getAuthenticatedUserWithRefresh(request, response);
+  return getCurrentOrgContextForUser(request, user);
+}
+
+export async function getCurrentOrgContextForUser(
+  request: Request,
+  user: SupabaseUser
+): Promise<CurrentOrgContext> {
   const selectedOrgId = getCookie(request, SUPABASE_ORG_SELECTED_ORG_COOKIE);
   if (!selectedOrgId) {
     throw new Error("Missing selected organization");

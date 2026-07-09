@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { NextRequest, NextResponse } from "next/server";
 
 import {
   SUPABASE_ORG_ACCESS_TOKEN_COOKIE,
+  SUPABASE_ORG_REFRESH_TOKEN_COOKIE,
   SUPABASE_ORG_SELECTED_ORG_COOKIE,
 } from "@/lib/auth-profiles/supabase-org/constants";
 import {
@@ -10,10 +12,13 @@ import {
   createApiKey,
   createInvite,
   createOrganization,
+  getAuthenticatedUserWithRefresh,
   getCurrentOrgContext,
   listApiKeys,
   revealApiKey,
   removeMember,
+  signOutSupabaseSession,
+  updateSupabaseUserPassword,
   updateOrganizationName,
   updateMemberRole,
 } from "@/lib/supabase-org/store";
@@ -38,6 +43,18 @@ function requestWithSession(token = "jwt-token", orgId = "org_1"): Request {
   return new Request("http://control.local/api/test", {
     headers: {
       cookie: `${SUPABASE_ORG_ACCESS_TOKEN_COOKIE}=${token}; ${SUPABASE_ORG_SELECTED_ORG_COOKIE}=${orgId}`,
+    },
+  });
+}
+
+function nextRequestWithSession(
+  accessToken = "jwt-token",
+  refreshToken = "refresh-token",
+  orgId = "org_1"
+): NextRequest {
+  return new NextRequest("http://control.local/api/test", {
+    headers: {
+      cookie: `${SUPABASE_ORG_ACCESS_TOKEN_COOKIE}=${accessToken}; ${SUPABASE_ORG_REFRESH_TOKEN_COOKIE}=${refreshToken}; ${SUPABASE_ORG_SELECTED_ORG_COOKIE}=${orgId}`,
     },
   });
 }
@@ -114,6 +131,72 @@ describe("supabase org store", () => {
     expect(context.membership.role).toBe("member");
     expect(fetchMock.mock.calls[0][0]).toBe("http://supabase.local/auth/v1/user");
     expect(String(fetchMock.mock.calls[1][0])).toContain("/rest/v1/organization_members");
+  });
+
+  it("refreshes an expired Supabase access token and updates session cookies", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse({ message: "expired" }, 401))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          access_token: "new-access-token",
+          refresh_token: "new-refresh-token",
+          expires_in: 123,
+          user: { id: "user_1", email: "member@example.com" },
+        })
+      );
+    const response = NextResponse.json({});
+
+    const user = await getAuthenticatedUserWithRefresh(nextRequestWithSession(), response);
+
+    expect(user).toEqual({ id: "user_1", email: "member@example.com" });
+    expect(fetchMock.mock.calls[0][0]).toBe("http://supabase.local/auth/v1/user");
+    expect(fetchMock.mock.calls[1][0]).toBe("http://supabase.local/auth/v1/token?grant_type=refresh_token");
+    expect(JSON.parse(String((fetchMock.mock.calls[1][1] as RequestInit).body))).toEqual({
+      refresh_token: "refresh-token",
+    });
+    expect(response.cookies.get(SUPABASE_ORG_ACCESS_TOKEN_COOKIE)?.value).toBe("new-access-token");
+    expect(response.cookies.get(SUPABASE_ORG_REFRESH_TOKEN_COOKIE)?.value).toBe("new-refresh-token");
+  });
+
+  it("clears Supabase session cookies when refresh fails", async () => {
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse({ message: "expired" }, 401))
+      .mockResolvedValueOnce(jsonResponse({ message: "invalid refresh" }, 401));
+    const response = NextResponse.json({});
+
+    await expect(getAuthenticatedUserWithRefresh(nextRequestWithSession(), response)).rejects.toThrow(
+      /refresh failed/
+    );
+
+    expect(response.cookies.get(SUPABASE_ORG_ACCESS_TOKEN_COOKIE)?.value).toBe("");
+    expect(response.cookies.get(SUPABASE_ORG_REFRESH_TOKEN_COOKIE)?.value).toBe("");
+    expect(response.cookies.get(SUPABASE_ORG_SELECTED_ORG_COOKIE)?.value).toBe("");
+  });
+
+  it("signs out a Supabase session with local scope", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse({}));
+
+    await signOutSupabaseSession("access-token", "local");
+
+    expect(fetchMock.mock.calls[0][0]).toBe("http://supabase.local/auth/v1/logout?scope=local");
+    expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe("POST");
+    expect((fetchMock.mock.calls[0][1] as RequestInit).headers).toMatchObject({
+      Authorization: "Bearer access-token",
+      apikey: "service-key",
+    });
+  });
+
+  it("updates the Supabase user password with the current access token", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse({}));
+
+    await updateSupabaseUserPassword("access-token", "new-password");
+
+    expect(fetchMock.mock.calls[0][0]).toBe("http://supabase.local/auth/v1/user");
+    expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe("PUT");
+    expect(JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))).toEqual({
+      password: "new-password",
+    });
   });
 
   it("creates an organization and owner membership", async () => {

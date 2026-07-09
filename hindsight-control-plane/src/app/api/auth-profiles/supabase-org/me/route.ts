@@ -1,19 +1,21 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
 import {
-  getAuthenticatedUser,
-  getCurrentOrgContext,
+  copySupabaseOrgSessionCookies,
+  getCurrentOrgContextForUser,
+  getValidSupabaseSession,
   jsonError,
   listOrganizationsForUser,
 } from "@/lib/supabase-org/store";
 
-export async function GET(request: Request) {
+export async function GET(request: NextRequest) {
+  const cookieResponse = NextResponse.json({});
   try {
-    const user = await getAuthenticatedUser(request);
+    const { user } = await getValidSupabaseSession(request, cookieResponse);
     const organizations = await listOrganizationsForUser(user.id);
     let current = null;
     try {
-      const context = await getCurrentOrgContext(request);
+      const context = await getCurrentOrgContextForUser(request, user);
       current = {
         org_id: context.selectedOrgId,
         role: context.membership.role,
@@ -21,11 +23,15 @@ export async function GET(request: Request) {
     } catch {
       current = null;
     }
-    return NextResponse.json({ user, organizations, current }, { status: 200 });
+    const response = NextResponse.json({ user, organizations, current }, { status: 200 });
+    copySupabaseOrgSessionCookies(cookieResponse, response);
+    return response;
   } catch (error) {
-    return jsonError(
+    const response = jsonError(
       error instanceof Error ? error.message : "Failed to resolve current user",
       401
     );
+    copySupabaseOrgSessionCookies(cookieResponse, response);
+    return response;
   }
 }
