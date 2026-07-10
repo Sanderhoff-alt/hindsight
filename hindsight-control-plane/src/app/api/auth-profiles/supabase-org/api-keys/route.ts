@@ -9,6 +9,7 @@ import {
   getCurrentOrgContext,
   jsonError,
   listApiKeys,
+  repairApiKeyBankReferences,
 } from "@/lib/supabase-org/store";
 import { createDataplaneClientForRequest, sdk } from "@/lib/hindsight-client";
 
@@ -33,6 +34,13 @@ export async function GET(request: Request) {
         .filter((bank): bank is BankListItem & { internal_id: string } => Boolean(bank.internal_id))
         .map((bank) => [bank.internal_id, bank])
     );
+    try {
+      await repairApiKeyBankReferences(apiKeys, Array.from(currentBankByInternalId.keys()));
+    } catch (error) {
+      // Read repair is best-effort: stale references are already filtered from the response,
+      // so a Supabase cleanup failure must not make API key management unavailable.
+      console.warn("Failed to repair stale API key bank references", { error });
+    }
     return NextResponse.json(
       {
         api_keys: apiKeys.map((apiKey) => {
@@ -50,15 +58,18 @@ export async function GET(request: Request) {
           const publicApiKey = { ...toPublicApiKeySummary(apiKey), owned_banks: ownedBanks };
           return {
             ...publicApiKey,
-            operation_scopes: (apiKey.operation_scopes ?? []).map((scope) => ({
-              ...scope,
-              scoped_bank_ids:
-                scope.bank_scope_mode === "selected"
-                  ? (scope.scoped_bank_internal_ids ?? [])
-                      .map((internalId) => currentBankIdByInternalId.get(internalId))
-                      .filter((bankId): bankId is string => Boolean(bankId))
-                  : undefined,
-            })),
+            operation_scopes: (apiKey.operation_scopes ?? []).map((scope) => {
+              const { scoped_bank_internal_ids: internalIds, ...publicScope } = scope;
+              return {
+                ...publicScope,
+                scoped_bank_ids:
+                  scope.bank_scope_mode === "selected"
+                    ? (internalIds ?? [])
+                        .map((internalId) => currentBankIdByInternalId.get(internalId))
+                        .filter((bankId): bankId is string => Boolean(bankId))
+                    : undefined,
+              };
+            }),
           };
         }),
       },

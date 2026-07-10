@@ -15,12 +15,14 @@ import {
   getAuthenticatedUserWithRefresh,
   getCurrentOrgContext,
   listApiKeys,
+  repairApiKeyBankReferences,
   revealApiKey,
   removeMember,
   signOutSupabaseSession,
   updateSupabaseUserPassword,
   updateOrganizationName,
   updateMemberRole,
+  updateApiKeyPermissions,
 } from "@/lib/supabase-org/store";
 import type { CurrentOrgContext, SupabaseUser } from "@/lib/supabase-org/store";
 import {
@@ -310,10 +312,7 @@ describe("supabase org store", () => {
   it("creates operation-scoped API keys with validated operations", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(jsonResponse([{ id: "api_key_1" }]))
-      .mockResolvedValueOnce(jsonResponse([]))
-      .mockResolvedValueOnce(jsonResponse([]))
-      .mockResolvedValueOnce(jsonResponse([{ api_key_id: "api_key_1", operation: "recall" }]));
+      .mockResolvedValueOnce(jsonResponse([{ id: "api_key_1" }]));
 
     const created = await createApiKey(adminContext("owner"), "Agent key", [
       { operation: "recall", bank_scope_mode: "all", bank_scopes: [] },
@@ -324,27 +323,23 @@ describe("supabase org store", () => {
     const keyRequest = fetchMock.mock.calls[0][1] as RequestInit;
     const keyBody = JSON.parse(String(keyRequest.body));
     expect(keyBody).toMatchObject({
-      org_id: "org_1",
-      name: "Agent key",
-      role: "owner",
-      allowed_operations: ["recall"],
+      p_org_id: "org_1",
+      p_name: "Agent key",
+      p_role: "owner",
+      p_allowed_operations: ["recall"],
+      p_operation_scopes: [
+        { operation: "recall", bank_scope_mode: "all", bank_scopes: [] },
+      ],
     });
-    expect(keyBody.encrypted_key).toMatch(/^v1\./);
-    const operationScopeRequest = fetchMock.mock.calls[3][1] as RequestInit;
-    expect(JSON.parse(String(operationScopeRequest.body))).toEqual([
-      { api_key_id: "api_key_1", operation: "recall", bank_scope_mode: "all" },
-    ]);
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(keyBody.p_encrypted_key).toMatch(/^v1\./);
+    expect(String(fetchMock.mock.calls[0][0])).toContain("/rest/v1/rpc/create_hindsight_api_key");
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it("creates selected-bank API key scopes", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(jsonResponse([{ id: "api_key_1" }]))
-      .mockResolvedValueOnce(jsonResponse([]))
-      .mockResolvedValueOnce(jsonResponse([]))
-      .mockResolvedValueOnce(jsonResponse([{ api_key_id: "api_key_1", operation: "recall" }]))
-      .mockResolvedValueOnce(jsonResponse([{ api_key_id: "api_key_1", bank_id: "bank_a" }]));
+      .mockResolvedValueOnce(jsonResponse([{ id: "api_key_1" }]));
 
     const created = await createApiKey(
       adminContext("owner"),
@@ -365,59 +360,49 @@ describe("supabase org store", () => {
     const keyRequest = fetchMock.mock.calls[0][1] as RequestInit;
     const keyBody = JSON.parse(String(keyRequest.body));
     expect(keyBody).toMatchObject({
-      org_id: "org_1",
-      name: "Scoped key",
-      allowed_operations: ["recall"],
+      p_org_id: "org_1",
+      p_name: "Scoped key",
+      p_allowed_operations: ["recall"],
+      p_operation_scopes: [
+        {
+          operation: "recall",
+          bank_scope_mode: "selected",
+          bank_scopes: [{ bank_id: "bank_a", bank_internal_id: "internal_a" }],
+        },
+      ],
     });
-    const operationScopeRequest = fetchMock.mock.calls[3][1] as RequestInit;
-    expect(JSON.parse(String(operationScopeRequest.body))).toEqual([
-      { api_key_id: "api_key_1", operation: "recall", bank_scope_mode: "selected" },
-    ]);
-    const scopeRequest = fetchMock.mock.calls[4][1] as RequestInit;
-    expect(JSON.parse(String(scopeRequest.body))).toEqual([
-      {
-        api_key_id: "api_key_1",
-        operation: "recall",
-        bank_id: "bank_a",
-        bank_internal_id: "internal_a",
-      },
-    ]);
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
-  it("allows members to create read-only API keys", async () => {
+  it("allows members to create bank-scoped API keys", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(jsonResponse([{ id: "api_key_member" }]))
-      .mockResolvedValueOnce(jsonResponse([]))
-      .mockResolvedValueOnce(jsonResponse([]))
-      .mockResolvedValueOnce(jsonResponse([{ api_key_id: "api_key_member" }]));
+      .mockResolvedValueOnce(jsonResponse([{ id: "api_key_member" }]));
 
     const created = await createApiKey(memberContext(), "Read key", null);
 
     expect(created).toMatchObject({ id: "api_key_member" });
     const keyRequest = fetchMock.mock.calls[0][1] as RequestInit;
     const keyBody = JSON.parse(String(keyRequest.body));
-    expect(keyBody.role).toBe("member");
-    expect(keyBody.allowed_operations).toContain("list_documents");
-    expect(keyBody.allowed_operations).toContain("recall");
-    expect(keyBody.allowed_operations).toContain("reflect");
-    expect(keyBody.allowed_operations).toContain("retain");
-    expect(keyBody.allowed_operations).toContain("create_mental_model");
-    expect(keyBody.allowed_operations).toContain("update_mental_model");
-    expect(keyBody.allowed_operations).toContain("update_document");
-    expect(keyBody.allowed_operations).toContain("update_memory_unit");
-    expect(keyBody.allowed_operations).toContain("delete_bank");
-    expect(keyBody.allowed_operations).toContain("mental_model_refresh");
-    expect(keyBody.allowed_operations).not.toContain("create_bank");
-    expect(keyBody.allowed_operations).not.toContain("consolidate");
+    expect(keyBody.p_role).toBe("member");
+    expect(keyBody.p_allowed_operations).toContain("list_documents");
+    expect(keyBody.p_allowed_operations).toContain("recall");
+    expect(keyBody.p_allowed_operations).toContain("reflect");
+    expect(keyBody.p_allowed_operations).toContain("retain");
+    expect(keyBody.p_allowed_operations).toContain("create_mental_model");
+    expect(keyBody.p_allowed_operations).toContain("update_mental_model");
+    expect(keyBody.p_allowed_operations).toContain("update_document");
+    expect(keyBody.p_allowed_operations).toContain("update_memory_unit");
+    expect(keyBody.p_allowed_operations).toContain("delete_bank");
+    expect(keyBody.p_allowed_operations).toContain("mental_model_refresh");
+    expect(keyBody.p_allowed_operations).not.toContain("create_bank");
+    expect(keyBody.p_allowed_operations).not.toContain("consolidate");
   });
 
   it("prevents member API keys from exceeding member operations", async () => {
-    vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(jsonResponse([{ id: "api_key_member" }]))
-      .mockResolvedValueOnce(jsonResponse([]))
-      .mockResolvedValueOnce(jsonResponse([]))
-      .mockResolvedValueOnce(jsonResponse([{ api_key_id: "api_key_member", operation: "delete_bank" }]));
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      jsonResponse([{ id: "api_key_member" }])
+    );
     await expect(
       createApiKey(memberContext(), "Bank scoped key", [
         { operation: "delete_bank", bank_scope_mode: "all", bank_scopes: [] },
@@ -434,18 +419,116 @@ describe("supabase org store", () => {
     );
   });
 
+  it("updates API key permissions through one transactional RPC", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        jsonResponse([
+          {
+            id: "api_key_1",
+            org_id: "org_1",
+            created_by_user_id: "user_owner",
+            name: "Agent key",
+            role: "owner",
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ])
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+
+    await updateApiKeyPermissions(adminContext("owner"), "api_key_1", [
+      {
+        operation: "recall",
+        bank_scope_mode: "selected",
+        bank_scopes: [{ bank_id: "bank_a", bank_internal_id: "internal_a" }],
+      },
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[1][0])).toContain(
+      "/rest/v1/rpc/replace_hindsight_api_key_permissions"
+    );
+    expect(JSON.parse(String((fetchMock.mock.calls[1][1] as RequestInit).body))).toEqual({
+      p_api_key_id: "api_key_1",
+      p_org_id: "org_1",
+      p_allowed_operations: ["recall"],
+      p_operation_scopes: [
+        {
+          operation: "recall",
+          bank_scope_mode: "selected",
+          bank_scopes: [{ bank_id: "bank_a", bank_internal_id: "internal_a" }],
+        },
+      ],
+    });
+  });
+
+  it("repairs only stale scope and ownership references for visible API keys", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    const apiKeys = [
+      {
+        id: "key_a",
+        org_id: "org_1",
+        name: "A",
+        role: "owner" as const,
+        created_at: "2026-01-01T00:00:00Z",
+        operation_scopes: [
+          {
+            operation: "recall",
+            bank_scope_mode: "selected" as const,
+            scoped_bank_internal_ids: ["internal_valid", "internal_stale_scope"],
+          },
+        ],
+        owned_banks: [
+          { bank_id: "valid", bank_internal_id: "internal_valid" },
+          { bank_id: "deleted", bank_internal_id: "internal_stale_owned" },
+        ],
+      },
+    ];
+
+    await repairApiKeyBankReferences(apiKeys, ["internal_valid"]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const scopeUrl = new URL(String(fetchMock.mock.calls[0][0]));
+    expect(scopeUrl.pathname).toBe("/rest/v1/hindsight_api_key_operation_bank_scopes");
+    expect(scopeUrl.searchParams.get("api_key_id")).toBe("in.(key_a)");
+    expect(scopeUrl.searchParams.get("bank_internal_id")).toBe("in.(internal_stale_scope)");
+    const ownedUrl = new URL(String(fetchMock.mock.calls[1][0]));
+    expect(ownedUrl.pathname).toBe("/rest/v1/hindsight_api_key_created_banks");
+    expect(ownedUrl.searchParams.get("api_key_id")).toBe("in.(key_a)");
+    expect(ownedUrl.searchParams.get("bank_internal_id")).toBe("in.(internal_stale_owned)");
+  });
+
+  it("does not write during read repair when every Bank reference is current", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    await repairApiKeyBankReferences(
+      [
+        {
+          id: "key_a",
+          org_id: "org_1",
+          name: "A",
+          role: "owner",
+          created_at: "2026-01-01T00:00:00Z",
+          owned_banks: [{ bank_id: "bank_a", bank_internal_id: "internal_a" }],
+        },
+      ],
+      ["internal_a"]
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("reveals stored API key secrets to admins and owning members only", async () => {
     const createdFetch = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(jsonResponse([{ id: "api_key_1" }]))
-      .mockResolvedValueOnce(jsonResponse([]))
-      .mockResolvedValueOnce(jsonResponse([]))
-      .mockResolvedValueOnce(jsonResponse([{ api_key_id: "api_key_1", operation: "recall" }]));
+      .mockResolvedValueOnce(jsonResponse([{ id: "api_key_1" }]));
     const created = await createApiKey(adminContext("owner"), "Agent key", [
       { operation: "recall", bank_scope_mode: "all", bank_scopes: [] },
     ]);
     const keyRequest = createdFetch.mock.calls[0][1] as RequestInit;
-    const encryptedKey = JSON.parse(String(keyRequest.body)).encrypted_key;
+    const encryptedKey = JSON.parse(String(keyRequest.body)).p_encrypted_key;
     vi.restoreAllMocks();
 
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
@@ -565,10 +648,7 @@ describe("supabase org store", () => {
     );
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(jsonResponse([{ id: "api_key_1" }]))
-      .mockResolvedValueOnce(jsonResponse([]))
-      .mockResolvedValueOnce(jsonResponse([]))
-      .mockResolvedValueOnce(jsonResponse([{ api_key_id: "api_key_1", operation: "mental_model_refresh" }]));
+      .mockResolvedValueOnce(jsonResponse([{ id: "api_key_1" }]));
     await expect(
       createApiKey(adminContext("owner"), "Create key", [
         { operation: "create_bank", bank_scope_mode: "all", bank_scopes: [] },
@@ -578,7 +658,7 @@ describe("supabase org store", () => {
       id: "api_key_1",
     });
     const keyRequest = fetchMock.mock.calls[0][1] as RequestInit;
-    expect(JSON.parse(String(keyRequest.body)).allowed_operations).toEqual([
+    expect(JSON.parse(String(keyRequest.body)).p_allowed_operations).toEqual([
       "create_bank",
       "mental_model_refresh",
     ]);

@@ -100,9 +100,12 @@ const COPY: Record<string, string> = {
   allAllowedOperations: "All allowed operations",
   allAllowed: "All allowed",
   allCurrentAndFutureBanks: "All current and future banks",
-  createdBanks: "Created banks",
+  createBankPermissionDescription:
+    "Allows this key to create new banks. While this permission remains enabled, " +
+    "the key has full access to banks it created that still exist.",
+  createdBanks: "Existing banks created by this key",
   defaultScope: "Default scope",
-  noBanksCreatedByThisKey: "No banks created by this key",
+  noBanksCreatedByThisKey: "No existing banks were created by this key",
   overrideScope: "Override scope",
   selectedBanksOnly: "Selected banks only",
 };
@@ -635,8 +638,8 @@ export default function SettingsPage() {
           ).length;
           const singleUnscopedOperation = !group.bankScoped && operations.length === 1;
           const operation = operations[0];
-          const showOwnedBanks =
-            singleUnscopedOperation && operation === "create_bank" && ownedBanks;
+          const isCreateBankOperation = singleUnscopedOperation && operation === "create_bank";
+          const showOwnedBanks = isCreateBankOperation && ownedBanks !== undefined;
           return (
             <div key={group.id} className="rounded-md border p-3">
               <div className="mb-2 flex items-center justify-between gap-2">
@@ -682,6 +685,11 @@ export default function SettingsPage() {
                   </>
                 )}
               </div>
+              {isCreateBankOperation ? (
+                <div className="mt-2 pl-6 text-xs text-muted-foreground">
+                  {t("createBankPermissionDescription")}
+                </div>
+              ) : null}
               {showOwnedBanks ? (
                 <div className="mt-2 space-y-1 pl-6">
                   <div className="text-xs font-medium text-muted-foreground">
@@ -1019,7 +1027,7 @@ export default function SettingsPage() {
                           {" · "}
                           {summarizeApiKeyBankScopes(apiKey)}
                           {apiKey.owned_banks?.length
-                            ? ` · ${apiKey.owned_banks.length} owned`
+                            ? ` · ${apiKey.owned_banks.length} existing owned`
                             : ""}
                         </div>
                         {apiKey.owned_banks?.length ? (

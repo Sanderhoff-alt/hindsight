@@ -699,16 +699,16 @@ export async function createApiKey(
   const rawKey = `${API_KEY_PREFIX}${crypto.randomUUID().replaceAll("-", "")}${crypto.randomUUID().replaceAll("-", "")}`;
   const keyHash = await sha256Hex(rawKey);
   const encryptedKey = await encryptApiKey(rawKey);
-  const row = await restPost<{ id: string }>("hindsight_api_keys", {
-    org_id: context.selectedOrgId,
-    created_by_user_id: context.user.id,
-    name: keyName,
-    key_hash: keyHash,
-    encrypted_key: encryptedKey,
-    role: context.membership.role,
-    allowed_operations: operations,
+  const row = await restRpcRow<{ id: string }>("create_hindsight_api_key", {
+    p_org_id: context.selectedOrgId,
+    p_created_by_user_id: context.user.id,
+    p_name: keyName,
+    p_key_hash: keyHash,
+    p_encrypted_key: encryptedKey,
+    p_role: context.membership.role,
+    p_allowed_operations: operations,
+    p_operation_scopes: normalizedOperationScopes,
   });
-  await replaceApiKeyOperationScopes(row.id, normalizedOperationScopes);
   return { id: row.id, key: rawKey };
 }
 
@@ -773,12 +773,61 @@ export async function updateApiKeyPermissions(
     operationScopes,
     context.membership.role
   );
-  await restPatch(
-    "hindsight_api_keys",
-    { allowed_operations: normalizedOperationScopes.map((scope) => scope.operation) },
-    { id: `eq.${id}`, org_id: `eq.${context.selectedOrgId}` }
+  await restRpc("replace_hindsight_api_key_permissions", {
+    p_api_key_id: id,
+    p_org_id: context.selectedOrgId,
+    p_allowed_operations: normalizedOperationScopes.map((scope) => scope.operation),
+    p_operation_scopes: normalizedOperationScopes,
+  });
+}
+
+export async function repairApiKeyBankReferences(
+  apiKeys: readonly HindsightApiKeySummary[],
+  validBankInternalIds: readonly string[]
+): Promise<void> {
+  const validIds = new Set(validBankInternalIds);
+  const visibleApiKeyIds = apiKeys.map((apiKey) => apiKey.id);
+  if (visibleApiKeyIds.length === 0) return;
+
+  const staleScopeIds = Array.from(
+    new Set(
+      apiKeys.flatMap((apiKey) =>
+        (apiKey.operation_scopes ?? []).flatMap((scope) =>
+          (scope.scoped_bank_internal_ids ?? []).filter((internalId) => !validIds.has(internalId))
+        )
+      )
+    )
   );
-  await replaceApiKeyOperationScopes(id, normalizedOperationScopes);
+  const staleOwnedIds = Array.from(
+    new Set(
+      apiKeys.flatMap((apiKey) =>
+        (apiKey.owned_banks ?? [])
+          .map((bank) => bank.bank_internal_id)
+          .filter((internalId) => !validIds.has(internalId))
+      )
+    )
+  );
+  // Restrict repair to keys already visible to this caller. In particular, a member
+  // viewing personal keys must never clean another member's authorization records.
+  const apiKeyFilter = `in.(${visibleApiKeyIds.join(",")})`;
+  const repairs: Promise<void>[] = [];
+  if (staleScopeIds.length > 0) {
+    repairs.push(
+      restDelete("hindsight_api_key_operation_bank_scopes", {
+        api_key_id: apiKeyFilter,
+        bank_internal_id: `in.(${staleScopeIds.join(",")})`,
+      })
+    );
+  }
+  if (staleOwnedIds.length > 0) {
+    repairs.push(
+      restDelete("hindsight_api_key_created_banks", {
+        api_key_id: apiKeyFilter,
+        bank_internal_id: `in.(${staleOwnedIds.join(",")})`,
+      })
+    );
+  }
+  await Promise.all(repairs);
 }
 
 export async function deleteApiKeyBankScopesByInternalId(bankInternalId: string): Promise<void> {
@@ -814,6 +863,26 @@ async function restPost<T>(table: string, body: unknown): Promise<T> {
   if (!response.ok) throw new Error(`Supabase insert failed: ${response.status}`);
   const rows = (await response.json()) as T[];
   if (!rows[0]) throw new Error("Supabase insert returned no row");
+  return rows[0];
+}
+
+async function restRpc(functionName: string, body: unknown): Promise<unknown> {
+  const response = await fetch(`${supabaseUrl()}/rest/v1/rpc/${functionName}`, {
+    method: "POST",
+    headers: {
+      ...serviceHeaders(),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new Error(`Supabase RPC failed: ${response.status}`);
+  if (response.status === 204) return null;
+  return response.json();
+}
+
+async function restRpcRow<T>(functionName: string, body: unknown): Promise<T> {
+  const rows = (await restRpc(functionName, body)) as T[];
+  if (!rows[0]) throw new Error("Supabase RPC returned no row");
   return rows[0];
 }
 
@@ -1046,39 +1115,6 @@ function normalizeApiKeyOperationScopes(
         : [];
     return { operation, bank_scope_mode: bankScopeMode, bank_scopes: bankScopes };
   });
-}
-
-async function replaceApiKeyOperationScopes(
-  apiKeyId: string,
-  operationScopes: Required<ApiKeyOperationScopeInput>[]
-): Promise<void> {
-  await restDelete("hindsight_api_key_operation_bank_scopes", { api_key_id: `eq.${apiKeyId}` });
-  await restDelete("hindsight_api_key_operation_scopes", { api_key_id: `eq.${apiKeyId}` });
-  const scopedOperations = operationScopes.filter(
-    (scope) => !UNSCOPED_DATAPLANE_OPERATIONS.includes(scope.operation)
-  );
-  if (scopedOperations.length === 0) return;
-  await restPost(
-    "hindsight_api_key_operation_scopes",
-    scopedOperations.map((scope) => ({
-      api_key_id: apiKeyId,
-      operation: scope.operation,
-      bank_scope_mode: scope.bank_scope_mode,
-    }))
-  );
-  const selectedBanks = scopedOperations.flatMap((scope) =>
-    scope.bank_scope_mode === "selected"
-      ? (scope.bank_scopes ?? []).map((bank) => ({
-          api_key_id: apiKeyId,
-          operation: scope.operation,
-          bank_id: bank.bank_id,
-          bank_internal_id: bank.bank_internal_id,
-        }))
-      : []
-  );
-  if (selectedBanks.length > 0) {
-    await restPost("hindsight_api_key_operation_bank_scopes", selectedBanks);
-  }
 }
 
 function operationsForRole(role: OrganizationRole): ApiKeyOperation[] {
