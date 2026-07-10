@@ -47,9 +47,9 @@ export const OPERATION_UI_GROUPS: readonly OperationUiGroup[] = [
     ],
   },
   {
-    id: "memory",
-    labelKey: "authProfiles.supabaseOrg.operations.groups.memory",
-    defaultLabel: "Memory",
+    id: "memory_and_mental_models",
+    labelKey: "authProfiles.supabaseOrg.operations.groups.memoryAndMentalModels",
+    defaultLabel: "Memory & mental models",
     bankScoped: true,
     operations: [
       "retain",
@@ -78,14 +78,6 @@ export const OPERATION_UI_GROUPS: readonly OperationUiGroup[] = [
       "submit_async_graph_maintenance",
       "submit_async_consolidation",
       "retry_failed_consolidation",
-    ],
-  },
-  {
-    id: "mental_models",
-    labelKey: "authProfiles.supabaseOrg.operations.groups.mentalModels",
-    defaultLabel: "Mental models",
-    bankScoped: true,
-    operations: [
       "list_mental_models",
       "list_mental_model_tags",
       "mental_model_get",
@@ -97,18 +89,15 @@ export const OPERATION_UI_GROUPS: readonly OperationUiGroup[] = [
     ],
   },
   {
-    id: "operation_control",
-    labelKey: "authProfiles.supabaseOrg.operations.groups.operationControl",
-    defaultLabel: "Operation control",
-    bankScoped: true,
-    operations: ["list_operations", "get_operation_status", "cancel_operation", "retry_operation"],
-  },
-  {
-    id: "automation",
-    labelKey: "authProfiles.supabaseOrg.operations.groups.automation",
-    defaultLabel: "Automation",
+    id: "operations_and_automation",
+    labelKey: "authProfiles.supabaseOrg.operations.groups.operationsAndAutomation",
+    defaultLabel: "Operations & automation",
     bankScoped: true,
     operations: [
+      "list_operations",
+      "get_operation_status",
+      "cancel_operation",
+      "retry_operation",
       "list_webhooks",
       "list_webhook_deliveries",
       "create_webhook",

@@ -112,6 +112,12 @@ describe("supabase org store", () => {
 
     const groupedOperations = OPERATION_GROUPS.flatMap((group) => group.operations);
     expect(new Set(groupedOperations)).toEqual(new Set(API_KEY_OPERATIONS));
+    expect(OPERATION_GROUPS.map((group) => group.label)).toEqual([
+      "Create bank",
+      "Bank management",
+      "Memory & mental models",
+      "Operations & automation",
+    ]);
     for (const group of OPERATION_GROUPS) {
       expect(group.labelKey).toBeTruthy();
       const sectionOperations = group.sections?.flatMap((section) => section.operations) ?? [];
