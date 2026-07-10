@@ -314,7 +314,7 @@ describe("supabase org store", () => {
       .spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(jsonResponse([{ id: "api_key_1" }]));
 
-    const created = await createApiKey(adminContext("owner"), "Agent key", [
+    const created = await createApiKey(adminContext("owner"), "Agent key", "scoped", [
       { operation: "recall", bank_scope_mode: "all", bank_scopes: [] },
     ]);
 
@@ -326,6 +326,7 @@ describe("supabase org store", () => {
       p_org_id: "org_1",
       p_name: "Agent key",
       p_role: "owner",
+      p_permission_mode: "scoped",
       p_allowed_operations: ["recall"],
       p_operation_scopes: [
         { operation: "recall", bank_scope_mode: "all", bank_scopes: [] },
@@ -344,6 +345,7 @@ describe("supabase org store", () => {
     const created = await createApiKey(
       adminContext("owner"),
       "Scoped key",
+      "scoped",
       [
         {
           operation: "recall",
@@ -362,6 +364,7 @@ describe("supabase org store", () => {
     expect(keyBody).toMatchObject({
       p_org_id: "org_1",
       p_name: "Scoped key",
+      p_permission_mode: "scoped",
       p_allowed_operations: ["recall"],
       p_operation_scopes: [
         {
@@ -374,12 +377,33 @@ describe("supabase org store", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
+  it("creates full-access API keys without persisted operation scopes", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse([{ id: "api_key_full" }]));
+
+    const created = await createApiKey(
+      adminContext("owner"),
+      "Full key",
+      "full_access",
+      null
+    );
+
+    expect(created).toMatchObject({ id: "api_key_full" });
+    const body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body));
+    expect(body).toMatchObject({
+      p_permission_mode: "full_access",
+      p_allowed_operations: null,
+      p_operation_scopes: [],
+    });
+  });
+
   it("allows members to create bank-scoped API keys", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(jsonResponse([{ id: "api_key_member" }]));
 
-    const created = await createApiKey(memberContext(), "Read key", null);
+    const created = await createApiKey(memberContext(), "Read key", "scoped", null);
 
     expect(created).toMatchObject({ id: "api_key_member" });
     const keyRequest = fetchMock.mock.calls[0][1] as RequestInit;
@@ -404,14 +428,14 @@ describe("supabase org store", () => {
       jsonResponse([{ id: "api_key_member" }])
     );
     await expect(
-      createApiKey(memberContext(), "Bank scoped key", [
+      createApiKey(memberContext(), "Bank scoped key", "scoped", [
         { operation: "delete_bank", bank_scope_mode: "all", bank_scopes: [] },
       ])
     ).resolves.toMatchObject({
       id: "api_key_member",
     });
     await expect(
-      createApiKey(memberContext(), "Bad create key", [
+      createApiKey(memberContext(), "Bad create key", "scoped", [
         { operation: "create_bank", bank_scope_mode: "all", bank_scopes: [] },
       ])
     ).rejects.toThrow(
@@ -436,7 +460,7 @@ describe("supabase org store", () => {
       )
       .mockResolvedValueOnce(new Response(null, { status: 204 }));
 
-    await updateApiKeyPermissions(adminContext("owner"), "api_key_1", [
+    await updateApiKeyPermissions(adminContext("owner"), "api_key_1", "scoped", [
       {
         operation: "recall",
         bank_scope_mode: "selected",
@@ -451,6 +475,7 @@ describe("supabase org store", () => {
     expect(JSON.parse(String((fetchMock.mock.calls[1][1] as RequestInit).body))).toEqual({
       p_api_key_id: "api_key_1",
       p_org_id: "org_1",
+      p_permission_mode: "scoped",
       p_allowed_operations: ["recall"],
       p_operation_scopes: [
         {
@@ -459,6 +484,40 @@ describe("supabase org store", () => {
           bank_scopes: [{ bank_id: "bank_a", bank_internal_id: "internal_a" }],
         },
       ],
+    });
+  });
+
+  it("switches an API key to full access through the transactional RPC", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        jsonResponse([
+          {
+            id: "api_key_1",
+            org_id: "org_1",
+            created_by_user_id: "user_owner",
+            name: "Agent key",
+            role: "owner",
+            permission_mode: "scoped",
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ])
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+
+    await updateApiKeyPermissions(
+      adminContext("owner"),
+      "api_key_1",
+      "full_access",
+      null
+    );
+
+    expect(JSON.parse(String((fetchMock.mock.calls[1][1] as RequestInit).body))).toEqual({
+      p_api_key_id: "api_key_1",
+      p_org_id: "org_1",
+      p_permission_mode: "full_access",
+      p_allowed_operations: null,
+      p_operation_scopes: [],
     });
   });
 
@@ -524,7 +583,7 @@ describe("supabase org store", () => {
     const createdFetch = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(jsonResponse([{ id: "api_key_1" }]));
-    const created = await createApiKey(adminContext("owner"), "Agent key", [
+    const created = await createApiKey(adminContext("owner"), "Agent key", "scoped", [
       { operation: "recall", bank_scope_mode: "all", bank_scopes: [] },
     ]);
     const keyRequest = createdFetch.mock.calls[0][1] as RequestInit;
@@ -640,7 +699,7 @@ describe("supabase org store", () => {
     expect(() => assertOrganizationRole("owner")).not.toThrow();
     expect(() => assertOrganizationRole("viewer")).toThrow(/Invalid organization role/);
     await expect(
-      createApiKey(adminContext("owner"), "Bad key", [
+      createApiKey(adminContext("owner"), "Bad key", "scoped", [
         { operation: "delete" as never, bank_scope_mode: "all", bank_scopes: [] },
       ])
     ).rejects.toThrow(
@@ -650,7 +709,7 @@ describe("supabase org store", () => {
       .spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(jsonResponse([{ id: "api_key_1" }]));
     await expect(
-      createApiKey(adminContext("owner"), "Create key", [
+      createApiKey(adminContext("owner"), "Create key", "scoped", [
         { operation: "create_bank", bank_scope_mode: "all", bank_scopes: [] },
         { operation: "mental_model_refresh", bank_scope_mode: "all", bank_scopes: [] },
       ])

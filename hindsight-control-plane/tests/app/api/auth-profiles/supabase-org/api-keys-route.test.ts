@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { GET } from "@/app/api/auth-profiles/supabase-org/api-keys/route";
+import { GET, POST } from "@/app/api/auth-profiles/supabase-org/api-keys/route";
 import { sdk } from "@/lib/hindsight-client";
 import {
+  createApiKey,
   getCurrentOrgContext,
   listApiKeys,
   repairApiKeyBankReferences,
@@ -17,6 +18,7 @@ vi.mock("@/lib/supabase-org/store", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/supabase-org/store")>();
   return {
     ...actual,
+    createApiKey: vi.fn(),
     getCurrentOrgContext: vi.fn(),
     listApiKeys: vi.fn(),
     repairApiKeyBankReferences: vi.fn(),
@@ -25,10 +27,37 @@ vi.mock("@/lib/supabase-org/store", async (importOriginal) => {
 
 describe("supabase org API key list route", () => {
   beforeEach(() => {
+    vi.mocked(createApiKey).mockReset();
     vi.mocked(getCurrentOrgContext).mockReset();
     vi.mocked(listApiKeys).mockReset();
     vi.mocked(repairApiKeyBankReferences).mockReset();
     vi.mocked(sdk.listBanks).mockReset();
+  });
+
+  it("creates a full-access key without resolving Bank scopes", async () => {
+    const context = {
+      user: { id: "user_owner", email: "owner@example.com" },
+      selectedOrgId: "org_1",
+      membership: {
+        org_id: "org_1",
+        user_id: "user_owner",
+        email: "owner@example.com",
+        role: "owner" as const,
+      },
+    };
+    vi.mocked(getCurrentOrgContext).mockResolvedValue(context);
+    vi.mocked(createApiKey).mockResolvedValue({ id: "key_full", key: "hs_secret" });
+
+    const response = await POST(
+      new Request("http://control.local/api/api-keys", {
+        method: "POST",
+        body: JSON.stringify({ name: "Full key", permission_mode: "full_access" }),
+      })
+    );
+
+    expect(response.status).toBe(201);
+    expect(createApiKey).toHaveBeenCalledWith(context, "Full key", "full_access", null);
+    expect(sdk.listBanks).not.toHaveBeenCalled();
   });
 
   it("filters stale Bank references and keeps responding when read repair fails", async () => {

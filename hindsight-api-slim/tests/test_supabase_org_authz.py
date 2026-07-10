@@ -214,11 +214,51 @@ async def test_resolver_maps_hindsight_api_key_to_operation_scoped_policy() -> N
     assert policy.operation_bank_scope_modes == {"recall": "all", "reflect": "all"}
     resolver._rest_get.assert_any_call(  # type: ignore[attr-defined]
         "hindsight_api_keys",
-        select="id,org_id,created_by_user_id,role,allowed_operations,revoked_at,expires_at",
+        select="id,org_id,created_by_user_id,role,permission_mode,allowed_operations,revoked_at,expires_at",
         key_hash=f"eq.{key_hash}",
         revoked_at="is.null",
         limit="1",
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("role", "can_create_bank"),
+    [("admin", True), ("member", False)],
+)
+async def test_resolver_full_access_api_key_follows_creator_current_role(
+    role: Literal["admin", "member"], can_create_bank: bool
+) -> None:
+    resolver = SupabasePolicyResolver(_resolver_config())
+    resolver._rest_get = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            [
+                {
+                    "id": "key_123",
+                    "org_id": "org_123",
+                    "created_by_user_id": "user_123",
+                    "role": "admin",
+                    "permission_mode": "full_access",
+                    "allowed_operations": None,
+                    "expires_at": "2099-01-01T00:00:00Z",
+                }
+            ],
+            [{"org_id": "org_123", "user_id": "user_123", "role": role}],
+            [{"id": "org_123", "name": "Org", "config": {}}],
+        ]
+    )
+
+    policy = await resolver.resolve(RequestContext(api_key="hs_test_secret_with_enough_entropy"))
+
+    assert policy.role == role
+    expected_operations = (
+        ALL_DATAPLANE_OPERATIONS if role == "admin" else ALL_DATAPLANE_OPERATIONS - UNSCOPED_DATAPLANE_OPERATIONS
+    )
+    assert policy.allowed_operations == expected_operations
+    assert ("create_bank" in policy.allowed_operations) is can_create_bank
+    assert policy.operation_bank_scope_modes is None
+    assert policy.operation_bank_internal_ids is None
+    assert resolver._rest_get.await_count == 3  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
@@ -464,6 +504,24 @@ async def test_authorization_allows_admin_create_bank() -> None:
 async def test_authorization_denies_member_create_bank() -> None:
     validator = SupabaseAuthorizationExtension(_resolver_config())
     validator.resolver.resolve = AsyncMock(return_value=_policy(role="member"))  # type: ignore[method-assign]
+
+    result = await validator.validate_create_bank(CreateBankContext(bank_id="bank_new", request_context=_jwt_context()))
+
+    assert result.allowed is False
+    assert result.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_authorization_empty_scoped_key_does_not_inherit_creator_role() -> None:
+    validator = SupabaseAuthorizationExtension(_resolver_config())
+    validator.resolver.resolve = AsyncMock(  # type: ignore[method-assign]
+        return_value=_policy(
+            role="admin",
+            api_key_id="key_123",
+            allowed_operations=frozenset(),
+            operation_bank_scope_modes={},
+        )
+    )
 
     result = await validator.validate_create_bank(CreateBankContext(bank_id="bank_new", request_context=_jwt_context()))
 

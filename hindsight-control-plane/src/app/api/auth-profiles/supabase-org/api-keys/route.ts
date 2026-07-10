@@ -4,6 +4,7 @@ import {
   type ApiKeyBankScopeInput,
   type ApiKeyOperation,
   type ApiKeyOperationScopeInput,
+  type ApiKeyPermissionMode,
   type HindsightApiKeySummary,
   createApiKey,
   getCurrentOrgContext,
@@ -84,6 +85,7 @@ export async function POST(request: Request) {
   try {
     const body = (await request.json()) as {
       name?: string;
+      permission_mode?: ApiKeyPermissionMode;
       operation_scopes?: Array<{
         operation?: string;
         bank_scope_mode?: "all" | "selected";
@@ -91,9 +93,16 @@ export async function POST(request: Request) {
       }> | null;
     };
     if (!body.name) return jsonError("name is required", 400);
+    const permissionMode = body.permission_mode ?? "scoped";
+    if (permissionMode !== "scoped" && permissionMode !== "full_access") {
+      return jsonError("Invalid API key permission mode", 400);
+    }
     const context = await getCurrentOrgContext(request);
-    const operationScopes = await resolveOperationScopes(request, body.operation_scopes ?? null);
-    const apiKey = await createApiKey(context, body.name, operationScopes);
+    const operationScopes =
+      permissionMode === "scoped"
+        ? await resolveOperationScopes(request, body.operation_scopes ?? null)
+        : null;
+    const apiKey = await createApiKey(context, body.name, permissionMode, operationScopes);
     return NextResponse.json({ api_key: apiKey }, { status: 201 });
   } catch (error) {
     return jsonError(error instanceof Error ? error.message : "Failed to create API key", 400);

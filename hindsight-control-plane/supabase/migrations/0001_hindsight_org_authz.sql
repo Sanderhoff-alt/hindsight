@@ -10,6 +10,9 @@ begin
   if not exists (select 1 from pg_type where typname = 'organization_role') then
     create type organization_role as enum ('owner', 'admin', 'member');
   end if;
+  if not exists (select 1 from pg_type where typname = 'api_key_permission_mode') then
+    create type api_key_permission_mode as enum ('scoped', 'full_access');
+  end if;
 end $$;
 
 create table if not exists organization_members (
@@ -42,13 +45,18 @@ create table if not exists hindsight_api_keys (
   key_hash text not null unique,
   encrypted_key text,
   role organization_role not null default 'member',
+  permission_mode api_key_permission_mode not null default 'scoped',
   allowed_operations jsonb,
   expires_at timestamptz,
   revoked_at timestamptz,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  constraint hindsight_api_keys_permission_mode_operations_check
+    check (
+      (permission_mode = 'full_access' and allowed_operations is null)
+      or
+      (permission_mode = 'scoped' and allowed_operations is not null)
+    )
 );
-
-alter table hindsight_api_keys add column if not exists encrypted_key text;
 
 create table if not exists hindsight_api_key_operation_scopes (
   api_key_id uuid not null references hindsight_api_keys(id) on delete cascade,
@@ -78,6 +86,142 @@ create table if not exists hindsight_api_key_created_banks (
   primary key (api_key_id, bank_internal_id)
 );
 
+-- Keep the key row and both scope levels in one transaction so a failed
+-- restriction cannot leave the prior, broader scope active.
+create function replace_hindsight_api_key_permissions(
+  p_api_key_id uuid,
+  p_org_id text,
+  p_permission_mode api_key_permission_mode,
+  p_allowed_operations jsonb,
+  p_operation_scopes jsonb
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if p_permission_mode = 'full_access' and p_allowed_operations is not null then
+    raise exception 'Full-access API keys cannot store allowed operations';
+  end if;
+  if p_permission_mode = 'scoped' and p_allowed_operations is null then
+    raise exception 'Scoped API keys require allowed operations';
+  end if;
+
+  update hindsight_api_keys
+  set
+    permission_mode = p_permission_mode,
+    allowed_operations = p_allowed_operations
+  where id = p_api_key_id
+    and org_id = p_org_id
+    and revoked_at is null;
+
+  if not found then
+    raise exception 'Active API key not found';
+  end if;
+
+  delete from hindsight_api_key_operation_bank_scopes
+  where api_key_id = p_api_key_id;
+
+  delete from hindsight_api_key_operation_scopes
+  where api_key_id = p_api_key_id;
+
+  if p_permission_mode = 'scoped' then
+    insert into hindsight_api_key_operation_scopes (
+      api_key_id,
+      operation,
+      bank_scope_mode
+    )
+    select
+      p_api_key_id,
+      scope.operation,
+      scope.bank_scope_mode
+    from jsonb_to_recordset(coalesce(p_operation_scopes, '[]'::jsonb)) as scope(
+      operation text,
+      bank_scope_mode text,
+      bank_scopes jsonb
+    )
+    where scope.operation <> 'create_bank';
+
+    insert into hindsight_api_key_operation_bank_scopes (
+      api_key_id,
+      operation,
+      bank_id,
+      bank_internal_id
+    )
+    select
+      p_api_key_id,
+      scope.operation,
+      bank.bank_id,
+      bank.bank_internal_id
+    from jsonb_to_recordset(coalesce(p_operation_scopes, '[]'::jsonb)) as scope(
+      operation text,
+      bank_scope_mode text,
+      bank_scopes jsonb
+    )
+    cross join lateral jsonb_to_recordset(coalesce(scope.bank_scopes, '[]'::jsonb)) as bank(
+      bank_id text,
+      bank_internal_id text
+    )
+    where scope.operation <> 'create_bank'
+      and scope.bank_scope_mode = 'selected';
+  end if;
+end;
+$$;
+
+create function create_hindsight_api_key(
+  p_org_id text,
+  p_created_by_user_id uuid,
+  p_name text,
+  p_key_hash text,
+  p_encrypted_key text,
+  p_role organization_role,
+  p_permission_mode api_key_permission_mode,
+  p_allowed_operations jsonb,
+  p_operation_scopes jsonb
+)
+returns table(id uuid)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  new_api_key_id uuid;
+begin
+  insert into hindsight_api_keys (
+    org_id,
+    created_by_user_id,
+    name,
+    key_hash,
+    encrypted_key,
+    role,
+    permission_mode,
+    allowed_operations
+  )
+  values (
+    p_org_id,
+    p_created_by_user_id,
+    p_name,
+    p_key_hash,
+    p_encrypted_key,
+    p_role,
+    p_permission_mode,
+    p_allowed_operations
+  )
+  returning hindsight_api_keys.id into new_api_key_id;
+
+  perform replace_hindsight_api_key_permissions(
+    new_api_key_id,
+    p_org_id,
+    p_permission_mode,
+    p_allowed_operations,
+    p_operation_scopes
+  );
+
+  return query select new_api_key_id;
+end;
+$$;
+
 create index if not exists organization_members_user_id_idx on organization_members(user_id);
 create index if not exists organization_invites_org_id_idx on organization_invites(org_id);
 create index if not exists hindsight_api_keys_org_id_idx on hindsight_api_keys(org_id);
@@ -94,7 +238,7 @@ alter table hindsight_api_key_operation_scopes enable row level security;
 alter table hindsight_api_key_operation_bank_scopes enable row level security;
 alter table hindsight_api_key_created_banks enable row level security;
 
-grant usage on type organization_role to anon, authenticated, service_role;
+grant usage on type organization_role, api_key_permission_mode to anon, authenticated, service_role;
 
 grant select on organizations to anon, authenticated;
 grant select on organization_members to anon, authenticated;
@@ -111,3 +255,40 @@ grant all on hindsight_api_keys to service_role;
 grant all on hindsight_api_key_operation_scopes to service_role;
 grant all on hindsight_api_key_operation_bank_scopes to service_role;
 grant all on hindsight_api_key_created_banks to service_role;
+
+revoke all on function replace_hindsight_api_key_permissions(
+  uuid,
+  text,
+  api_key_permission_mode,
+  jsonb,
+  jsonb
+) from public;
+revoke all on function create_hindsight_api_key(
+  text,
+  uuid,
+  text,
+  text,
+  text,
+  organization_role,
+  api_key_permission_mode,
+  jsonb,
+  jsonb
+) from public;
+grant execute on function replace_hindsight_api_key_permissions(
+  uuid,
+  text,
+  api_key_permission_mode,
+  jsonb,
+  jsonb
+) to service_role;
+grant execute on function create_hindsight_api_key(
+  text,
+  uuid,
+  text,
+  text,
+  text,
+  organization_role,
+  api_key_permission_mode,
+  jsonb,
+  jsonb
+) to service_role;

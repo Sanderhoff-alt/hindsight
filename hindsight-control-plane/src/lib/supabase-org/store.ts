@@ -17,6 +17,7 @@ import {
 import type { ApiKeyOperation } from "@/lib/supabase-org/operations";
 
 export type OrganizationRole = "owner" | "admin" | "member";
+export type ApiKeyPermissionMode = "scoped" | "full_access";
 export type ApiKeyBankScopeMode = "all" | "selected";
 export interface ApiKeyBankScopeInput {
   bank_id: string;
@@ -85,6 +86,7 @@ export interface HindsightApiKeySummary {
   created_by_user_id?: string | null;
   name: string;
   role: OrganizationRole;
+  permission_mode?: ApiKeyPermissionMode;
   allowed_operations?: ApiKeyOperation[] | null;
   operation_scopes?: ApiKeyOperationScopeSummary[];
   owned_banks?: OwnedBankSummary[];
@@ -595,7 +597,7 @@ export async function listApiKeys(context: CurrentOrgContext): Promise<Hindsight
   const keys = await restGet<HindsightApiKeySummary>("hindsight_api_keys", {
     org_id: `eq.${context.selectedOrgId}`,
     select:
-      "id,org_id,created_by_user_id,name,role,allowed_operations,expires_at,revoked_at,created_at",
+      "id,org_id,created_by_user_id,name,role,permission_mode,allowed_operations,expires_at,revoked_at,created_at",
     order: "created_at.desc",
   });
   const visibleKeys = keys.filter((key) => isAdmin || key.created_by_user_id === context.user.id);
@@ -688,14 +690,16 @@ export async function listApiKeys(context: CurrentOrgContext): Promise<Hindsight
 export async function createApiKey(
   context: CurrentOrgContext,
   name: string,
+  permissionMode: ApiKeyPermissionMode,
   operationScopes: ApiKeyOperationScopeInput[] | null
 ): Promise<{ id: string; key: string }> {
   const keyName = normalizeName(name, "API key name");
-  const normalizedOperationScopes = normalizeApiKeyOperationScopes(
-    operationScopes,
-    context.membership.role
-  );
-  const operations = normalizedOperationScopes.map((scope) => scope.operation);
+  const normalizedOperationScopes =
+    permissionMode === "scoped"
+      ? normalizeApiKeyOperationScopes(operationScopes, context.membership.role)
+      : [];
+  const operations =
+    permissionMode === "scoped" ? normalizedOperationScopes.map((scope) => scope.operation) : null;
   const rawKey = `${API_KEY_PREFIX}${crypto.randomUUID().replaceAll("-", "")}${crypto.randomUUID().replaceAll("-", "")}`;
   const keyHash = await sha256Hex(rawKey);
   const encryptedKey = await encryptApiKey(rawKey);
@@ -706,6 +710,7 @@ export async function createApiKey(
     p_key_hash: keyHash,
     p_encrypted_key: encryptedKey,
     p_role: context.membership.role,
+    p_permission_mode: permissionMode,
     p_allowed_operations: operations,
     p_operation_scopes: normalizedOperationScopes,
   });
@@ -720,7 +725,7 @@ export async function revealApiKey(
     id: `eq.${id}`,
     org_id: `eq.${context.selectedOrgId}`,
     select:
-      "id,org_id,created_by_user_id,name,role,allowed_operations,expires_at,revoked_at,created_at,encrypted_key",
+      "id,org_id,created_by_user_id,name,role,permission_mode,allowed_operations,expires_at,revoked_at,created_at,encrypted_key",
     limit: "1",
   });
   const key = rows[0];
@@ -738,7 +743,7 @@ export async function revokeApiKey(context: CurrentOrgContext, id: string): Prom
       id: `eq.${id}`,
       org_id: `eq.${context.selectedOrgId}`,
       select:
-        "id,org_id,created_by_user_id,name,role,allowed_operations,expires_at,revoked_at,created_at",
+        "id,org_id,created_by_user_id,name,role,permission_mode,allowed_operations,expires_at,revoked_at,created_at",
       limit: "1",
     });
     if (keys[0]?.created_by_user_id !== context.user.id)
@@ -754,13 +759,14 @@ export async function revokeApiKey(context: CurrentOrgContext, id: string): Prom
 export async function updateApiKeyPermissions(
   context: CurrentOrgContext,
   id: string,
+  permissionMode: ApiKeyPermissionMode,
   operationScopes: ApiKeyOperationScopeInput[] | null
 ): Promise<void> {
   const rows = await restGet<HindsightApiKeySummary>("hindsight_api_keys", {
     id: `eq.${id}`,
     org_id: `eq.${context.selectedOrgId}`,
     select:
-      "id,org_id,created_by_user_id,name,role,allowed_operations,expires_at,revoked_at,created_at",
+      "id,org_id,created_by_user_id,name,role,permission_mode,allowed_operations,expires_at,revoked_at,created_at",
     limit: "1",
   });
   const key = rows[0];
@@ -769,14 +775,18 @@ export async function updateApiKeyPermissions(
   if (!isAdmin && key.created_by_user_id !== context.user.id)
     throw new Error("API key is not owned by this user");
   if (key.revoked_at) throw new Error("Cannot update revoked API key");
-  const normalizedOperationScopes = normalizeApiKeyOperationScopes(
-    operationScopes,
-    context.membership.role
-  );
+  const normalizedOperationScopes =
+    permissionMode === "scoped"
+      ? normalizeApiKeyOperationScopes(operationScopes, context.membership.role)
+      : [];
   await restRpc("replace_hindsight_api_key_permissions", {
     p_api_key_id: id,
     p_org_id: context.selectedOrgId,
-    p_allowed_operations: normalizedOperationScopes.map((scope) => scope.operation),
+    p_permission_mode: permissionMode,
+    p_allowed_operations:
+      permissionMode === "scoped"
+        ? normalizedOperationScopes.map((scope) => scope.operation)
+        : null,
     p_operation_scopes: normalizedOperationScopes,
   });
 }

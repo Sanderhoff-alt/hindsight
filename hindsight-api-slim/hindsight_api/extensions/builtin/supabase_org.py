@@ -89,6 +89,7 @@ class ApiKeyRow(BaseModel):
     org_id: str
     created_by_user_id: str | None = None
     role: Literal["owner", "admin", "member"] = "member"
+    permission_mode: Literal["scoped", "full_access"] = "scoped"
     allowed_operations: list[str] | None = None
     revoked_at: str | None = None
     expires_at: str | None = None
@@ -142,9 +143,8 @@ class CallerPolicy:
     api_key_id: str | None
     role: Literal["owner", "admin", "member"]
     allowed_operations: frozenset[str] | None
-    # None means this is a JWT/member policy, which does not use the API-key
-    # per-operation bank-scope model. API-key policies use an explicit mapping
-    # whose values are only "all" or "selected".
+    # None means this is a JWT/member or full-access API-key policy, neither of
+    # which uses the scoped-key per-operation bank-scope model.
     operation_bank_scope_modes: dict[str, Literal["all", "selected"]] | None = None
     operation_bank_internal_ids: dict[str, frozenset[str]] | None = None
     tenant_config: dict[str, Any] = field(default_factory=dict)
@@ -241,7 +241,7 @@ class SupabasePolicyResolver:
         key_hash = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
         rows = await self._rest_get(
             "hindsight_api_keys",
-            select="id,org_id,created_by_user_id,role,allowed_operations,revoked_at,expires_at",
+            select="id,org_id,created_by_user_id,role,permission_mode,allowed_operations,revoked_at,expires_at",
             key_hash=f"eq.{key_hash}",
             revoked_at="is.null",
             limit="1",
@@ -256,42 +256,47 @@ class SupabasePolicyResolver:
         if creator_member is None:
             raise AuthenticationError("API key creator is no longer a member of the organization")
         creator_operations = _operations_for_role(creator_member.role)
-        key_operations = (
-            frozenset(operation for operation in key.allowed_operations if operation in ALL_DATAPLANE_OPERATIONS)
-            if key.allowed_operations is not None
-            else creator_operations
-        )
-        effective_operations = key_operations & creator_operations
-        operation_scope_modes: dict[str, Literal["all", "selected"]] = {}
-        operation_bank_internal_ids: dict[str, frozenset[str]] = {}
-        scope_rows = await self._rest_get(
-            "hindsight_api_key_operation_scopes",
-            select="operation,bank_scope_mode",
-            api_key_id=f"eq.{key.id}",
-        )
-        operation_scopes = TypeAdapter(list[ApiKeyOperationScopeRow]).validate_python(scope_rows)
-        operation_scope_modes = {
-            scope.operation: scope.bank_scope_mode
-            for scope in operation_scopes
-            if scope.operation in effective_operations
-        }
-        selected_operations = [operation for operation, mode in operation_scope_modes.items() if mode == "selected"]
-        if selected_operations:
-            bank_scope_rows = await self._rest_get(
-                "hindsight_api_key_operation_bank_scopes",
-                select="operation,bank_id,bank_internal_id",
-                api_key_id=f"eq.{key.id}",
-                operation=f"in.({','.join(selected_operations)})",
+        if key.permission_mode == "full_access":
+            # Full-access keys are delegated user credentials: they intentionally
+            # gain and lose permissions as their creator's current role changes.
+            effective_operations = creator_operations
+            operation_scope_modes = None
+            operation_bank_internal_ids = None
+        else:
+            key_operations = frozenset(
+                operation for operation in (key.allowed_operations or []) if operation in ALL_DATAPLANE_OPERATIONS
             )
-            bank_scopes = TypeAdapter(list[ApiKeyOperationBankScopeRow]).validate_python(bank_scope_rows)
-            by_operation: dict[str, set[str]] = {}
-            for scope in bank_scopes:
-                if scope.operation not in effective_operations or not scope.bank_internal_id:
-                    continue
-                by_operation.setdefault(scope.operation, set()).add(scope.bank_internal_id)
-            operation_bank_internal_ids = {
-                operation: frozenset(internal_ids) for operation, internal_ids in by_operation.items()
+            effective_operations = key_operations & creator_operations
+            operation_scope_modes = {}
+            operation_bank_internal_ids = {}
+            scope_rows = await self._rest_get(
+                "hindsight_api_key_operation_scopes",
+                select="operation,bank_scope_mode",
+                api_key_id=f"eq.{key.id}",
+            )
+            operation_scopes = TypeAdapter(list[ApiKeyOperationScopeRow]).validate_python(scope_rows)
+            operation_scope_modes = {
+                scope.operation: scope.bank_scope_mode
+                for scope in operation_scopes
+                if scope.operation in effective_operations
             }
+            selected_operations = [operation for operation, mode in operation_scope_modes.items() if mode == "selected"]
+            if selected_operations:
+                bank_scope_rows = await self._rest_get(
+                    "hindsight_api_key_operation_bank_scopes",
+                    select="operation,bank_id,bank_internal_id",
+                    api_key_id=f"eq.{key.id}",
+                    operation=f"in.({','.join(selected_operations)})",
+                )
+                bank_scopes = TypeAdapter(list[ApiKeyOperationBankScopeRow]).validate_python(bank_scope_rows)
+                by_operation: dict[str, set[str]] = {}
+                for scope in bank_scopes:
+                    if scope.operation not in effective_operations or not scope.bank_internal_id:
+                        continue
+                    by_operation.setdefault(scope.operation, set()).add(scope.bank_internal_id)
+                operation_bank_internal_ids = {
+                    operation: frozenset(internal_ids) for operation, internal_ids in by_operation.items()
+                }
         organization = await self._get_organization(key.org_id)
         if organization is None:
             raise AuthenticationError("API key organization does not exist")
@@ -513,6 +518,14 @@ def _operations_for_role(role: Literal["owner", "admin", "member"]) -> frozenset
     return ALL_DATAPLANE_OPERATIONS
 
 
+def _allowed_operations_for_policy(policy: CallerPolicy) -> frozenset[str]:
+    # An empty scoped-key operation set means deny all; only None delegates the
+    # decision to the caller role (used by policies without an explicit set).
+    if policy.allowed_operations is not None:
+        return policy.allowed_operations
+    return _operations_for_role(policy.role)
+
+
 def _operation_name(operation: BankOperationName) -> str:
     return operation.value if isinstance(operation, BankReadOperation | BankWriteOperation) else str(operation)
 
@@ -621,7 +634,7 @@ class SupabaseAuthorizationExtension(OperationValidatorExtension):
 
     async def validate_create_bank(self, ctx: CreateBankContext) -> ValidationResult:
         policy = await self._resolve_policy(ctx.request_context)
-        allowed_operations = policy.allowed_operations or _operations_for_role(policy.role)
+        allowed_operations = _allowed_operations_for_policy(policy)
         if "create_bank" not in allowed_operations:
             return ValidationResult.reject("Caller is not allowed to create banks", status_code=403)
         return ValidationResult.accept()
@@ -630,7 +643,7 @@ class SupabaseAuthorizationExtension(OperationValidatorExtension):
         policy = await self._resolve_policy(request_context)
         if policy.api_key_id is None:
             return
-        allowed_operations = policy.allowed_operations or _operations_for_role(policy.role)
+        allowed_operations = _allowed_operations_for_policy(policy)
         if "create_bank" not in allowed_operations:
             return
         bank_internal_id = await self._get_bank_internal_id(bank_id)
@@ -696,7 +709,7 @@ class SupabaseAuthorizationExtension(OperationValidatorExtension):
         policy = await self._resolve_policy(request_context)
         if await self._can_access_owned_bank(policy, bank_id):
             return ValidationResult.accept()
-        allowed_operations = policy.allowed_operations or _operations_for_role(policy.role)
+        allowed_operations = _allowed_operations_for_policy(policy)
         if operation_name not in allowed_operations:
             return ValidationResult.reject("Caller is not allowed to perform this operation", status_code=403)
         if not await self._can_access_bank_for_operation(policy, bank_id, operation_name, request_context):
@@ -712,7 +725,7 @@ class SupabaseAuthorizationExtension(OperationValidatorExtension):
         policy = await self._resolve_policy(request_context)
         if await self._can_access_owned_bank(policy, bank_id):
             return ValidationResult.accept()
-        allowed_operations = policy.allowed_operations or _operations_for_role(policy.role)
+        allowed_operations = _allowed_operations_for_policy(policy)
         if operation not in allowed_operations:
             return ValidationResult.reject("Caller is not allowed to perform this operation", status_code=403)
         if not await self._can_access_bank_for_operation(policy, bank_id, operation, request_context):
@@ -751,7 +764,7 @@ class SupabaseAuthorizationExtension(OperationValidatorExtension):
     async def _can_access_owned_bank(self, policy: CallerPolicy, bank_id: str) -> bool:
         if policy.api_key_id is None:
             return False
-        allowed_operations = policy.allowed_operations or _operations_for_role(policy.role)
+        allowed_operations = _allowed_operations_for_policy(policy)
         if "create_bank" not in allowed_operations:
             return False
         current_internal_id = await self._get_bank_internal_id(bank_id)
@@ -762,7 +775,7 @@ class SupabaseAuthorizationExtension(OperationValidatorExtension):
     async def _get_owned_bank_internal_ids(self, policy: CallerPolicy) -> frozenset[str]:
         if policy.api_key_id is None:
             return frozenset()
-        allowed_operations = policy.allowed_operations or _operations_for_role(policy.role)
+        allowed_operations = _allowed_operations_for_policy(policy)
         if "create_bank" not in allowed_operations:
             return frozenset()
         return await self.resolver.list_api_key_created_bank_internal_ids(policy.api_key_id)

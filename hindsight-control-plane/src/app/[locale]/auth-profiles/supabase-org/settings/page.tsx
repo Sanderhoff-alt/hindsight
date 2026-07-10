@@ -27,6 +27,7 @@ import {
 import type { ApiKeyOperation as ApiKeyOperationName } from "@/lib/supabase-org/operations";
 
 type Role = "owner" | "admin" | "member";
+type ApiKeyPermissionMode = "scoped" | "full_access";
 
 interface Organization {
   id: string;
@@ -53,6 +54,7 @@ interface Invite {
 interface ApiKeySummary {
   id: string;
   name: string;
+  permission_mode?: ApiKeyPermissionMode;
   allowed_operations?: string[] | null;
   operation_scopes?: Array<{
     operation: string;
@@ -97,6 +99,12 @@ const COPY: Record<string, string> = {
     "Copy this link now. It is only shown after creation and will not be available after you leave or refresh this page.",
   apiKeys: "API keys",
   keyName: "Key name",
+  permissionMode: "Permission mode",
+  fullAccess: "Full access",
+  fullAccessDescription:
+    "Dynamically follows the creator's current organization role across all banks.",
+  scopedAccess: "Scoped access",
+  scopedAccessDescription: "Choose allowed operations and bank scopes for this key.",
   allAllowedOperations: "All allowed operations",
   allAllowed: "All allowed",
   allCurrentAndFutureBanks: "All current and future banks",
@@ -209,6 +217,7 @@ export default function SettingsPage() {
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState<Role>("member");
   const [apiKeyName, setApiKeyName] = useState("");
+  const [apiKeyPermissionMode, setApiKeyPermissionMode] = useState<ApiKeyPermissionMode>("scoped");
   const [apiKeyOperations, setApiKeyOperations] = useState<ApiKeyOperationName[]>([]);
   const [apiKeyGroupScopes, setApiKeyGroupScopes] = useState<Record<string, BankScopeSelection>>(
     () => createDefaultGroupScopes()
@@ -217,6 +226,8 @@ export default function SettingsPage() {
     {}
   );
   const [editingApiKeyId, setEditingApiKeyId] = useState<string | null>(null);
+  const [editApiKeyPermissionMode, setEditApiKeyPermissionMode] =
+    useState<ApiKeyPermissionMode>("scoped");
   const [editApiKeyOperations, setEditApiKeyOperations] = useState<ApiKeyOperationName[]>([]);
   const [editApiKeyGroupScopes, setEditApiKeyGroupScopes] = useState<
     Record<string, BankScopeSelection>
@@ -369,14 +380,15 @@ export default function SettingsPage() {
       method: "POST",
       body: JSON.stringify({
         name: apiKeyName,
-        operation_scopes: buildOperationScopes(
-          apiKeyOperations,
-          apiKeyGroupScopes,
-          apiKeyOperationOverrides
-        ),
+        permission_mode: apiKeyPermissionMode,
+        operation_scopes:
+          apiKeyPermissionMode === "scoped"
+            ? buildOperationScopes(apiKeyOperations, apiKeyGroupScopes, apiKeyOperationOverrides)
+            : null,
       }),
     });
     setApiKeyName("");
+    setApiKeyPermissionMode("scoped");
     setApiKeyOperations([...availableApiKeyOperations]);
     setApiKeyGroupScopes(createDefaultGroupScopes());
     setApiKeyOperationOverrides({});
@@ -393,9 +405,13 @@ export default function SettingsPage() {
   }
 
   function startEditingApiKey(apiKey: ApiKeySummary) {
-    const operations = (apiKey.allowed_operations ?? []).filter((operation) =>
-      availableApiKeyOperations.includes(operation as ApiKeyOperationName)
-    ) as ApiKeyOperationName[];
+    const permissionMode = apiKey.permission_mode ?? "scoped";
+    const operations =
+      permissionMode === "full_access"
+        ? [...availableApiKeyOperations]
+        : ((apiKey.allowed_operations ?? []).filter((operation) =>
+            availableApiKeyOperations.includes(operation as ApiKeyOperationName)
+          ) as ApiKeyOperationName[]);
     const ownedBankIds = new Set((apiKey.owned_banks ?? []).map((bank) => bank.bank_id));
     const excludeOwnedBanks = (bankIds: string[] | undefined) =>
       (bankIds ?? []).filter((bankId) => !ownedBankIds.has(bankId));
@@ -432,6 +448,7 @@ export default function SettingsPage() {
       }
     }
     setEditingApiKeyId(apiKey.id);
+    setEditApiKeyPermissionMode(permissionMode);
     setEditApiKeyOperations(operations);
     setEditApiKeyGroupScopes(nextGroupScopes);
     setEditApiKeyOperationOverrides(nextOperationOverrides);
@@ -452,12 +469,16 @@ export default function SettingsPage() {
     await fetchJson(`${API_BASE}/api-keys/${encodeURIComponent(editingApiKeyId)}`, {
       method: "PATCH",
       body: JSON.stringify({
-        operation_scopes: buildOperationScopes(
-          editApiKeyOperations,
-          editApiKeyGroupScopes,
-          editApiKeyOperationOverrides,
-          (editingApiKey?.owned_banks ?? []).map((bank) => bank.bank_id)
-        ),
+        permission_mode: editApiKeyPermissionMode,
+        operation_scopes:
+          editApiKeyPermissionMode === "scoped"
+            ? buildOperationScopes(
+                editApiKeyOperations,
+                editApiKeyGroupScopes,
+                editApiKeyOperationOverrides,
+                (editingApiKey?.owned_banks ?? []).map((bank) => bank.bank_id)
+              )
+            : null,
       }),
     });
     setEditingApiKeyId(null);
@@ -959,46 +980,75 @@ export default function SettingsPage() {
                     />
                     <Button
                       type="submit"
-                      disabled={!apiKeyName.trim() || apiKeyOperations.length === 0}
+                      disabled={
+                        !apiKeyName.trim() ||
+                        (apiKeyPermissionMode === "scoped" && apiKeyOperations.length === 0)
+                      }
                     >
                       <KeyRound className="mr-2 h-4 w-4" />
                       Create
                     </Button>
                   </div>
-                  <div className="rounded-md border p-3">
-                    <div className="mb-2 flex items-center justify-between gap-2">
-                      <span className="text-sm font-medium">Operations</span>
-                      <div className="flex gap-1">
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setApiKeyOperations([...availableApiKeyOperations])}
-                        >
-                          {t("allAllowed")}
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setApiKeyOperations([])}
-                        >
-                          None
-                        </Button>
+                  <div className="space-y-2 rounded-md border p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-medium">{t("permissionMode")}</span>
+                      <Select
+                        value={apiKeyPermissionMode}
+                        onValueChange={(value) =>
+                          setApiKeyPermissionMode(value as ApiKeyPermissionMode)
+                        }
+                      >
+                        <SelectTrigger className="h-8 w-40">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="full_access">{t("fullAccess")}</SelectItem>
+                          <SelectItem value="scoped">{t("scopedAccess")}</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {apiKeyPermissionMode === "full_access"
+                        ? t("fullAccessDescription")
+                        : t("scopedAccessDescription")}
+                    </p>
+                  </div>
+                  {apiKeyPermissionMode === "scoped" ? (
+                    <div className="rounded-md border p-3">
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <span className="text-sm font-medium">Operations</span>
+                        <div className="flex gap-1">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setApiKeyOperations([...availableApiKeyOperations])}
+                          >
+                            {t("allAllowed")}
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setApiKeyOperations([])}
+                          >
+                            None
+                          </Button>
+                        </div>
+                      </div>
+                      <div className="max-h-72 overflow-y-auto pr-1">
+                        {renderOperationGroups(
+                          apiKeyOperations,
+                          toggleApiKeyOperation,
+                          setApiKeyOperations,
+                          apiKeyGroupScopes,
+                          setApiKeyGroupScopes,
+                          apiKeyOperationOverrides,
+                          setApiKeyOperationOverrides
+                        )}
                       </div>
                     </div>
-                    <div className="max-h-72 overflow-y-auto pr-1">
-                      {renderOperationGroups(
-                        apiKeyOperations,
-                        toggleApiKeyOperation,
-                        setApiKeyOperations,
-                        apiKeyGroupScopes,
-                        setApiKeyGroupScopes,
-                        apiKeyOperationOverrides,
-                        setApiKeyOperationOverrides
-                      )}
-                    </div>
-                  </div>
+                  ) : null}
                 </form>
                 {newApiKey && (
                   <div className="flex items-center gap-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
@@ -1021,11 +1071,11 @@ export default function SettingsPage() {
                       <div>
                         <div className="font-medium">{apiKey.name}</div>
                         <div className="text-xs text-muted-foreground">
-                          {apiKey.allowed_operations?.length
-                            ? `${apiKey.allowed_operations.length} operations`
-                            : t("allAllowedOperations")}
-                          {" · "}
-                          {summarizeApiKeyBankScopes(apiKey)}
+                          {(apiKey.permission_mode ?? "scoped") === "full_access"
+                            ? `${t("fullAccess")} · follows creator role · all banks`
+                            : apiKey.allowed_operations?.length
+                              ? `${apiKey.allowed_operations.length} operations · ${summarizeApiKeyBankScopes(apiKey)}`
+                              : `${t("allAllowedOperations")} · ${summarizeApiKeyBankScopes(apiKey)}`}
                           {apiKey.owned_banks?.length
                             ? ` · ${apiKey.owned_banks.length} existing owned`
                             : ""}
@@ -1078,7 +1128,23 @@ export default function SettingsPage() {
                           onSubmit={saveApiKeyPermissions}
                         >
                           <div className="flex items-center justify-between gap-2">
-                            <span className="text-sm font-medium">Permissions</span>
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-medium">Permissions</span>
+                              <Select
+                                value={editApiKeyPermissionMode}
+                                onValueChange={(value) =>
+                                  setEditApiKeyPermissionMode(value as ApiKeyPermissionMode)
+                                }
+                              >
+                                <SelectTrigger className="h-8 w-40">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="full_access">{t("fullAccess")}</SelectItem>
+                                  <SelectItem value="scoped">{t("scopedAccess")}</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
                             <div className="flex gap-2">
                               <Button
                                 type="button"
@@ -1091,24 +1157,34 @@ export default function SettingsPage() {
                               <Button
                                 type="submit"
                                 size="sm"
-                                disabled={editApiKeyOperations.length === 0}
+                                disabled={
+                                  editApiKeyPermissionMode === "scoped" &&
+                                  editApiKeyOperations.length === 0
+                                }
                               >
                                 Save
                               </Button>
                             </div>
                           </div>
-                          <div className="max-h-72 overflow-y-auto pr-1">
-                            {renderOperationGroups(
-                              editApiKeyOperations,
-                              toggleEditApiKeyOperation,
-                              setEditApiKeyOperations,
-                              editApiKeyGroupScopes,
-                              setEditApiKeyGroupScopes,
-                              editApiKeyOperationOverrides,
-                              setEditApiKeyOperationOverrides,
-                              apiKey.owned_banks ?? []
-                            )}
-                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            {editApiKeyPermissionMode === "full_access"
+                              ? t("fullAccessDescription")
+                              : t("scopedAccessDescription")}
+                          </p>
+                          {editApiKeyPermissionMode === "scoped" ? (
+                            <div className="max-h-72 overflow-y-auto pr-1">
+                              {renderOperationGroups(
+                                editApiKeyOperations,
+                                toggleEditApiKeyOperation,
+                                setEditApiKeyOperations,
+                                editApiKeyGroupScopes,
+                                setEditApiKeyGroupScopes,
+                                editApiKeyOperationOverrides,
+                                setEditApiKeyOperationOverrides,
+                                apiKey.owned_banks ?? []
+                              )}
+                            </div>
+                          ) : null}
                         </form>
                       )}
                     </div>

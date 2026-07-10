@@ -4,6 +4,7 @@ import {
   type ApiKeyBankScopeInput,
   type ApiKeyOperation,
   type ApiKeyOperationScopeInput,
+  type ApiKeyPermissionMode,
   getCurrentOrgContext,
   jsonError,
   revealApiKey,
@@ -92,15 +93,23 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   try {
     const { id } = await params;
     const body = (await request.json()) as {
+      permission_mode?: ApiKeyPermissionMode;
       operation_scopes?: Array<{
         operation?: string;
         bank_scope_mode?: "all" | "selected";
         bank_ids?: string[] | null;
       }> | null;
     };
+    const permissionMode = body.permission_mode ?? "scoped";
+    if (permissionMode !== "scoped" && permissionMode !== "full_access") {
+      return jsonError("Invalid API key permission mode", 400);
+    }
     const context = await getCurrentOrgContext(request);
-    const operationScopes = await resolveOperationScopes(request, body.operation_scopes ?? null);
-    await updateApiKeyPermissions(context, id, operationScopes);
+    const operationScopes =
+      permissionMode === "scoped"
+        ? await resolveOperationScopes(request, body.operation_scopes ?? null)
+        : null;
+    await updateApiKeyPermissions(context, id, permissionMode, operationScopes);
     return NextResponse.json({ success: true }, { status: 200 });
   } catch (error) {
     return jsonError(error instanceof Error ? error.message : "Failed to update API key", 400);
