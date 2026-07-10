@@ -12,7 +12,6 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 import httpx
-import jwt as pyjwt
 from jwt import PyJWK
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
@@ -37,13 +36,11 @@ from hindsight_api.extensions.tenant import AuthenticationError, Tenant, TenantC
 from hindsight_api.models import RequestContext
 
 from .supabase_authz_operations import operation_names_for_scope, operation_names_for_source
+from .supabase_jwks import SupabaseJwksVerifierMixin
 
 logger = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT_SECONDS = 10.0
-JWKS_CACHE_TTL_SECONDS = 600
-JWKS_MIN_REFRESH_INTERVAL_SECONDS = 30
-SUPPORTED_ALGORITHMS = ["RS256", "ES256"]
 MIN_TOKEN_LENGTH = 20
 
 _UUID_OR_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
@@ -160,7 +157,7 @@ class _CachedPolicy:
     expires_at_monotonic: float
 
 
-class SupabasePolicyResolver:
+class SupabasePolicyResolver(SupabaseJwksVerifierMixin):
     """Resolve Supabase JWTs and Hindsight scoped API keys into caller policies."""
 
     def __init__(self, config: dict[str, str]):
@@ -405,56 +402,8 @@ class SupabasePolicyResolver:
             logger.warning("Could not fetch Supabase JWKS; falling back to /auth/v1/user: %s", exc)
         self._use_jwks = False
 
-    async def _fetch_jwks(self) -> None:
-        await self._ensure_http_client()
-        assert self._http_client is not None
-        response = await self._http_client.get(f"{self.supabase_url}/auth/v1/.well-known/jwks.json")
-        response.raise_for_status()
-        keys: dict[str, PyJWK] = {}
-        for key_data in response.json().get("keys", []):
-            kid = key_data.get("kid")
-            if kid:
-                keys[kid] = PyJWK(key_data)
-        self._jwks_keys = keys
-        self._jwks_last_fetched = time.monotonic()
-
     async def _verify_token(self, token: str) -> str:
         return await self._verify_token_jwks(token) if self._use_jwks else await self._verify_token_legacy(token)
-
-    async def _verify_token_jwks(self, token: str) -> str:
-        try:
-            signing_key = await self._get_signing_key(token)
-            payload = pyjwt.decode(
-                token,
-                signing_key.key,
-                algorithms=SUPPORTED_ALGORITHMS,
-                audience="authenticated",
-                issuer=f"{self.supabase_url}/auth/v1",
-            )
-        except pyjwt.ExpiredSignatureError:
-            raise AuthenticationError("Token has expired")
-        except pyjwt.InvalidTokenError as exc:
-            raise AuthenticationError(f"Invalid token: {exc!s}")
-        user_id = payload.get("sub")
-        if not user_id:
-            raise AuthenticationError("Token valid but missing subject (sub) claim")
-        return str(user_id)
-
-    async def _get_signing_key(self, token: str) -> PyJWK:
-        header = pyjwt.get_unverified_header(token)
-        kid = header.get("kid")
-        if not kid:
-            raise AuthenticationError("Token missing key ID (kid) header")
-        now = time.monotonic()
-        if now - self._jwks_last_fetched > JWKS_CACHE_TTL_SECONDS:
-            await self._fetch_jwks()
-        if kid in self._jwks_keys:
-            return self._jwks_keys[kid]
-        if now - self._jwks_last_fetched > JWKS_MIN_REFRESH_INTERVAL_SECONDS:
-            await self._fetch_jwks()
-            if kid in self._jwks_keys:
-                return self._jwks_keys[kid]
-        raise AuthenticationError("Unable to find signing key for token")
 
     async def _verify_token_legacy(self, token: str) -> str:
         await self._ensure_http_client()
@@ -609,28 +558,28 @@ class SupabaseAuthorizationExtension(OperationValidatorExtension):
         await self.resolver.on_shutdown()
 
     async def validate_retain(self, ctx: RetainContext) -> ValidationResult:
-        return await self._validate_special_bank_operation(ctx.request_context, ctx.bank_id, "retain")
+        return await self._validate_bank_operation(ctx.request_context, ctx.bank_id, "retain")
 
     async def validate_recall(self, ctx: RecallContext) -> ValidationResult:
-        return await self._validate_special_bank_operation(ctx.request_context, ctx.bank_id, "recall")
+        return await self._validate_bank_operation(ctx.request_context, ctx.bank_id, "recall")
 
     async def validate_reflect(self, ctx: ReflectContext) -> ValidationResult:
-        return await self._validate_special_bank_operation(ctx.request_context, ctx.bank_id, "reflect")
+        return await self._validate_bank_operation(ctx.request_context, ctx.bank_id, "reflect")
 
     async def validate_consolidate(self, ctx: ConsolidateContext) -> ValidationResult:
-        return await self._validate_special_bank_operation(ctx.request_context, ctx.bank_id, "consolidate")
+        return await self._validate_bank_operation(ctx.request_context, ctx.bank_id, "consolidate")
 
     async def validate_mental_model_get(self, ctx: MentalModelGetContext) -> ValidationResult:
-        return await self._validate_special_bank_operation(ctx.request_context, ctx.bank_id, "mental_model_get")
+        return await self._validate_bank_operation(ctx.request_context, ctx.bank_id, "mental_model_get")
 
     async def validate_mental_model_refresh(self, ctx: MentalModelRefreshContext) -> ValidationResult:
-        return await self._validate_special_bank_operation(ctx.request_context, ctx.bank_id, "mental_model_refresh")
+        return await self._validate_bank_operation(ctx.request_context, ctx.bank_id, "mental_model_refresh")
 
     async def validate_bank_read(self, ctx: BankReadContext) -> ValidationResult:
-        return await self._validate_bank_operation(ctx.request_context, ctx.bank_id, ctx.operation, write=False)
+        return await self._validate_bank_operation(ctx.request_context, ctx.bank_id, ctx.operation)
 
     async def validate_bank_write(self, ctx: BankWriteContext) -> ValidationResult:
-        return await self._validate_bank_operation(ctx.request_context, ctx.bank_id, ctx.operation, write=True)
+        return await self._validate_bank_operation(ctx.request_context, ctx.bank_id, ctx.operation)
 
     async def validate_create_bank(self, ctx: CreateBankContext) -> ValidationResult:
         policy = await self._resolve_policy(ctx.request_context)
@@ -702,8 +651,6 @@ class SupabaseAuthorizationExtension(OperationValidatorExtension):
         request_context: RequestContext,
         bank_id: str,
         operation: BankOperationName,
-        *,
-        write: bool,
     ) -> ValidationResult:
         operation_name = _operation_name(operation)
         policy = await self._resolve_policy(request_context)
@@ -713,22 +660,6 @@ class SupabaseAuthorizationExtension(OperationValidatorExtension):
         if operation_name not in allowed_operations:
             return ValidationResult.reject("Caller is not allowed to perform this operation", status_code=403)
         if not await self._can_access_bank_for_operation(policy, bank_id, operation_name, request_context):
-            return ValidationResult.reject("Caller is not allowed to access this bank", status_code=403)
-        return ValidationResult.accept()
-
-    async def _validate_special_bank_operation(
-        self,
-        request_context: RequestContext,
-        bank_id: str,
-        operation: str,
-    ) -> ValidationResult:
-        policy = await self._resolve_policy(request_context)
-        if await self._can_access_owned_bank(policy, bank_id):
-            return ValidationResult.accept()
-        allowed_operations = _allowed_operations_for_policy(policy)
-        if operation not in allowed_operations:
-            return ValidationResult.reject("Caller is not allowed to perform this operation", status_code=403)
-        if not await self._can_access_bank_for_operation(policy, bank_id, operation, request_context):
             return ValidationResult.reject("Caller is not allowed to access this bank", status_code=403)
         return ValidationResult.accept()
 
@@ -789,17 +720,6 @@ class SupabaseAuthorizationExtension(OperationValidatorExtension):
             return None
         backend = await get_backend()
         return await bank_utils.get_bank_internal_id_if_exists(backend, bank_id)
-
-    async def _ensure_bank_exists_and_get_internal_id(
-        self,
-        bank_id: str,
-        request_context: RequestContext,
-    ) -> str | None:
-        memory = self.context.get_memory_engine()
-        ensure_bank_exists = getattr(memory, "_ensure_bank_exists", None)
-        if ensure_bank_exists is not None:
-            await ensure_bank_exists(bank_id, request_context)
-        return await self._get_bank_internal_id(bank_id)
 
     @staticmethod
     def _tool_allowed(tool_name: str, allowed_operations: frozenset[str]) -> bool:

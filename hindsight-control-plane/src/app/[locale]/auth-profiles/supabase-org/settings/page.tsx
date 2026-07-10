@@ -124,18 +124,15 @@ function buildOperationScopes(
   operationOverrides: OperationOverrideMap,
   excludedBankIds: readonly string[] = []
 ) {
-  return operations.map((operation) => ({
-    operation,
-    bank_scope_mode: UNSCOPED_DATAPLANE_OPERATIONS.includes(operation)
-      ? "all"
-      : scopeForOperation(operation, groupScopes, operationOverrides).mode,
-    bank_ids: UNSCOPED_DATAPLANE_OPERATIONS.includes(operation)
-      ? null
-      : selectedBankIdsForScope(
-          scopeForOperation(operation, groupScopes, operationOverrides),
-          excludedBankIds
-        ),
-  }));
+  return operations.map((operation) => {
+    const unscoped = UNSCOPED_DATAPLANE_OPERATIONS.includes(operation);
+    const scope = unscoped ? null : scopeForOperation(operation, groupScopes, operationOverrides);
+    return {
+      operation,
+      bank_scope_mode: unscoped ? "all" : scope?.mode,
+      bank_ids: scope ? selectedBankIdsForScope(scope, excludedBankIds) : null,
+    };
+  });
 }
 
 function createDefaultGroupScopes(): Record<string, BankScopeSelection> {

@@ -899,23 +899,6 @@ async function restRpcRow<T>(functionName: string, body: unknown): Promise<T> {
 async function restPatch<T>(
   table: string,
   body: unknown,
-  params: Record<string, string>
-): Promise<T[]>;
-async function restPatch<T>(
-  table: string,
-  body: unknown,
-  params: Record<string, string>,
-  returnRepresentation: true
-): Promise<T[]>;
-async function restPatch<T>(
-  table: string,
-  body: unknown,
-  params: Record<string, string>,
-  returnRepresentation: false
-): Promise<T[]>;
-async function restPatch<T>(
-  table: string,
-  body: unknown,
   params: Record<string, string>,
   returnRepresentation = false
 ): Promise<T[]> {

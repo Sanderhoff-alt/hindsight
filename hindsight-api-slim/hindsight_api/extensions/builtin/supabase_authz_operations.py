@@ -5,6 +5,8 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal, TypedDict
 
+from hindsight_api.extensions.operation_validator import BankReadOperation, BankWriteOperation
+
 OperationSource = Literal["bank_read", "bank_write", "special_bank", "unscoped"]
 OperationScope = Literal["bank", "unscoped"]
 
@@ -16,62 +18,18 @@ class OperationDefinition(TypedDict, total=False):
     scope: OperationScope
 
 
-BANK_READ_OPERATION_NAMES: tuple[str, ...] = (
-    "get_bank_config",
-    "get_bank_profile",
-    "get_bank_stats",
-    "list_directives",
-    "get_directive",
-    "get_memories_timeseries",
-    "get_memory_unit",
-    "list_memory_units",
-    "list_observation_scopes",
-    "get_observation_history",
-    "list_tags",
-    "get_document",
-    "list_documents",
-    "list_document_chunks",
-    "get_chunk",
-    "list_mental_models",
-    "list_mental_model_tags",
-    "list_entities",
-    "get_entity",
-    "get_entity_graph",
-    "get_graph_data",
-    "list_operations",
-    "get_operation_status",
-    "list_webhooks",
-    "list_webhook_deliveries",
+_API_UNREACHABLE_READ_OPERATIONS = frozenset({BankReadOperation.GET_ENTITY_STATE})
+_API_UNREACHABLE_WRITE_OPERATIONS = frozenset(
+    {BankWriteOperation.RUN_CONSOLIDATION, BankWriteOperation.SET_BANK_MISSION}
 )
 
-BANK_WRITE_OPERATION_NAMES: tuple[str, ...] = (
-    "update_bank",
-    "update_bank_config",
-    "update_bank_disposition",
-    "merge_bank_mission",
-    "reset_bank_config",
-    "delete_bank",
-    "create_directive",
-    "update_directive",
-    "delete_directive",
-    "update_memory_unit",
-    "submit_async_consolidation",
-    "retry_failed_consolidation",
-    "clear_observations",
-    "clear_observations_for_memory",
-    "update_document",
-    "delete_document",
-    "reprocess_document",
-    "create_mental_model",
-    "update_mental_model",
-    "delete_mental_model",
-    "clear_mental_model",
-    "submit_async_graph_maintenance",
-    "cancel_operation",
-    "retry_operation",
-    "create_webhook",
-    "update_webhook",
-    "delete_webhook",
+# The validator hook enums are the source of truth. Only operations with no public
+# API path are excluded from API-key grants.
+BANK_READ_OPERATION_NAMES = tuple(
+    operation.value for operation in BankReadOperation if operation not in _API_UNREACHABLE_READ_OPERATIONS
+)
+BANK_WRITE_OPERATION_NAMES = tuple(
+    operation.value for operation in BankWriteOperation if operation not in _API_UNREACHABLE_WRITE_OPERATIONS
 )
 
 SPECIAL_BANK_OPERATION_DEFINITIONS: tuple[OperationDefinition, ...] = (

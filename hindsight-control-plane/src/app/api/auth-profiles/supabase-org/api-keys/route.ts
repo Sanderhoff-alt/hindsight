@@ -1,9 +1,6 @@
 import { NextResponse } from "next/server";
 
 import {
-  type ApiKeyBankScopeInput,
-  type ApiKeyOperation,
-  type ApiKeyOperationScopeInput,
   type ApiKeyPermissionMode,
   type HindsightApiKeySummary,
   createApiKey,
@@ -12,6 +9,10 @@ import {
   listApiKeys,
   repairApiKeyBankReferences,
 } from "@/lib/supabase-org/store";
+import {
+  type ApiKeyOperationScopeRequest,
+  resolveOperationScopes,
+} from "@/lib/supabase-org/api-key-scopes";
 import { createDataplaneClientForRequest, sdk } from "@/lib/hindsight-client";
 
 interface BankListItem {
@@ -86,11 +87,7 @@ export async function POST(request: Request) {
     const body = (await request.json()) as {
       name?: string;
       permission_mode?: ApiKeyPermissionMode;
-      operation_scopes?: Array<{
-        operation?: string;
-        bank_scope_mode?: "all" | "selected";
-        bank_ids?: string[] | null;
-      }> | null;
+      operation_scopes?: ApiKeyOperationScopeRequest[] | null;
     };
     if (!body.name) return jsonError("name is required", 400);
     const permissionMode = body.permission_mode ?? "scoped";
@@ -107,48 +104,6 @@ export async function POST(request: Request) {
   } catch (error) {
     return jsonError(error instanceof Error ? error.message : "Failed to create API key", 400);
   }
-}
-
-export async function resolveOperationScopes(
-  request: Request,
-  scopes: Array<{
-    operation?: string;
-    bank_scope_mode?: "all" | "selected";
-    bank_ids?: string[] | null;
-  }> | null
-): Promise<ApiKeyOperationScopeInput[] | null> {
-  if (!scopes) return null;
-  return Promise.all(
-    scopes.map(async (scope) => {
-      if (!scope.operation) throw new Error("operation is required");
-      const bankScopeMode = scope.bank_scope_mode ?? "all";
-      return {
-        operation: scope.operation as ApiKeyOperation,
-        bank_scope_mode: bankScopeMode,
-        bank_scopes:
-          bankScopeMode === "selected"
-            ? await resolveBankScopes(request, scope.bank_ids ?? [])
-            : [],
-      };
-    })
-  );
-}
-
-async function resolveBankScopes(
-  request: Request,
-  bankIds: string[]
-): Promise<ApiKeyBankScopeInput[]> {
-  const uniqueBankIds = Array.from(new Set(bankIds.map((bankId) => bankId.trim()).filter(Boolean)));
-  if (uniqueBankIds.length === 0) return [];
-  const banks = (await listCurrentBanks(request)).filter(
-    (bank): bank is BankListItem & { internal_id: string } => Boolean(bank.internal_id)
-  );
-  const bankById = new Map(banks.map((bank) => [bank.bank_id, bank]));
-  return uniqueBankIds.map((bankId) => {
-    const bank = bankById.get(bankId);
-    if (!bank) throw new Error(`Selected bank does not exist: ${bankId}`);
-    return { bank_id: bank.bank_id, bank_internal_id: bank.internal_id };
-  });
 }
 
 async function listCurrentBanks(request: Request): Promise<BankListItem[]> {
