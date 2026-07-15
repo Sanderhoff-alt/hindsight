@@ -16,12 +16,14 @@ begin
 end $$;
 
 create table if not exists organization_members (
+  id uuid primary key default gen_random_uuid(),
   org_id text not null references organizations(id) on delete cascade,
   user_id uuid not null,
   email text,
   role organization_role not null,
   created_at timestamptz not null default now(),
-  primary key (org_id, user_id)
+  removed_at timestamptz,
+  removed_by_user_id uuid
 );
 
 create table if not exists organization_invites (
@@ -82,6 +84,7 @@ create table if not exists hindsight_api_key_created_banks (
   bank_id text not null,
   bank_internal_id text not null,
   created_at timestamptz not null default now(),
+  deleted_at timestamptz,
   primary key (api_key_id, bank_internal_id)
 );
 
@@ -222,7 +225,8 @@ $$;
 -- transition. A key must never remain active after its creator is removed.
 create function remove_organization_member(
   p_org_id text,
-  p_user_id uuid
+  p_user_id uuid,
+  p_removed_by_user_id uuid
 )
 returns void
 language plpgsql
@@ -235,9 +239,15 @@ begin
   where org_id = p_org_id
     and created_by_user_id = p_user_id;
 
-  delete from organization_members
+  -- Membership periods are security audit records. End the active period
+  -- instead of deleting who belonged to the organization.
+  update organization_members
+  set
+    removed_at = coalesce(removed_at, now()),
+    removed_by_user_id = coalesce(removed_by_user_id, p_removed_by_user_id)
   where org_id = p_org_id
-    and user_id = p_user_id;
+    and user_id = p_user_id
+    and removed_at is null;
 end;
 $$;
 
@@ -252,12 +262,18 @@ begin
   delete from hindsight_api_key_operation_bank_scopes
   where bank_internal_id = p_bank_internal_id;
 
-  delete from hindsight_api_key_created_banks
+  -- Creation provenance is an audit fact. Tombstone it for online ownership
+  -- checks while retaining who created the deleted bank.
+  update hindsight_api_key_created_banks
+  set deleted_at = coalesce(deleted_at, now())
   where bank_internal_id = p_bank_internal_id;
 end;
 $$;
 
 create index if not exists organization_members_user_id_idx on organization_members(user_id);
+create unique index if not exists organization_members_active_org_user_idx
+  on organization_members(org_id, user_id)
+  where removed_at is null;
 create index if not exists organization_invites_org_id_idx on organization_invites(org_id);
 create index if not exists hindsight_api_keys_org_id_idx on hindsight_api_keys(org_id);
 create index if not exists hindsight_api_key_operation_bank_scopes_bank_id_idx on hindsight_api_key_operation_bank_scopes(bank_id);
@@ -308,7 +324,7 @@ revoke all on function create_hindsight_api_key(
   jsonb,
   jsonb
 ) from public;
-revoke all on function remove_organization_member(text, uuid) from public;
+revoke all on function remove_organization_member(text, uuid, uuid) from public;
 revoke all on function delete_hindsight_bank_references(text) from public;
 grant execute on function replace_hindsight_api_key_permissions(
   uuid,
@@ -327,5 +343,5 @@ grant execute on function create_hindsight_api_key(
   jsonb,
   jsonb
 ) to service_role;
-grant execute on function remove_organization_member(text, uuid) to service_role;
+grant execute on function remove_organization_member(text, uuid, uuid) to service_role;
 grant execute on function delete_hindsight_bank_references(text) to service_role;

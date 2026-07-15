@@ -141,6 +141,7 @@ describe("supabase org store", () => {
     expect(context.membership.role).toBe("member");
     expect(fetchMock.mock.calls[0][0]).toBe("http://supabase.local/auth/v1/user");
     expect(String(fetchMock.mock.calls[1][0])).toContain("/rest/v1/organization_members");
+    expect(String(fetchMock.mock.calls[1][0])).toContain("removed_at=is.null");
   });
 
   it("refreshes an expired Supabase access token and updates session cookies", async () => {
@@ -319,6 +320,7 @@ describe("supabase org store", () => {
     expect(JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))).toEqual({
       p_org_id: "org_1",
       p_user_id: "user_2",
+      p_removed_by_user_id: "user_owner",
     });
   });
 
@@ -691,4 +693,5 @@ describe("supabase org store", () => {
       error: "Organization creation is only allowed during direct signup",
     });
   });
+
 });

@@ -136,7 +136,7 @@ async def test_supabase_org_resolver_with_real_supabase(supabase_env: SupabaseEn
             "created_by_user_id": user["id"],
             "name": "Integration key",
             "key_hash": hashlib.sha256(api_key.encode("utf-8")).hexdigest(),
-            "role": "member",
+            "permission_mode": "scoped",
             "allowed_operations": ["recall"],
         },
     )
@@ -179,6 +179,130 @@ async def test_supabase_org_resolver_with_real_supabase(supabase_env: SupabaseEn
         "operation_bank_scope_modes": {"recall": "selected"},
         "operation_bank_internal_ids": {"recall": ["bank_a"]},
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(900)
+async def test_supabase_member_and_bank_lifecycle_uses_tombstones_for_audit_facts(
+    supabase_env: SupabaseEnv, supabase_client
+) -> None:
+    client, created = supabase_client
+    org_id = f"org_{uuid.uuid4().hex[:16]}"
+    actor_user_id = str(uuid.uuid4())
+    member_user_id = str(uuid.uuid4())
+    api_key_id = str(uuid.uuid4())
+    headers = {**_service_headers(supabase_env), "Content-Type": "application/json"}
+
+    _insert(client, supabase_env, "organizations", {"id": org_id, "name": "Lifecycle Org"})
+    created["orgs"].append(org_id)
+    _insert(
+        client,
+        supabase_env,
+        "organization_members",
+        {"org_id": org_id, "user_id": member_user_id, "role": "member"},
+    )
+    _insert(
+        client,
+        supabase_env,
+        "hindsight_api_keys",
+        {
+            "id": api_key_id,
+            "org_id": org_id,
+            "created_by_user_id": member_user_id,
+            "name": "Lifecycle key",
+            "key_hash": hashlib.sha256(uuid.uuid4().bytes).hexdigest(),
+            "permission_mode": "scoped",
+            "allowed_operations": ["recall"],
+        },
+    )
+    _insert(
+        client,
+        supabase_env,
+        "hindsight_api_key_operation_scopes",
+        {"api_key_id": api_key_id, "operation": "recall", "bank_scope_mode": "selected"},
+    )
+    _insert(
+        client,
+        supabase_env,
+        "hindsight_api_key_operation_bank_scopes",
+        {
+            "api_key_id": api_key_id,
+            "operation": "recall",
+            "bank_id": "bank_deleted",
+            "bank_internal_id": "internal_deleted",
+        },
+    )
+    _insert(
+        client,
+        supabase_env,
+        "hindsight_api_key_created_banks",
+        {
+            "api_key_id": api_key_id,
+            "bank_id": "bank_deleted",
+            "bank_internal_id": "internal_deleted",
+        },
+    )
+
+    remove_response = client.post(
+        f"{supabase_env.url}/rest/v1/rpc/remove_organization_member",
+        headers=headers,
+        json={
+            "p_org_id": org_id,
+            "p_user_id": member_user_id,
+            "p_removed_by_user_id": actor_user_id,
+        },
+    )
+    assert remove_response.status_code in {200, 204}, remove_response.text
+    memberships = client.get(
+        f"{supabase_env.url}/rest/v1/organization_members",
+        params={"org_id": f"eq.{org_id}", "user_id": f"eq.{member_user_id}"},
+        headers=headers,
+    ).json()
+    assert len(memberships) == 1
+    assert memberships[0]["removed_at"] is not None
+    assert memberships[0]["removed_by_user_id"] == actor_user_id
+    api_keys = client.get(
+        f"{supabase_env.url}/rest/v1/hindsight_api_keys",
+        params={"id": f"eq.{api_key_id}"},
+        headers=headers,
+    ).json()
+    assert api_keys[0]["revoked_at"] is not None
+
+    # A new membership period must coexist with the retained historical one.
+    _insert(
+        client,
+        supabase_env,
+        "organization_members",
+        {"org_id": org_id, "user_id": member_user_id, "role": "member"},
+    )
+
+    bank_delete_response = client.post(
+        f"{supabase_env.url}/rest/v1/rpc/delete_hindsight_bank_references",
+        headers=headers,
+        json={"p_bank_internal_id": "internal_deleted"},
+    )
+    assert bank_delete_response.status_code in {200, 204}, bank_delete_response.text
+    bank_scopes = client.get(
+        f"{supabase_env.url}/rest/v1/hindsight_api_key_operation_bank_scopes",
+        params={"bank_internal_id": "eq.internal_deleted"},
+        headers=headers,
+    ).json()
+    created_banks = client.get(
+        f"{supabase_env.url}/rest/v1/hindsight_api_key_created_banks",
+        params={"bank_internal_id": "eq.internal_deleted"},
+        headers=headers,
+    ).json()
+    assert bank_scopes == []
+    assert len(created_banks) == 1
+    assert created_banks[0]["deleted_at"] is not None
+
+    membership_periods = client.get(
+        f"{supabase_env.url}/rest/v1/organization_members",
+        params={"org_id": f"eq.{org_id}", "user_id": f"eq.{member_user_id}"},
+        headers=headers,
+    ).json()
+    assert len(membership_periods) == 2
+    assert sum(period["removed_at"] is None for period in membership_periods) == 1
 
 
 def _resolve_with_backend_process(
@@ -302,7 +426,8 @@ def _assert_authz_tables_are_not_publicly_accessible(
             "org_id": "direct_write_attempt",
             "name": "Direct write attempt",
             "key_hash": hashlib.sha256(b"direct-write").hexdigest(),
-            "role": "member",
+            "permission_mode": "scoped",
+            "allowed_operations": [],
         },
     )
     assert response.status_code in {401, 403}, response.text

@@ -317,6 +317,7 @@ class SupabasePolicyResolver(SupabaseJwksVerifierMixin):
             select="org_id,user_id,role",
             org_id=f"eq.{org_id}",
             user_id=f"eq.{user_id}",
+            removed_at="is.null",
             limit="1",
         )
         members = TypeAdapter(list[MemberRow]).validate_python(rows)
@@ -406,6 +407,7 @@ class SupabasePolicyResolver(SupabaseJwksVerifierMixin):
             "hindsight_api_key_created_banks",
             select="api_key_id,bank_id,bank_internal_id",
             api_key_id=f"eq.{api_key_id}",
+            deleted_at="is.null",
         )
         created_banks = TypeAdapter(list[ApiKeyCreatedBankRow]).validate_python(rows)
         return frozenset(row.bank_internal_id for row in created_banks)
@@ -416,6 +418,7 @@ class SupabasePolicyResolver(SupabaseJwksVerifierMixin):
             select="api_key_id,bank_id,bank_internal_id",
             api_key_id=f"eq.{api_key_id}",
             bank_internal_id=f"eq.{bank_internal_id}",
+            deleted_at="is.null",
             limit="1",
         )
         return bool(TypeAdapter(list[ApiKeyCreatedBankRow]).validate_python(rows))

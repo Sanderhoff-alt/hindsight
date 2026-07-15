@@ -793,6 +793,23 @@ async def test_resolver_deletes_all_authorization_references_for_bank() -> None:
 
 
 @pytest.mark.asyncio
+async def test_resolver_excludes_tombstoned_metadata_from_online_authorization() -> None:
+    resolver = SupabasePolicyResolver(_resolver_config())
+    resolver._rest_get = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+    await resolver.api_key_owns_bank_internal_id("key_123", "internal_deleted")
+
+    resolver._rest_get.assert_any_call(  # type: ignore[attr-defined]
+        "hindsight_api_key_created_banks",
+        select="api_key_id,bank_id,bank_internal_id",
+        api_key_id="eq.key_123",
+        bank_internal_id="eq.internal_deleted",
+        deleted_at="is.null",
+        limit="1",
+    )
+
+
+@pytest.mark.asyncio
 async def test_authorization_allows_api_key_full_access_to_owned_bank() -> None:
     validator = SupabaseAuthorizationExtension(_resolver_config())
     context = _jwt_context()

@@ -56,10 +56,14 @@ export interface SupabaseRefreshedSession {
 }
 
 export interface OrganizationMembership {
+  id?: string;
   org_id: string;
   user_id: string;
   email?: string;
   role: OrganizationRole;
+  created_at?: string;
+  removed_at?: string | null;
+  removed_by_user_id?: string | null;
 }
 
 export interface Organization {
@@ -376,6 +380,7 @@ export async function getCurrentOrgContextForUser(
   const memberships = await restGet<OrganizationMembership>("organization_members", {
     org_id: `eq.${selectedOrgId}`,
     user_id: `eq.${user.id}`,
+    removed_at: "is.null",
     limit: "1",
   });
   if (memberships.length === 0) {
@@ -389,6 +394,7 @@ export async function listOrganizationsForUser(
 ): Promise<Array<Organization & { role: OrganizationRole }>> {
   const memberships = await restGet<OrganizationMembership>("organization_members", {
     user_id: `eq.${userId}`,
+    removed_at: "is.null",
   });
   if (memberships.length === 0) return [];
   const orgIds = memberships.map((membership) => membership.org_id);
@@ -445,7 +451,10 @@ export async function requireOrgOwner(context: CurrentOrgContext): Promise<void>
 }
 
 export async function listMembers(orgId: string): Promise<OrganizationMembership[]> {
-  return restGet<OrganizationMembership>("organization_members", { org_id: `eq.${orgId}` });
+  return restGet<OrganizationMembership>("organization_members", {
+    org_id: `eq.${orgId}`,
+    removed_at: "is.null",
+  });
 }
 
 export async function updateMemberRole(
@@ -459,7 +468,11 @@ export async function updateMemberRole(
   const rows = await restPatch<OrganizationMembership>(
     "organization_members",
     { role },
-    { org_id: `eq.${context.selectedOrgId}`, user_id: `eq.${userId}` },
+    {
+      org_id: `eq.${context.selectedOrgId}`,
+      user_id: `eq.${userId}`,
+      removed_at: "is.null",
+    },
     true
   );
   if (!rows[0]) throw new Error("Member not found");
@@ -472,6 +485,7 @@ export async function removeMember(context: CurrentOrgContext, userId: string): 
   await restRpc("remove_organization_member", {
     p_org_id: context.selectedOrgId,
     p_user_id: userId,
+    p_removed_by_user_id: context.user.id,
   });
 }
 
@@ -625,6 +639,7 @@ export async function listApiKeys(context: CurrentOrgContext): Promise<Hindsight
     visibleKeyIds.length > 0
       ? await restGet<HindsightApiKeyCreatedBank>("hindsight_api_key_created_banks", {
           api_key_id: `in.(${visibleKeyIds.join(",")})`,
+          deleted_at: "is.null",
           select: "api_key_id,bank_id,bank_internal_id,created_at",
         })
       : [];
