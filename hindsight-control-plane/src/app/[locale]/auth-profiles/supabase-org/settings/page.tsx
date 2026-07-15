@@ -463,6 +463,7 @@ export default function SettingsPage() {
   async function saveApiKeyPermissions(event: FormEvent) {
     event.preventDefault();
     if (!editingApiKeyId) return;
+    const editingApiKey = apiKeys.find((apiKey) => apiKey.id === editingApiKeyId);
     await fetchJson(`${API_BASE}/api-keys/${encodeURIComponent(editingApiKeyId)}`, {
       method: "PATCH",
       body: JSON.stringify({
