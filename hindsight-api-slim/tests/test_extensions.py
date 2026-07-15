@@ -9,6 +9,8 @@ from fastapi.testclient import TestClient
 from hindsight_api.extensions import (
     ApiKeyTenantExtension,
     AuthenticationError,
+    BankCreateResult,
+    BankDeleteResult,
     BankReadContext,
     BankReadOperation,
     BankWriteContext,
@@ -172,6 +174,9 @@ class TrackingValidator(OperationValidatorExtension):
         self.pre_consolidate_calls: list[ConsolidateContext] = []
         # Post-hook tracking - Consolidation
         self.post_consolidate_calls: list[ConsolidateResult] = []
+        # Post-hook tracking - Bank management
+        self.post_bank_create_calls: list[BankCreateResult] = []
+        self.post_bank_delete_calls: list[BankDeleteResult] = []
 
     async def validate_retain(self, ctx: RetainContext) -> ValidationResult:
         self.pre_retain_calls.append(ctx)
@@ -201,6 +206,12 @@ class TrackingValidator(OperationValidatorExtension):
 
     async def on_consolidate_complete(self, result: ConsolidateResult) -> None:
         self.post_consolidate_calls.append(result)
+
+    async def on_bank_delete_complete(self, result: BankDeleteResult) -> None:
+        self.post_bank_delete_calls.append(result)
+
+    async def on_bank_create_complete(self, result: BankCreateResult) -> None:
+        self.post_bank_create_calls.append(result)
 
 
 class CreateBankRejectingValidator(OperationValidatorExtension):
@@ -444,6 +455,47 @@ def memory_with_tracking_validator(memory):
 
 class TestOperationHooksParameters:
     """Tests for pre and post operation hooks receiving all user-provided parameters."""
+
+    @pytest.mark.asyncio
+    async def test_bank_create_post_hook_receives_committed_bank_identity(self, memory_with_tracking_validator):
+        memory, validator = memory_with_tracking_validator
+        bank_id = "test-bank-create-post"
+        ctx = RequestContext(api_key="test-key", api_key_id="key-id")
+
+        await memory.get_bank_profile(bank_id, request_context=ctx)
+        banks = await memory.list_banks(request_context=ctx)
+        bank_internal_id = next(str(bank["internal_id"]) for bank in banks if bank["bank_id"] == bank_id)
+
+        assert validator.post_bank_create_calls == [
+            BankCreateResult(bank_id=bank_id, bank_internal_id=bank_internal_id, request_context=ctx)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_bank_delete_post_hook_receives_committed_bank_identity(self, memory_with_tracking_validator):
+        memory, validator = memory_with_tracking_validator
+        bank_id = "test-bank-delete-post"
+        ctx = RequestContext(api_key="test-key")
+        await memory.get_bank_profile(bank_id, request_context=ctx)
+        banks = await memory.list_banks(request_context=ctx)
+        bank_internal_id = next(str(bank["internal_id"]) for bank in banks if bank["bank_id"] == bank_id)
+
+        await memory.delete_bank(bank_id, request_context=ctx)
+
+        assert validator.post_bank_delete_calls == [
+            BankDeleteResult(
+                bank_id=bank_id,
+                bank_internal_id=bank_internal_id,
+                request_context=ctx,
+            )
+        ]
+
+    @pytest.mark.asyncio
+    async def test_bank_delete_post_hook_skips_missing_bank(self, memory_with_tracking_validator):
+        memory, validator = memory_with_tracking_validator
+
+        await memory.delete_bank("test-bank-delete-missing", request_context=RequestContext())
+
+        assert validator.post_bank_delete_calls == []
 
     @pytest.mark.asyncio
     async def test_retain_pre_hook_receives_all_parameters(self, memory_with_tracking_validator):

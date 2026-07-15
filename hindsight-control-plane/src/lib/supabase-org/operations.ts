@@ -1,4 +1,5 @@
 import { OPERATION_UI_GROUPS } from "@/lib/supabase-org/operation-ui";
+import operationManifest from "../../../../hindsight-api-slim/hindsight_api/extensions/builtin/supabase_authz_operations.json";
 
 export type ApiKeyOperation = string;
 export type OperationAction = "read" | "write";
@@ -28,75 +29,23 @@ export interface OperationGroup {
   sections?: readonly OperationSection[];
 }
 
-const BANK_READ_OPERATION_NAMES = [
-  "get_bank_config",
-  "get_bank_profile",
-  "get_bank_stats",
-  "list_directives",
-  "get_directive",
-  "get_memories_timeseries",
-  "get_memory_unit",
-  "list_memory_units",
-  "list_observation_scopes",
-  "get_observation_history",
-  "list_tags",
-  "get_document",
-  "list_documents",
-  "list_document_chunks",
-  "get_chunk",
-  "list_mental_models",
-  "list_mental_model_tags",
-  "list_entities",
-  "get_entity",
-  "get_entity_graph",
-  "get_graph_data",
-  "list_operations",
-  "get_operation_status",
-  "list_webhooks",
-  "list_webhook_deliveries",
-] as const satisfies readonly ApiKeyOperation[];
-
-const BANK_WRITE_OPERATION_NAMES = [
-  "update_bank",
-  "update_bank_config",
-  "update_bank_disposition",
-  "merge_bank_mission",
-  "reset_bank_config",
-  "delete_bank",
-  "create_directive",
-  "update_directive",
-  "delete_directive",
-  "update_memory_unit",
-  "submit_async_consolidation",
-  "retry_failed_consolidation",
-  "clear_observations",
-  "clear_observations_for_memory",
-  "update_document",
-  "delete_document",
-  "reprocess_document",
-  "create_mental_model",
-  "update_mental_model",
-  "delete_mental_model",
-  "clear_mental_model",
-  "submit_async_graph_maintenance",
-  "cancel_operation",
-  "retry_operation",
-  "create_webhook",
-  "update_webhook",
-  "delete_webhook",
-] as const satisfies readonly ApiKeyOperation[];
-
-const SPECIAL_BANK_OPERATION_DEFINITIONS = [
-  { name: "recall", source: "special_bank", action: "read", scope: "bank" },
-  { name: "reflect", source: "special_bank", action: "read", scope: "bank" },
-  { name: "retain", source: "special_bank", action: "write", scope: "bank" },
-  { name: "mental_model_get", source: "special_bank", action: "read", scope: "bank" },
-  { name: "mental_model_refresh", source: "special_bank", action: "write", scope: "bank" },
-] as const satisfies readonly OperationDefinition[];
-
-const UNSCOPED_OPERATION_DEFINITIONS = [
-  { name: "create_bank", source: "unscoped", action: "write", scope: "unscoped" },
-] as const satisfies readonly OperationDefinition[];
+const BANK_READ_OPERATION_NAMES = operationManifest.bank_read;
+const BANK_WRITE_OPERATION_NAMES = operationManifest.bank_write;
+const SPECIAL_BANK_OPERATION_DEFINITIONS: OperationDefinition[] =
+  operationManifest.special_bank.map(({ name, action }) => ({
+    name,
+    source: "special_bank",
+    action: action as OperationAction,
+    scope: "bank",
+  }));
+const UNSCOPED_OPERATION_DEFINITIONS: OperationDefinition[] = operationManifest.unscoped.map(
+  ({ name, action }) => ({
+    name,
+    source: "unscoped",
+    action: action as OperationAction,
+    scope: "unscoped",
+  })
+);
 
 function definitionsForSource(
   names: readonly ApiKeyOperation[],

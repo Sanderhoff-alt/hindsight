@@ -7,7 +7,6 @@ import {
   getCurrentOrgContext,
   jsonError,
   listApiKeys,
-  repairApiKeyBankReferences,
 } from "@/lib/supabase-org/store";
 import {
   type ApiKeyOperationScopeRequest,
@@ -36,13 +35,6 @@ export async function GET(request: Request) {
         .filter((bank): bank is BankListItem & { internal_id: string } => Boolean(bank.internal_id))
         .map((bank) => [bank.internal_id, bank])
     );
-    try {
-      await repairApiKeyBankReferences(apiKeys, Array.from(currentBankByInternalId.keys()));
-    } catch (error) {
-      // Read repair is best-effort: stale references are already filtered from the response,
-      // so a Supabase cleanup failure must not make API key management unavailable.
-      console.warn("Failed to repair stale API key bank references", { error });
-    }
     return NextResponse.json(
       {
         api_keys: apiKeys.map((apiKey) => {
@@ -57,9 +49,9 @@ export async function GET(request: Request) {
               };
             })
             .filter((bank): bank is NonNullable<typeof bank> => Boolean(bank));
-          const publicApiKey = { ...toPublicApiKeySummary(apiKey), owned_banks: ownedBanks };
           return {
-            ...publicApiKey,
+            ...toPublicApiKeySummary(apiKey),
+            owned_banks: ownedBanks,
             operation_scopes: (apiKey.operation_scopes ?? []).map((scope) => {
               const { scoped_bank_internal_ids: internalIds, ...publicScope } = scope;
               return {

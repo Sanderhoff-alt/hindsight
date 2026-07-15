@@ -462,7 +462,6 @@ export default function SettingsPage() {
   async function saveApiKeyPermissions(event: FormEvent) {
     event.preventDefault();
     if (!editingApiKeyId) return;
-    const editingApiKey = apiKeys.find((apiKey) => apiKey.id === editingApiKeyId);
     await fetchJson(`${API_BASE}/api-keys/${encodeURIComponent(editingApiKeyId)}`, {
       method: "PATCH",
       body: JSON.stringify({
@@ -518,9 +517,7 @@ export default function SettingsPage() {
       scope.mode === "selected" ? (
         <div className="grid max-h-32 gap-2 overflow-y-auto pr-1 md:grid-cols-2">
           {selectableBanks.length === 0 ? (
-            <span className="text-sm text-muted-foreground">
-              {banks.length === 0 ? "No banks yet" : "No non-owned banks available"}
-            </span>
+            <span className="text-sm text-muted-foreground">No banks yet</span>
           ) : (
             selectableBanks.map((bank) => {
               const bankId = bank.bank_id || bank.id || "";

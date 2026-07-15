@@ -21,6 +21,8 @@ from hindsight_api.extensions.builtin.supabase_org import (
     SupabasePolicyResolver,
 )
 from hindsight_api.extensions.operation_validator import (
+    BankCreateResult,
+    BankDeleteResult,
     BankListContext,
     BankReadContext,
     BankReadOperation,
@@ -139,7 +141,7 @@ def test_manifest_operations_match_hook_enums() -> None:
     assert "run_consolidation" not in ALL_DATAPLANE_OPERATIONS
     assert "set_bank_mission" not in ALL_DATAPLANE_OPERATIONS
     assert UNSCOPED_DATAPLANE_OPERATIONS == frozenset({"create_bank"})
-    assert len(ALL_DATAPLANE_OPERATIONS) == 58
+    assert len(ALL_DATAPLANE_OPERATIONS) == 67
 
 
 @pytest.mark.asyncio
@@ -214,7 +216,7 @@ async def test_resolver_maps_hindsight_api_key_to_operation_scoped_policy() -> N
     assert policy.operation_bank_scope_modes == {"recall": "all", "reflect": "all"}
     resolver._rest_get.assert_any_call(  # type: ignore[attr-defined]
         "hindsight_api_keys",
-        select="id,org_id,created_by_user_id,role,permission_mode,allowed_operations,revoked_at,expires_at",
+        select="id,org_id,created_by_user_id,permission_mode,allowed_operations,revoked_at,expires_at",
         key_hash=f"eq.{key_hash}",
         revoked_at="is.null",
         limit="1",
@@ -561,8 +563,7 @@ async def test_mcp_filter_keeps_create_bank_when_current_bank_out_of_scope() -> 
             api_key_id="key_123",
         )
     )  # type: ignore[method-assign]
-    validator._get_bank_internal_id = AsyncMock(return_value="internal_b")  # type: ignore[method-assign]
-    validator.resolver.api_key_owns_bank_internal_id = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    validator._can_access_owned_bank = AsyncMock(return_value=False)  # type: ignore[method-assign]
 
     tools = await validator.filter_mcp_tools(
         "bank_b",
@@ -734,29 +735,60 @@ async def test_authorization_denies_selected_api_key_unscoped_existing_bank() ->
 
 
 @pytest.mark.asyncio
-async def test_authorization_records_api_key_created_bank_ownership() -> None:
+async def test_authorization_cleans_deleted_bank_references() -> None:
     validator = SupabaseAuthorizationExtension(_resolver_config())
+    validator.resolver.delete_bank_references = AsyncMock()  # type: ignore[method-assign]
     context = _jwt_context()
-    context.auth_policy = CallerPolicy(
-        org_id="org_123",
-        schema_name="org_org_123",
-        user_id=None,
-        api_key_id="key_123",
+
+    await validator.on_bank_delete_complete(
+        BankDeleteResult(
+            bank_id="bank_deleted",
+            bank_internal_id="internal_deleted",
+            request_context=context,
+        )
+    )
+
+    validator.resolver.delete_bank_references.assert_awaited_once_with("internal_deleted")  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_authorization_records_api_key_created_bank_from_completion_hook() -> None:
+    validator = SupabaseAuthorizationExtension(_resolver_config())
+    validator.resolver.record_api_key_created_bank = AsyncMock()  # type: ignore[method-assign]
+    context = _jwt_context()
+    context.auth_policy = _policy(
         role="admin",
         allowed_operations=frozenset({"create_bank"}),
         operation_bank_scope_modes={},
         operation_bank_internal_ids={},
-        tenant_config={},
+        api_key_id="key_123",
     )
-    validator._get_bank_internal_id = AsyncMock(return_value="internal_new")  # type: ignore[method-assign]
-    validator.resolver.record_api_key_created_bank = AsyncMock()  # type: ignore[method-assign]
 
-    await validator.record_api_key_created_bank("bank_new", context)
+    await validator.on_bank_create_complete(
+        BankCreateResult(
+            bank_id="bank_created",
+            bank_internal_id="internal_created",
+            request_context=context,
+        )
+    )
 
     validator.resolver.record_api_key_created_bank.assert_awaited_once_with(  # type: ignore[attr-defined]
         api_key_id="key_123",
-        bank_id="bank_new",
-        bank_internal_id="internal_new",
+        bank_id="bank_created",
+        bank_internal_id="internal_created",
+    )
+
+
+@pytest.mark.asyncio
+async def test_resolver_deletes_all_authorization_references_for_bank() -> None:
+    resolver = SupabasePolicyResolver(_resolver_config())
+    resolver._rest_rpc = AsyncMock()  # type: ignore[method-assign]
+
+    await resolver.delete_bank_references("internal_deleted")
+
+    resolver._rest_rpc.assert_awaited_once_with(  # type: ignore[attr-defined]
+        "delete_hindsight_bank_references",
+        {"p_bank_internal_id": "internal_deleted"},
     )
 
 
@@ -775,18 +807,14 @@ async def test_authorization_allows_api_key_full_access_to_owned_bank() -> None:
         operation_bank_internal_ids={},
         tenant_config={},
     )
-    validator._get_bank_internal_id = AsyncMock(return_value="internal_owned")  # type: ignore[method-assign]
-    validator.resolver.api_key_owns_bank_internal_id = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    validator._can_access_owned_bank = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
     result = await validator.validate_bank_write(
         BankWriteContext(bank_id="bank_owned", operation="delete_bank", request_context=context)
     )
 
     assert result.allowed is True
-    validator.resolver.api_key_owns_bank_internal_id.assert_awaited_once_with(  # type: ignore[attr-defined]
-        "key_123",
-        "internal_owned",
-    )
+    validator._can_access_owned_bank.assert_awaited_once()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
@@ -804,8 +832,7 @@ async def test_authorization_allows_specialized_hooks_on_owned_bank() -> None:
         operation_bank_internal_ids={},
         tenant_config={},
     )
-    validator._get_bank_internal_id = AsyncMock(return_value="internal_owned")  # type: ignore[method-assign]
-    validator.resolver.api_key_owns_bank_internal_id = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    validator._can_access_owned_bank = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
     mental_model_get = await validator.validate_mental_model_get(
         MentalModelGetContext(bank_id="bank_owned", mental_model_id="mm_1", request_context=context)
@@ -837,8 +864,7 @@ async def test_authorization_denies_api_key_unowned_bank_without_operation_scope
         operation_bank_internal_ids={},
         tenant_config={},
     )
-    validator._get_bank_internal_id = AsyncMock(return_value="internal_b")  # type: ignore[method-assign]
-    validator.resolver.api_key_owns_bank_internal_id = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    validator._can_access_owned_bank = AsyncMock(return_value=False)  # type: ignore[method-assign]
 
     result = await validator.validate_bank_write(
         BankWriteContext(bank_id="bank_b", operation="delete_bank", request_context=context)
@@ -894,7 +920,7 @@ async def test_filter_bank_list_includes_owned_banks_for_selected_api_key() -> N
             tenant_config={},
         )
     )  # type: ignore[method-assign]
-    validator.resolver.list_api_key_created_bank_internal_ids = AsyncMock(return_value=frozenset({"internal_b"}))  # type: ignore[method-assign]
+    validator._get_owned_bank_internal_ids = AsyncMock(return_value=frozenset({"internal_b"}))  # type: ignore[method-assign]
 
     result = await validator.filter_bank_list(
         BankListContext(
@@ -928,8 +954,7 @@ async def test_mcp_filter_allows_all_tools_on_owned_bank() -> None:
         operation_bank_internal_ids={},
         tenant_config={},
     )
-    validator._get_bank_internal_id = AsyncMock(return_value="internal_owned")  # type: ignore[method-assign]
-    validator.resolver.api_key_owns_bank_internal_id = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    validator._can_access_owned_bank = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
     tools = await validator.filter_mcp_tools(
         "bank_owned",

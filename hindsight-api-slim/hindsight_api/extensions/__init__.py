@@ -42,6 +42,8 @@ from hindsight_api.extensions.memory_defense import (
 )
 from hindsight_api.extensions.operation_validator import (
     # Bank Management operations
+    BankCreateResult,
+    BankDeleteResult,
     BankListContext,
     BankListResult,
     BankReadContext,
@@ -110,6 +112,8 @@ __all__ = [
     "RetainResult",
     "ValidationResult",
     # Operation Validator - Bank Management
+    "BankCreateResult",
+    "BankDeleteResult",
     "BankListContext",
     "BankListResult",
     "BankReadContext",

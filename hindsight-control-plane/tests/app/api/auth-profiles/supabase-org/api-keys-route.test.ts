@@ -6,7 +6,6 @@ import {
   createApiKey,
   getCurrentOrgContext,
   listApiKeys,
-  repairApiKeyBankReferences,
 } from "@/lib/supabase-org/store";
 
 vi.mock("@/lib/hindsight-client", () => ({
@@ -21,7 +20,6 @@ vi.mock("@/lib/supabase-org/store", async (importOriginal) => {
     createApiKey: vi.fn(),
     getCurrentOrgContext: vi.fn(),
     listApiKeys: vi.fn(),
-    repairApiKeyBankReferences: vi.fn(),
   };
 });
 
@@ -30,7 +28,6 @@ describe("supabase org API key list route", () => {
     vi.mocked(createApiKey).mockReset();
     vi.mocked(getCurrentOrgContext).mockReset();
     vi.mocked(listApiKeys).mockReset();
-    vi.mocked(repairApiKeyBankReferences).mockReset();
     vi.mocked(sdk.listBanks).mockReset();
   });
 
@@ -60,7 +57,7 @@ describe("supabase org API key list route", () => {
     expect(sdk.listBanks).not.toHaveBeenCalled();
   });
 
-  it("filters stale Bank references and keeps responding when read repair fails", async () => {
+  it("filters stale Bank references from the response", async () => {
     const context = {
       user: { id: "user_owner", email: "owner@example.com" },
       selectedOrgId: "org_1",
@@ -68,7 +65,6 @@ describe("supabase org API key list route", () => {
         org_id: "org_1",
         user_id: "user_owner",
         email: "owner@example.com",
-        role: "owner" as const,
       },
     };
     const apiKeys = [
@@ -76,7 +72,6 @@ describe("supabase org API key list route", () => {
         id: "key_1",
         org_id: "org_1",
         name: "Agent key",
-        role: "owner" as const,
         created_at: "2026-01-01T00:00:00Z",
         operation_scopes: [
           {
@@ -99,14 +94,10 @@ describe("supabase org API key list route", () => {
         banks: [{ bank_id: "active", internal_id: "internal_active", name: "Active bank" }],
       },
     } as never);
-    vi.mocked(repairApiKeyBankReferences).mockRejectedValue(new Error("cleanup failed"));
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-
     const response = await GET(new Request("http://control.local/api/api-keys"));
     const body = await response.json();
 
     expect(response.status).toBe(200);
-    expect(repairApiKeyBankReferences).toHaveBeenCalledWith(apiKeys, ["internal_active"]);
     expect(body.api_keys[0].operation_scopes[0]).toEqual({
       operation: "recall",
       bank_scope_mode: "selected",
@@ -119,8 +110,5 @@ describe("supabase org API key list route", () => {
         name: "Active bank",
       },
     ]);
-    expect(warn).toHaveBeenCalledWith("Failed to repair stale API key bank references", {
-      error: expect.any(Error),
-    });
   });
 });

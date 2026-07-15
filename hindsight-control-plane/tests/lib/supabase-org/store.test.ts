@@ -15,7 +15,6 @@ import {
   getAuthenticatedUserWithRefresh,
   getCurrentOrgContext,
   listApiKeys,
-  repairApiKeyBankReferences,
   revealApiKey,
   removeMember,
   signOutSupabaseSession,
@@ -95,7 +94,7 @@ describe("supabase org store", () => {
   });
 
   it("keeps API key operations and UI groups aligned", () => {
-    expect(API_KEY_OPERATIONS).toHaveLength(58);
+    expect(API_KEY_OPERATIONS).toHaveLength(67);
     expect(new Set(API_KEY_OPERATIONS).size).toBe(API_KEY_OPERATIONS.length);
     expect(API_KEY_OPERATIONS).not.toContain("consolidate");
     expect(API_KEY_OPERATIONS).not.toContain("get_entity_state");
@@ -309,6 +308,20 @@ describe("supabase org store", () => {
     await expect(removeMember(adminContext("owner"), "user_owner")).rejects.toThrow(/remove themselves/);
   });
 
+  it("removes a member and revokes their API keys through one RPC", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse(null));
+
+    await removeMember(adminContext("owner"), "user_2");
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain(
+      "/rest/v1/rpc/remove_organization_member"
+    );
+    expect(JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))).toEqual({
+      p_org_id: "org_1",
+      p_user_id: "user_2",
+    });
+  });
+
   it("creates operation-scoped API keys with validated operations", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
@@ -325,7 +338,6 @@ describe("supabase org store", () => {
     expect(keyBody).toMatchObject({
       p_org_id: "org_1",
       p_name: "Agent key",
-      p_role: "owner",
       p_permission_mode: "scoped",
       p_allowed_operations: ["recall"],
       p_operation_scopes: [
@@ -408,7 +420,7 @@ describe("supabase org store", () => {
     expect(created).toMatchObject({ id: "api_key_member" });
     const keyRequest = fetchMock.mock.calls[0][1] as RequestInit;
     const keyBody = JSON.parse(String(keyRequest.body));
-    expect(keyBody.p_role).toBe("member");
+    expect(keyBody).not.toHaveProperty("p_role");
     expect(keyBody.p_allowed_operations).toContain("list_documents");
     expect(keyBody.p_allowed_operations).toContain("recall");
     expect(keyBody.p_allowed_operations).toContain("reflect");
@@ -521,64 +533,6 @@ describe("supabase org store", () => {
     });
   });
 
-  it("repairs only stale scope and ownership references for visible API keys", async () => {
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(new Response(null, { status: 204 }));
-    const apiKeys = [
-      {
-        id: "key_a",
-        org_id: "org_1",
-        name: "A",
-        role: "owner" as const,
-        created_at: "2026-01-01T00:00:00Z",
-        operation_scopes: [
-          {
-            operation: "recall",
-            bank_scope_mode: "selected" as const,
-            scoped_bank_internal_ids: ["internal_valid", "internal_stale_scope"],
-          },
-        ],
-        owned_banks: [
-          { bank_id: "valid", bank_internal_id: "internal_valid" },
-          { bank_id: "deleted", bank_internal_id: "internal_stale_owned" },
-        ],
-      },
-    ];
-
-    await repairApiKeyBankReferences(apiKeys, ["internal_valid"]);
-
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    const scopeUrl = new URL(String(fetchMock.mock.calls[0][0]));
-    expect(scopeUrl.pathname).toBe("/rest/v1/hindsight_api_key_operation_bank_scopes");
-    expect(scopeUrl.searchParams.get("api_key_id")).toBe("in.(key_a)");
-    expect(scopeUrl.searchParams.get("bank_internal_id")).toBe("in.(internal_stale_scope)");
-    const ownedUrl = new URL(String(fetchMock.mock.calls[1][0]));
-    expect(ownedUrl.pathname).toBe("/rest/v1/hindsight_api_key_created_banks");
-    expect(ownedUrl.searchParams.get("api_key_id")).toBe("in.(key_a)");
-    expect(ownedUrl.searchParams.get("bank_internal_id")).toBe("in.(internal_stale_owned)");
-  });
-
-  it("does not write during read repair when every Bank reference is current", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch");
-
-    await repairApiKeyBankReferences(
-      [
-        {
-          id: "key_a",
-          org_id: "org_1",
-          name: "A",
-          role: "owner",
-          created_at: "2026-01-01T00:00:00Z",
-          owned_banks: [{ bank_id: "bank_a", bank_internal_id: "internal_a" }],
-        },
-      ],
-      ["internal_a"]
-    );
-
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
   it("reveals stored API key secrets to admins and owning members only", async () => {
     const createdFetch = vi
       .spyOn(globalThis, "fetch")
@@ -631,7 +585,6 @@ describe("supabase org store", () => {
         org_id: "org_1",
         created_by_user_id: "user_owner",
         name: "A",
-        role: "owner",
         created_at: "2026-01-01T00:00:00Z",
       },
       {
@@ -639,7 +592,6 @@ describe("supabase org store", () => {
         org_id: "org_1",
         created_by_user_id: "user_member",
         name: "B",
-        role: "member",
         created_at: "2026-01-01T00:00:00Z",
       },
     ];

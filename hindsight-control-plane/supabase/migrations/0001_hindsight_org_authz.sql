@@ -44,7 +44,6 @@ create table if not exists hindsight_api_keys (
   name text not null,
   key_hash text not null unique,
   encrypted_key text,
-  role organization_role not null default 'member',
   permission_mode api_key_permission_mode not null default 'scoped',
   allowed_operations jsonb,
   expires_at timestamptz,
@@ -175,7 +174,6 @@ create function create_hindsight_api_key(
   p_name text,
   p_key_hash text,
   p_encrypted_key text,
-  p_role organization_role,
   p_permission_mode api_key_permission_mode,
   p_allowed_operations jsonb,
   p_operation_scopes jsonb
@@ -194,7 +192,6 @@ begin
     name,
     key_hash,
     encrypted_key,
-    role,
     permission_mode,
     allowed_operations
   )
@@ -204,7 +201,6 @@ begin
     p_name,
     p_key_hash,
     p_encrypted_key,
-    p_role,
     p_permission_mode,
     p_allowed_operations
   )
@@ -219,6 +215,45 @@ begin
   );
 
   return query select new_api_key_id;
+end;
+$$;
+
+-- Membership removal and credential revocation are one authorization state
+-- transition. A key must never remain active after its creator is removed.
+create function remove_organization_member(
+  p_org_id text,
+  p_user_id uuid
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  update hindsight_api_keys
+  set revoked_at = coalesce(revoked_at, now())
+  where org_id = p_org_id
+    and created_by_user_id = p_user_id;
+
+  delete from organization_members
+  where org_id = p_org_id
+    and user_id = p_user_id;
+end;
+$$;
+
+-- Remove all authorization metadata that points at a bank deleted in the data plane.
+create function delete_hindsight_bank_references(p_bank_internal_id text)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  delete from hindsight_api_key_operation_bank_scopes
+  where bank_internal_id = p_bank_internal_id;
+
+  delete from hindsight_api_key_created_banks
+  where bank_internal_id = p_bank_internal_id;
 end;
 $$;
 
@@ -269,11 +304,12 @@ revoke all on function create_hindsight_api_key(
   text,
   text,
   text,
-  organization_role,
   api_key_permission_mode,
   jsonb,
   jsonb
 ) from public;
+revoke all on function remove_organization_member(text, uuid) from public;
+revoke all on function delete_hindsight_bank_references(text) from public;
 grant execute on function replace_hindsight_api_key_permissions(
   uuid,
   text,
@@ -287,8 +323,9 @@ grant execute on function create_hindsight_api_key(
   text,
   text,
   text,
-  organization_role,
   api_key_permission_mode,
   jsonb,
   jsonb
 ) to service_role;
+grant execute on function remove_organization_member(text, uuid) to service_role;
+grant execute on function delete_hindsight_bank_references(text) to service_role;

@@ -85,7 +85,6 @@ export interface HindsightApiKeySummary {
   org_id: string;
   created_by_user_id?: string | null;
   name: string;
-  role: OrganizationRole;
   permission_mode?: ApiKeyPermissionMode;
   allowed_operations?: ApiKeyOperation[] | null;
   operation_scopes?: ApiKeyOperationScopeSummary[];
@@ -470,9 +469,9 @@ export async function updateMemberRole(
 export async function removeMember(context: CurrentOrgContext, userId: string): Promise<void> {
   await requireOrgOwner(context);
   if (userId === context.user.id) throw new Error("Owners cannot remove themselves");
-  await restDelete("organization_members", {
-    org_id: `eq.${context.selectedOrgId}`,
-    user_id: `eq.${userId}`,
+  await restRpc("remove_organization_member", {
+    p_org_id: context.selectedOrgId,
+    p_user_id: userId,
   });
 }
 
@@ -597,7 +596,7 @@ export async function listApiKeys(context: CurrentOrgContext): Promise<Hindsight
   const keys = await restGet<HindsightApiKeySummary>("hindsight_api_keys", {
     org_id: `eq.${context.selectedOrgId}`,
     select:
-      "id,org_id,created_by_user_id,name,role,permission_mode,allowed_operations,expires_at,revoked_at,created_at",
+      "id,org_id,created_by_user_id,name,permission_mode,allowed_operations,expires_at,revoked_at,created_at",
     order: "created_at.desc",
   });
   const visibleKeys = keys.filter((key) => isAdmin || key.created_by_user_id === context.user.id);
@@ -709,7 +708,6 @@ export async function createApiKey(
     p_name: keyName,
     p_key_hash: keyHash,
     p_encrypted_key: encryptedKey,
-    p_role: context.membership.role,
     p_permission_mode: permissionMode,
     p_allowed_operations: operations,
     p_operation_scopes: normalizedOperationScopes,
@@ -725,7 +723,7 @@ export async function revealApiKey(
     id: `eq.${id}`,
     org_id: `eq.${context.selectedOrgId}`,
     select:
-      "id,org_id,created_by_user_id,name,role,permission_mode,allowed_operations,expires_at,revoked_at,created_at,encrypted_key",
+      "id,org_id,created_by_user_id,name,permission_mode,allowed_operations,expires_at,revoked_at,created_at,encrypted_key",
     limit: "1",
   });
   const key = rows[0];
@@ -743,7 +741,7 @@ export async function revokeApiKey(context: CurrentOrgContext, id: string): Prom
       id: `eq.${id}`,
       org_id: `eq.${context.selectedOrgId}`,
       select:
-        "id,org_id,created_by_user_id,name,role,permission_mode,allowed_operations,expires_at,revoked_at,created_at",
+        "id,org_id,created_by_user_id,name,permission_mode,allowed_operations,expires_at,revoked_at,created_at",
       limit: "1",
     });
     if (keys[0]?.created_by_user_id !== context.user.id)
@@ -766,7 +764,7 @@ export async function updateApiKeyPermissions(
     id: `eq.${id}`,
     org_id: `eq.${context.selectedOrgId}`,
     select:
-      "id,org_id,created_by_user_id,name,role,permission_mode,allowed_operations,expires_at,revoked_at,created_at",
+      "id,org_id,created_by_user_id,name,permission_mode,allowed_operations,expires_at,revoked_at,created_at",
     limit: "1",
   });
   const key = rows[0];
@@ -788,65 +786,6 @@ export async function updateApiKeyPermissions(
         ? normalizedOperationScopes.map((scope) => scope.operation)
         : null,
     p_operation_scopes: normalizedOperationScopes,
-  });
-}
-
-export async function repairApiKeyBankReferences(
-  apiKeys: readonly HindsightApiKeySummary[],
-  validBankInternalIds: readonly string[]
-): Promise<void> {
-  const validIds = new Set(validBankInternalIds);
-  const visibleApiKeyIds = apiKeys.map((apiKey) => apiKey.id);
-  if (visibleApiKeyIds.length === 0) return;
-
-  const staleScopeIds = Array.from(
-    new Set(
-      apiKeys.flatMap((apiKey) =>
-        (apiKey.operation_scopes ?? []).flatMap((scope) =>
-          (scope.scoped_bank_internal_ids ?? []).filter((internalId) => !validIds.has(internalId))
-        )
-      )
-    )
-  );
-  const staleOwnedIds = Array.from(
-    new Set(
-      apiKeys.flatMap((apiKey) =>
-        (apiKey.owned_banks ?? [])
-          .map((bank) => bank.bank_internal_id)
-          .filter((internalId) => !validIds.has(internalId))
-      )
-    )
-  );
-  // Restrict repair to keys already visible to this caller. In particular, a member
-  // viewing personal keys must never clean another member's authorization records.
-  const apiKeyFilter = `in.(${visibleApiKeyIds.join(",")})`;
-  const repairs: Promise<void>[] = [];
-  if (staleScopeIds.length > 0) {
-    repairs.push(
-      restDelete("hindsight_api_key_operation_bank_scopes", {
-        api_key_id: apiKeyFilter,
-        bank_internal_id: `in.(${staleScopeIds.join(",")})`,
-      })
-    );
-  }
-  if (staleOwnedIds.length > 0) {
-    repairs.push(
-      restDelete("hindsight_api_key_created_banks", {
-        api_key_id: apiKeyFilter,
-        bank_internal_id: `in.(${staleOwnedIds.join(",")})`,
-      })
-    );
-  }
-  await Promise.all(repairs);
-}
-
-export async function deleteApiKeyBankScopesByInternalId(bankInternalId: string): Promise<void> {
-  const normalizedBankInternalId = normalizeName(bankInternalId, "bank internal id");
-  await restDelete("hindsight_api_key_operation_bank_scopes", {
-    bank_internal_id: `eq.${normalizedBankInternalId}`,
-  });
-  await restDelete("hindsight_api_key_created_banks", {
-    bank_internal_id: `eq.${normalizedBankInternalId}`,
   });
 }
 
@@ -914,14 +853,6 @@ async function restPatch<T>(
   if (!response.ok) throw new Error(`Supabase update failed: ${response.status}`);
   if (!returnRepresentation) return [];
   return (await response.json()) as T[];
-}
-
-async function restDelete(table: string, params: Record<string, string>): Promise<void> {
-  const response = await fetch(restUrl(table, params), {
-    method: "DELETE",
-    headers: serviceHeaders(),
-  });
-  if (!response.ok) throw new Error(`Supabase delete failed: ${response.status}`);
 }
 
 function restUrl(table: string, params: Record<string, string> = {}): string {

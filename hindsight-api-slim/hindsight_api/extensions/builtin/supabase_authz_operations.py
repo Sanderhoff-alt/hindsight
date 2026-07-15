@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from functools import lru_cache
+from importlib.resources import files
 from typing import Literal, TypedDict
 
-from hindsight_api.extensions.operation_validator import BankReadOperation, BankWriteOperation
+from pydantic import BaseModel
 
 OperationSource = Literal["bank_read", "bank_write", "special_bank", "unscoped"]
 OperationScope = Literal["bank", "unscoped"]
@@ -18,47 +20,37 @@ class OperationDefinition(TypedDict, total=False):
     scope: OperationScope
 
 
-_API_UNREACHABLE_READ_OPERATIONS = frozenset({BankReadOperation.GET_ENTITY_STATE})
-_API_UNREACHABLE_WRITE_OPERATIONS = frozenset(
-    {BankWriteOperation.RUN_CONSOLIDATION, BankWriteOperation.SET_BANK_MISSION}
-)
-
-# The validator hook enums are the source of truth. Only operations with no public
-# API path are excluded from API-key grants.
-BANK_READ_OPERATION_NAMES = tuple(
-    operation.value for operation in BankReadOperation if operation not in _API_UNREACHABLE_READ_OPERATIONS
-)
-BANK_WRITE_OPERATION_NAMES = tuple(
-    operation.value for operation in BankWriteOperation if operation not in _API_UNREACHABLE_WRITE_OPERATIONS
-)
-
-SPECIAL_BANK_OPERATION_DEFINITIONS: tuple[OperationDefinition, ...] = (
-    {"name": "recall", "source": "special_bank", "action": "read", "scope": "bank"},
-    {"name": "reflect", "source": "special_bank", "action": "read", "scope": "bank"},
-    {"name": "retain", "source": "special_bank", "action": "write", "scope": "bank"},
-    {"name": "mental_model_get", "source": "special_bank", "action": "read", "scope": "bank"},
-    {"name": "mental_model_refresh", "source": "special_bank", "action": "write", "scope": "bank"},
-)
-
-UNSCOPED_OPERATION_DEFINITIONS: tuple[OperationDefinition, ...] = (
-    {"name": "create_bank", "source": "unscoped", "action": "write", "scope": "unscoped"},
-)
+class NamedOperation(BaseModel):
+    name: str
+    action: Literal["read", "write"]
 
 
-def _definitions_for_source(
-    names: tuple[str, ...], source: Literal["bank_read", "bank_write"], action: Literal["read", "write"]
-) -> tuple[OperationDefinition, ...]:
-    return tuple({"name": name, "source": source, "action": action, "scope": "bank"} for name in names)
+class OperationManifest(BaseModel):
+    bank_read: list[str]
+    bank_write: list[str]
+    special_bank: list[NamedOperation]
+    unscoped: list[NamedOperation]
 
 
 @lru_cache(maxsize=1)
 def load_operation_definitions() -> tuple[OperationDefinition, ...]:
-    return (
-        *_definitions_for_source(BANK_READ_OPERATION_NAMES, "bank_read", "read"),
-        *_definitions_for_source(BANK_WRITE_OPERATION_NAMES, "bank_write", "write"),
-        *SPECIAL_BANK_OPERATION_DEFINITIONS,
-        *UNSCOPED_OPERATION_DEFINITIONS,
+    """Load the shared Python/TypeScript API-key operation manifest."""
+    manifest_path = files(__package__).joinpath("supabase_authz_operations.json")
+    manifest = OperationManifest.model_validate(json.loads(manifest_path.read_text(encoding="utf-8")))
+    definitions: list[OperationDefinition] = []
+    for name in manifest.bank_read:
+        definitions.append({"name": name, "source": "bank_read", "action": "read", "scope": "bank"})
+    for name in manifest.bank_write:
+        definitions.append({"name": name, "source": "bank_write", "action": "write", "scope": "bank"})
+    definitions.extend(
+        {"name": item.name, "source": "special_bank", "action": item.action, "scope": "bank"}
+        for item in manifest.special_bank
     )
+    definitions.extend(
+        {"name": item.name, "source": "unscoped", "action": item.action, "scope": "unscoped"}
+        for item in manifest.unscoped
+    )
+    return tuple(definitions)
 
 
 def operation_names_for_source(source: OperationSource) -> frozenset[str]:
