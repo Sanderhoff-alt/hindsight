@@ -113,6 +113,7 @@ const COPY: Record<string, string> = {
     "the key has full access to banks it created that still exist.",
   createdBanks: "Existing banks created by this key",
   defaultScope: "Default scope",
+  noBanksYet: "No banks yet",
   noBanksCreatedByThisKey: "No existing banks were created by this key",
   overrideScope: "Override scope",
   selectedBanksOnly: "Selected banks only",
@@ -517,7 +518,7 @@ export default function SettingsPage() {
       scope.mode === "selected" ? (
         <div className="grid max-h-32 gap-2 overflow-y-auto pr-1 md:grid-cols-2">
           {selectableBanks.length === 0 ? (
-            <span className="text-sm text-muted-foreground">No banks yet</span>
+            <span className="text-sm text-muted-foreground">{t("noBanksYet")}</span>
           ) : (
             selectableBanks.map((bank) => {
               const bankId = bank.bank_id || bank.id || "";
