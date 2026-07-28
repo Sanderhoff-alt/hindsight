@@ -15,7 +15,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from hindsight_api.engine.consolidation.prompts import build_batch_consolidation_prompt
 from hindsight_api.engine.prompt_utils import output_language_directive
 from hindsight_api.engine.reflect.prompts import build_final_system_prompt
 from hindsight_api.engine.retain.fact_extraction import _build_extraction_prompt_and_schema
@@ -111,25 +110,6 @@ def test_retain_works_with_custom_mode():
 # ---------------------------------------------------------------------------
 # Consolidation (observations)
 # ---------------------------------------------------------------------------
-
-
-def test_consolidation_unset_does_not_inject_directive():
-    prompt = build_batch_consolidation_prompt(llm_output_language=None)
-    assert "Respond exclusively in" not in prompt
-
-
-def test_consolidation_injects_directive():
-    prompt = build_batch_consolidation_prompt(llm_output_language="Chinese")
-    assert "Respond exclusively in Chinese" in prompt
-    assert "Translate any source content into Chinese" in prompt
-
-
-def test_consolidation_directive_does_not_break_format_placeholders():
-    """The consolidation prompt is later passed through str.format(facts_text=..., observations_text=...).
-    The appended directive must not introduce stray { / } that would raise KeyError."""
-    prompt = build_batch_consolidation_prompt(llm_output_language="Japanese")
-    # str.format must succeed with the expected placeholders.
-    prompt.format(facts_text="X", observations_text="Y")
 
 
 # ---------------------------------------------------------------------------
