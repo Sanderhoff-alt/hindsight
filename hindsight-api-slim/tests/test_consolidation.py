@@ -3323,6 +3323,11 @@ def test_consolidation_prompt_split_is_cacheable_and_complete():
     assert "OBSERVATION LIMIT REACHED" in capped
     assert "OBSERVATION LIMIT REACHED" not in sys_prompt
 
+    # When no mission is supplied the built-in default mission is emitted in the
+    # per-batch input, so consolidation always has a mission to follow.
+    default = build_consolidation_input(facts_text="[id] F.", observations_text="[]")
+    assert "Track anything notable in the new facts" in default
+
 
 @pytest.mark.asyncio
 async def test_create_observation_populates_search_vector_native(memory, request_context):

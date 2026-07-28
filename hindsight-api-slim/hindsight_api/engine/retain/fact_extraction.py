@@ -2548,8 +2548,7 @@ async def extract_facts_from_contents(
     # Step 1: Create parallel fact extraction tasks
     fact_extraction_tasks = []
     for item in contents:
-        # Call extract_facts_from_text directly (defined earlier in this file)
-        # to avoid circular import with utils.extract_facts
+        # Call extract_facts_from_text directly (defined earlier in this file).
         task = extract_facts_from_text(
             text=item.content,
             event_date=item.event_date,

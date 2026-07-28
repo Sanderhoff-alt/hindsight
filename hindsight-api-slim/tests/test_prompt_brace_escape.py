@@ -42,6 +42,39 @@ class TestEscapeForPrompt:
 
 
 # ---------------------------------------------------------------------------
+# Consolidation prompt
+# ---------------------------------------------------------------------------
+
+
+class TestConsolidationBraceSafety:
+    """The per-batch consolidation input runs str.format() internally
+    (build_consolidation_input → template.format(facts_text=..., observations_text=...)),
+    so a mission or capacity note containing literal braces must be escaped or it
+    raises KeyError and crashes consolidation."""
+
+    def test_mission_with_json_renders(self):
+        from hindsight_api.engine.consolidation.prompts import build_consolidation_input
+
+        mission = '{"dedup": true, "merge": true}'
+        rendered = build_consolidation_input(
+            facts_text="<facts>", observations_text="<obs>", observations_mission=mission
+        )
+        assert mission in rendered
+
+    def test_capacity_note_with_braces_renders(self):
+        from hindsight_api.engine.consolidation.prompts import build_consolidation_input
+
+        note = "Use shape {limit, used}"
+        rendered = build_consolidation_input(
+            facts_text="<facts>",
+            observations_text="<obs>",
+            observations_mission="m",
+            observation_capacity_note=note,
+        )
+        assert "{limit, used}" in rendered
+
+
+# ---------------------------------------------------------------------------
 # Reflect prompt
 # ---------------------------------------------------------------------------
 
