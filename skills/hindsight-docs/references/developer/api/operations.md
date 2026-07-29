@@ -80,7 +80,10 @@ Reconciles derived state that goes stale after a delete. Every invocation runs t
 
 Bank-deduped at submit time, so concurrent triggers against the same bank coalesce into one drain.
 
-**Triggers:** any delete that removes memory_units — `DELETE /documents/{id}`, `DELETE /memories/{id}`, and re-retaining an existing `document_id` (the upsert path). A full bank wipe (`delete_bank`) is a no-op: there's nothing left in the bank to maintain.
+**Triggers:** any delete that removes memory_units — `DELETE /documents/{id}`,
+`DELETE /memories/{id}`, `POST /memories/bulk-delete`, and re-retaining an
+existing `document_id` (the upsert path). A full bank wipe (`delete_bank`) is a
+no-op: there's nothing left in the bank to maintain.
 
 ### `webhook_delivery`
 

@@ -193,6 +193,32 @@ client.list_memories(
 )
 ```
 
+### Permanently Delete Memories
+
+Hard deletion is irreversible and is different from setting a memory's
+curation state to `invalidated`.
+
+```python
+# Delete one memory unit
+result = client.delete_memory_unit(
+    bank_id="my-bank",
+    memory_id="11111111-1111-1111-1111-111111111111",
+)
+
+# Delete multiple memory units from the same bank
+result = client.delete_memory_units(
+    bank_id="my-bank",
+    memory_ids=[
+        "11111111-1111-1111-1111-111111111111",
+        "22222222-2222-2222-2222-222222222222",
+    ],
+)
+print(f"Deleted {result.deleted_count} of 2")
+```
+
+Async applications can use `await client.adelete_memory_unit(...)` and
+`await client.adelete_memory_units(...)`.
+
 ## Async Support
 
 All methods have async versions prefixed with `a`:

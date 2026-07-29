@@ -24,6 +24,8 @@ import memoriesGo from '!!raw-loader!@site/examples/api/memories.go';
 | `GET` | `/v1/default/banks/{bank}/memories/{id}` | Fetch a single memory unit |
 | `GET` | `/v1/default/banks/{bank}/memories/{id}/history` | Refresh history of a derived observation |
 | `PATCH` | `/v1/default/banks/{bank}/memories/{id}` | Curate: edit / invalidate / restore |
+| `DELETE` | `/v1/default/banks/{bank}/memories/{id}` | Permanently delete one memory unit |
+| `POST` | `/v1/default/banks/{bank}/memories/bulk-delete` | Permanently delete multiple memory units |
 | `DELETE` | `/v1/default/banks/{bank}/memories/{id}/observations` | Clear a memory's derived observations |
 
 ## List memory units
@@ -98,6 +100,7 @@ Not every "bad memory" needs the same tool. Pick by *why* it's bad:
 | **No longer true, with nothing to replace it** (decommissioned server, a tool that was fixed, a role that changed) | **Invalidate** the memory | Nothing in the pipeline knows the world changed, so you tell it explicitly. |
 | **A duplicate or superseded fact** | **Invalidate** the memory | Removes the noise from recall while keeping the audit trail. |
 | **Superseded by a newer fact you're storing anyway** (e.g. "likes BMW" → "likes Toyota") | Just retain the new fact | Consolidation already reconciles in-stream contradictions into a single observation. |
+| **Required to be erased permanently** (privacy request, sensitive data, retention policy) | **Hard delete** the memory | Removes the row and associated links without keeping a restorable archive. |
 
 The rule of thumb: **if Hindsight could have known, let consolidation handle it; if only you know, curate it.**
 
@@ -189,6 +192,60 @@ Behind the scenes, invalidating **moves** the row out of the active `memory_unit
 :::note Documents are the source of truth
 A memory is extracted from a document. Editing or invalidating a memory does **not** change the document it came from — that's deliberate: the document stays as an accurate historical record. As a result, **reprocessing a document resets curation** of the facts it produced (extraction runs fresh from the original text). Fix systematic issues at the mission level and reprocess; use edit/invalidate for the residue.
 :::
+
+## Permanently delete memory units
+
+Hard deletion is irreversible. Unlike invalidation, it does not keep a
+restorable row in `invalidated_memory_units`. Hindsight removes the unit's
+entity and graph links, invalidates observations derived from the deleted
+source, and schedules consolidation and graph maintenance for the bank.
+
+Use hard deletion for erasure or retention requirements. For ordinary
+curation, prefer [invalidation](#invalidate-a-memory-reversible) so the audit
+trail remains available.
+
+### Delete one memory
+
+<Tabs>
+<TabItem value="python" label="Python">
+<CodeSnippet code={memoriesPy} section="delete-memory" language="python" />
+</TabItem>
+<TabItem value="node" label="Node.js">
+<CodeSnippet code={memoriesMjs} section="delete-memory" language="javascript" />
+</TabItem>
+<TabItem value="cli" label="CLI">
+<CodeSnippet code={memoriesSh} section="delete-memory" language="bash" />
+</TabItem>
+<TabItem value="go" label="Go">
+<CodeSnippet code={memoriesGo} section="delete-memory" language="go" />
+</TabItem>
+</Tabs>
+
+Deleting an unknown memory ID returns `404`.
+
+### Delete multiple memories
+
+<Tabs>
+<TabItem value="python" label="Python">
+<CodeSnippet code={memoriesPy} section="bulk-delete-memories" language="python" />
+</TabItem>
+<TabItem value="node" label="Node.js">
+<CodeSnippet code={memoriesMjs} section="bulk-delete-memories" language="javascript" />
+</TabItem>
+<TabItem value="cli" label="CLI">
+<CodeSnippet code={memoriesSh} section="bulk-delete-memories" language="bash" />
+</TabItem>
+<TabItem value="go" label="Go">
+<CodeSnippet code={memoriesGo} section="bulk-delete-memories" language="go" />
+</TabItem>
+</Tabs>
+
+The bulk endpoint first validates every ID's bank ownership and the
+`DELETE_MEMORY_UNIT` authorization for the complete batch. If any target
+belongs to another bank or authorization is denied, nothing is deleted.
+Unknown IDs are omitted from the deletion count, so compare the number of
+submitted IDs with the response's `deleted_count` when the caller needs to
+detect already-missing units.
 
 ### A pruning workflow
 

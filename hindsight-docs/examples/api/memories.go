@@ -129,6 +129,35 @@ func main() {
 		// [/docs:observation-history]
 	}
 
+// [docs:delete-memory]
+	// Hard-delete one memory. This is irreversible, unlike invalidation.
+	if memoryID != "" {
+		deleted, _, _ := client.MemoryAPI.DeleteMemory(ctx, memBankID, memoryID).Execute()
+		fmt.Println(deleted.GetMessage())
+	}
+// [/docs:delete-memory]
+
+// [docs:bulk-delete-memories]
+	// Delete multiple memory units from the same bank in one request.
+	remaining, _, _ := client.MemoryAPI.ListMemories(ctx, memBankID).Execute()
+	remainingIDs := make([]string, 0, 2)
+	for _, unit := range remaining.GetItems() {
+		if id, ok := unit["id"].(string); ok {
+			remainingIDs = append(remainingIDs, id)
+		}
+		if len(remainingIDs) == 2 {
+			break
+		}
+	}
+	if len(remainingIDs) > 0 {
+		result, _, _ := client.MemoryAPI.BulkDeleteMemories(ctx, memBankID).
+			BulkDeleteMemoriesRequest(hindsight.BulkDeleteMemoriesRequest{
+				UnitIds: remainingIDs,
+		}).Execute()
+		fmt.Printf("Deleted %d of %d requested memories\n", result.GetDeletedCount(), len(remainingIDs))
+	}
+// [/docs:bulk-delete-memories]
+
 	// =============================================================================
 	// Cleanup (not shown in docs)
 	// =============================================================================

@@ -13,6 +13,8 @@ A **memory unit** is the atomic fact Hindsight extracts and stores. This page co
 | `GET` | `/v1/default/banks/{bank}/memories/{id}` | Fetch a single memory unit |
 | `GET` | `/v1/default/banks/{bank}/memories/{id}/history` | Refresh history of a derived observation |
 | `PATCH` | `/v1/default/banks/{bank}/memories/{id}` | Curate: edit / invalidate / restore |
+| `DELETE` | `/v1/default/banks/{bank}/memories/{id}` | Permanently delete one memory unit |
+| `POST` | `/v1/default/banks/{bank}/memories/bulk-delete` | Permanently delete multiple memory units |
 | `DELETE` | `/v1/default/banks/{bank}/memories/{id}/observations` | Clear a memory's derived observations |
 
 ## List memory units
@@ -131,6 +133,7 @@ Not every "bad memory" needs the same tool. Pick by *why* it's bad:
 | **No longer true, with nothing to replace it** (decommissioned server, a tool that was fixed, a role that changed) | **Invalidate** the memory | Nothing in the pipeline knows the world changed, so you tell it explicitly. |
 | **A duplicate or superseded fact** | **Invalidate** the memory | Removes the noise from recall while keeping the audit trail. |
 | **Superseded by a newer fact you're storing anyway** (e.g. "likes BMW" → "likes Toyota") | Just retain the new fact | Consolidation already reconciles in-stream contradictions into a single observation. |
+| **Required to be erased permanently** (privacy request, sensitive data, retention policy) | **Hard delete** the memory | Removes the row and associated links without keeping a restorable archive. |
 
 The rule of thumb: **if Hindsight could have known, let consolidation handle it; if only you know, curate it.**
 
@@ -269,6 +272,135 @@ Behind the scenes, invalidating **moves** the row out of the active `memory_unit
 > **📝 Documents are the source of truth**
 >
 A memory is extracted from a document. Editing or invalidating a memory does **not** change the document it came from — that's deliberate: the document stays as an accurate historical record. As a result, **reprocessing a document resets curation** of the facts it produced (extraction runs fresh from the original text). Fix systematic issues at the mission level and reprocess; use edit/invalidate for the residue.
+## Permanently delete memory units
+
+Hard deletion is irreversible. Unlike invalidation, it does not keep a
+restorable row in `invalidated_memory_units`. Hindsight removes the unit's
+entity and graph links, invalidates observations derived from the deleted
+source, and schedules consolidation and graph maintenance for the bank.
+
+Use hard deletion for erasure or retention requirements. For ordinary
+curation, prefer [invalidation](#invalidate-a-memory-reversible) so the audit
+trail remains available.
+
+### Delete one memory
+
+### Python
+
+```python
+# Hard-delete one memory. This is irreversible, unlike invalidation.
+    deleted = await client.adelete_memory_unit(bank_id=BANK_ID, memory_id=memory_id)
+    print(deleted.message)
+```
+
+### Node.js
+
+```javascript
+// Hard-delete one memory. This is irreversible, unlike invalidation.
+await fetch(`${HINDSIGHT_URL}/v1/default/banks/${BANK_ID}/memories/${memoryId}`, {
+    method: 'DELETE',
+});
+```
+
+### CLI
+
+```bash
+# Hard-delete one memory. This is irreversible, unlike invalidation.
+if [ -n "$MEMORY_ID" ]; then
+  hindsight memory delete "$BANK_ID" "$MEMORY_ID" --yes
+fi
+```
+
+### Go
+
+```go
+// Hard-delete one memory. This is irreversible, unlike invalidation.
+	if memoryID != "" {
+		deleted, _, _ := client.MemoryAPI.DeleteMemory(ctx, memBankID, memoryID).Execute()
+		fmt.Println(deleted.GetMessage())
+	}
+```
+
+Deleting an unknown memory ID returns `404`.
+
+### Delete multiple memories
+
+### Python
+
+```python
+# Delete multiple memory units from the same bank in one request.
+    remaining = await client.memory.list_memories(bank_id=BANK_ID)
+    remaining_ids = [unit["id"] for unit in remaining.items[:2]]
+    if remaining_ids:
+        result = await client.adelete_memory_units(
+            bank_id=BANK_ID,
+            memory_ids=remaining_ids,
+        )
+        print(f"Deleted {result.deleted_count} of {len(remaining_ids)} requested memories")
+```
+
+### Node.js
+
+```javascript
+// Delete multiple memory units from the same bank in one request.
+const remaining = await (
+    await fetch(`${HINDSIGHT_URL}/v1/default/banks/${BANK_ID}/memories/list`)
+).json();
+const remainingIds = remaining.items.slice(0, 2).map(unit => unit.id);
+if (remainingIds.length > 0) {
+    const result = await (
+        await fetch(`${HINDSIGHT_URL}/v1/default/banks/${BANK_ID}/memories/bulk-delete`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ unit_ids: remainingIds }),
+        })
+    ).json();
+    console.log(`Deleted ${result.deleted_count} of ${remainingIds.length} requested memories`);
+}
+```
+
+### CLI
+
+```bash
+# Delete multiple memory units from the same bank in one request.
+REMAINING_IDS=$(hindsight memory list "$BANK_ID" -o json | python3 -c "import sys,json; items=json.load(sys.stdin).get('items',[]); print(' '.join(u['id'] for u in items[:2]))")
+if [ -n "$REMAINING_IDS" ]; then
+  # UUIDs contain no shell metacharacters, so splitting produces one CLI argument per ID.
+  # shellcheck disable=SC2086
+  hindsight memory delete "$BANK_ID" $REMAINING_IDS --yes
+fi
+```
+
+### Go
+
+```go
+// Delete multiple memory units from the same bank in one request.
+	remaining, _, _ := client.MemoryAPI.ListMemories(ctx, memBankID).Execute()
+	remainingIDs := make([]string, 0, 2)
+	for _, unit := range remaining.GetItems() {
+		if id, ok := unit["id"].(string); ok {
+			remainingIDs = append(remainingIDs, id)
+		}
+		if len(remainingIDs) == 2 {
+			break
+		}
+	}
+	if len(remainingIDs) > 0 {
+		result, _, _ := client.MemoryAPI.BulkDeleteMemories(ctx, memBankID).
+			BulkDeleteMemoriesRequest(hindsight.BulkDeleteMemoriesRequest{
+				UnitIds: remainingIDs,
+		}).Execute()
+		fmt.Printf("Deleted %d of %d requested memories\n", result.GetDeletedCount(), len(remainingIDs))
+	}
+```
+
+The bulk endpoint first validates every ID's bank ownership and the
+`DELETE_MEMORY_UNIT` authorization for the complete batch. If any target
+belongs to another bank or authorization is denied, nothing is deleted.
+Unknown IDs are omitted from the deletion count, so compare the number of
+submitted IDs with the response's `deleted_count` when the caller needs to
+detect already-missing units.
+
 ### A pruning workflow
 
 To clean up duplicates and reclaim noise: cluster duplicates from `memories/list`, then **invalidate** them — recall is clean immediately, and the audit trail is preserved.

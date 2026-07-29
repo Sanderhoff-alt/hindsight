@@ -170,6 +170,26 @@ View the observation history for a specific memory unit:
 hindsight memory history <bank_id> <memory_id>
 ```
 
+### Delete Memories
+
+Permanently delete one or more memory units. This is an irreversible hard
+delete, not a change to the memory's curation state:
+
+```bash
+# Delete one memory unit
+hindsight memory delete <bank_id> <memory_id>
+
+# Delete multiple memory units atomically
+hindsight memory delete <bank_id> <memory_id_1> <memory_id_2>
+
+# Skip the confirmation prompt (for automation)
+hindsight memory delete <bank_id> <memory_id_1> <memory_id_2> --yes
+```
+
+The CLI uses the single-memory `DELETE` endpoint for one ID and the bulk
+`POST` endpoint for multiple IDs. Both paths enforce the server's
+`DELETE_MEMORY_UNIT` authorization policy.
+
 ### Clear Observations
 
 Remove all observations for a memory unit, keeping the core fact:

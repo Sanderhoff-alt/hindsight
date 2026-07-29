@@ -98,6 +98,31 @@ if (observation) {
     // [/docs:observation-history]
 }
 
+// [docs:delete-memory]
+// Hard-delete one memory. This is irreversible, unlike invalidation.
+await fetch(`${HINDSIGHT_URL}/v1/default/banks/${BANK_ID}/memories/${memoryId}`, {
+    method: 'DELETE',
+});
+// [/docs:delete-memory]
+
+// [docs:bulk-delete-memories]
+// Delete multiple memory units from the same bank in one request.
+const remaining = await (
+    await fetch(`${HINDSIGHT_URL}/v1/default/banks/${BANK_ID}/memories/list`)
+).json();
+const remainingIds = remaining.items.slice(0, 2).map(unit => unit.id);
+if (remainingIds.length > 0) {
+    const result = await (
+        await fetch(`${HINDSIGHT_URL}/v1/default/banks/${BANK_ID}/memories/bulk-delete`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ unit_ids: remainingIds }),
+        })
+    ).json();
+    console.log(`Deleted ${result.deleted_count} of ${remainingIds.length} requested memories`);
+}
+// [/docs:bulk-delete-memories]
+
 // =============================================================================
 // Cleanup (not shown in docs)
 // =============================================================================

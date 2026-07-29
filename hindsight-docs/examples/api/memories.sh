@@ -77,6 +77,23 @@ if [ -n "$OBSERVATION_ID" ]; then
   # [/docs:observation-history]
 fi
 
+# [docs:delete-memory]
+# Hard-delete one memory. This is irreversible, unlike invalidation.
+if [ -n "$MEMORY_ID" ]; then
+  hindsight memory delete "$BANK_ID" "$MEMORY_ID" --yes
+fi
+# [/docs:delete-memory]
+
+# [docs:bulk-delete-memories]
+# Delete multiple memory units from the same bank in one request.
+REMAINING_IDS=$(hindsight memory list "$BANK_ID" -o json | python3 -c "import sys,json; items=json.load(sys.stdin).get('items',[]); print(' '.join(u['id'] for u in items[:2]))")
+if [ -n "$REMAINING_IDS" ]; then
+  # UUIDs contain no shell metacharacters, so splitting produces one CLI argument per ID.
+  # shellcheck disable=SC2086
+  hindsight memory delete "$BANK_ID" $REMAINING_IDS --yes
+fi
+# [/docs:bulk-delete-memories]
+
 # =============================================================================
 # Cleanup (not shown in docs)
 # =============================================================================

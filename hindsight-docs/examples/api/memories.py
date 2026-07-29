@@ -150,6 +150,24 @@ async def main():
     )
     # [/docs:restore-memory]
 
+# [docs:delete-memory]
+    # Hard-delete one memory. This is irreversible, unlike invalidation.
+    deleted = await client.adelete_memory_unit(bank_id=BANK_ID, memory_id=memory_id)
+    print(deleted.message)
+# [/docs:delete-memory]
+
+# [docs:bulk-delete-memories]
+    # Delete multiple memory units from the same bank in one request.
+    remaining = await client.memory.list_memories(bank_id=BANK_ID)
+    remaining_ids = [unit["id"] for unit in remaining.items[:2]]
+    if remaining_ids:
+        result = await client.adelete_memory_units(
+            bank_id=BANK_ID,
+            memory_ids=remaining_ids,
+        )
+        print(f"Deleted {result.deleted_count} of {len(remaining_ids)} requested memories")
+# [/docs:bulk-delete-memories]
+
     # =========================================================================
     # Cleanup (not shown in docs)
     # =========================================================================
