@@ -77,7 +77,7 @@ enum Commands {
     #[command(subcommand)]
     Bank(BankCommands),
 
-    /// Manage memories (list, get, recall, reflect, retain, clear)
+    /// Manage memories (list, get, recall, reflect, retain, delete, clear)
     #[command(subcommand)]
     Memory(MemoryCommands),
 
@@ -643,13 +643,18 @@ enum MemoryCommands {
         strategy: Option<String>,
     },
 
-    /// Delete a memory unit
+    /// Permanently delete one or more memory units
     Delete {
         /// Bank ID
         bank_id: String,
 
-        /// Memory unit ID
-        unit_id: String,
+        /// Memory unit IDs; multiple IDs are deleted in one atomic request
+        #[arg(required = true, num_args = 1..)]
+        unit_ids: Vec<String>,
+
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long)]
+        yes: bool,
     },
 
     /// Clear all memories for a bank
@@ -1511,9 +1516,18 @@ fn run() -> Result<()> {
                 verbose,
                 output_format,
             ),
-            MemoryCommands::Delete { bank_id, unit_id } => {
-                commands::memory::delete(&client, &bank_id, &unit_id, verbose, output_format)
-            }
+            MemoryCommands::Delete {
+                bank_id,
+                unit_ids,
+                yes,
+            } => commands::memory::delete(
+                &client,
+                &bank_id,
+                &unit_ids,
+                yes,
+                verbose,
+                output_format,
+            ),
             MemoryCommands::Clear {
                 bank_id,
                 fact_type,

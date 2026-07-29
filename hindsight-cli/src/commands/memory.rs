@@ -638,38 +638,71 @@ pub fn retain_files(
 
 pub fn delete(
     client: &ApiClient,
-    agent_id: &str,
-    unit_id: &str,
+    bank_id: &str,
+    unit_ids: &[String],
+    yes: bool,
     verbose: bool,
     output_format: OutputFormat,
 ) -> Result<()> {
+    let is_single = unit_ids.len() == 1;
+    if !yes {
+        let message = if is_single {
+            format!(
+                "Permanently delete memory unit '{}' from bank '{}'? This cannot be undone.",
+                unit_ids[0], bank_id
+            )
+        } else {
+            format!(
+                "Permanently delete {} memory units from bank '{}'? This cannot be undone.",
+                unit_ids.len(),
+                bank_id
+            )
+        };
+        if !ui::prompt_confirmation(&message)? {
+            ui::print_info("Operation cancelled");
+            return Ok(());
+        }
+    }
+
     let spinner = if output_format == OutputFormat::Pretty {
-        Some(ui::create_spinner("Deleting memory unit..."))
+        let message = if is_single {
+            "Deleting memory unit..."
+        } else {
+            "Deleting memory units..."
+        };
+        Some(ui::create_spinner(message))
     } else {
         None
     };
 
-    let response = client.delete_memory(agent_id, unit_id, verbose);
-
+    let result = if is_single {
+        client.delete_memory(bank_id, &unit_ids[0], verbose)
+    } else {
+        client.bulk_delete_memories(bank_id, unit_ids, verbose)
+    };
     if let Some(mut sp) = spinner {
         sp.finish();
     }
+    let result = result?;
 
-    match response {
-        Ok(result) => {
-            if output_format == OutputFormat::Pretty {
-                if result.success {
-                    ui::print_success("Memory unit deleted successfully");
-                } else {
-                    ui::print_error("Failed to delete memory unit");
-                }
-            } else {
-                output::print_output(&result, output_format)?;
-            }
-            Ok(())
-        }
-        Err(e) => Err(e),
+    if output_format != OutputFormat::Pretty {
+        return output::print_output(&result, output_format);
     }
+    if is_single {
+        ui::print_success(
+            result
+                .message
+                .as_deref()
+                .unwrap_or("Memory unit deleted successfully"),
+        );
+    } else {
+        ui::print_success(&format!(
+            "Permanently deleted {} of {} requested memory units",
+            result.deleted_count.unwrap_or_default(),
+            unit_ids.len()
+        ));
+    }
+    Ok(())
 }
 
 pub fn clear(

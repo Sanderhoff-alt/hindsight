@@ -404,12 +404,45 @@ impl ApiClient {
 
     pub fn delete_memory(
         &self,
-        _agent_id: &str,
-        _unit_id: &str,
+        bank_id: &str,
+        unit_id: &str,
         _verbose: bool,
     ) -> Result<types::DeleteResponse> {
-        // Note: Individual memory deletion is no longer supported in the API
-        anyhow::bail!("Individual memory deletion is no longer supported. Use 'memory clear' to clear all memories.")
+        self.runtime.block_on(async {
+            let response = match self.client.delete_memory(bank_id, unit_id, None).await {
+                Ok(r) => r,
+                Err(e) => return Err(humanize_client_error(e).await),
+            };
+            Ok(response.into_inner())
+        })
+    }
+
+    pub fn bulk_delete_memories(
+        &self,
+        bank_id: &str,
+        unit_ids: &[String],
+        verbose: bool,
+    ) -> Result<types::DeleteResponse> {
+        let request = types::BulkDeleteMemoriesRequest {
+            unit_ids: unit_ids.to_vec(),
+        };
+        if verbose {
+            eprintln!(
+                "Request body: {}",
+                serde_json::to_string_pretty(&request).unwrap_or_default()
+            );
+        }
+        self.runtime.block_on(async {
+            let response = match self
+                .client
+                .bulk_delete_memories(bank_id, None, &request)
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => return Err(humanize_client_error(e).await),
+            };
+            Ok(response.into_inner())
+        })
     }
 
     pub fn clear_memories(
