@@ -369,7 +369,14 @@ def validate_sql_schema(sql: str) -> None:
 
 from .cross_encoder import CrossEncoderModel
 from .embeddings import Embeddings, create_embeddings_from_env
-from .interface import BankConfigState, BankTemplateImportWrite, MemoryEngineInterface
+from .interface import (
+    BankConfigState,
+    BankMemoryUnitDeleteCounts,
+    BankTemplateImportWrite,
+    MemoryEngineInterface,
+    MemoryUnitDeleteResult,
+    MemoryUnitsDeleteResult,
+)
 
 if TYPE_CHECKING:
     from hindsight_api.extensions import (
@@ -6194,8 +6201,9 @@ class MemoryEngine(MemoryEngineInterface):
         self,
         unit_id: str,
         *,
+        bank_id: str | None = None,
         request_context: "RequestContext",
-    ) -> dict[str, Any]:
+    ) -> MemoryUnitDeleteResult:
         """
         Delete a single memory unit and all its associated links.
 
@@ -6209,10 +6217,12 @@ class MemoryEngine(MemoryEngineInterface):
 
         Args:
             unit_id: UUID of the memory unit to delete
+            bank_id: Optional bank scope. If supplied, the memory must belong
+                to this bank.
             request_context: Request context for authentication.
 
         Returns:
-            Dictionary with deletion result
+            Typed deletion result.
 
         Raises:
             ValueError: If unit_id is not a valid UUID
@@ -6230,18 +6240,36 @@ class MemoryEngine(MemoryEngineInterface):
             async with conn.transaction():
                 # Get bank_id and fact_type before deletion
                 row = await conn.fetchrow(
-                    f"SELECT bank_id, fact_type FROM {fq_table('memory_units')} WHERE id = $1",
+                    f"SELECT bank_id, fact_type FROM {fq_table('memory_units')} WHERE id = $1 FOR UPDATE",
                     str(unit_uuid),
                 )
-                bank_id = row["bank_id"] if row else None
+                resolved_bank_id = row["bank_id"] if row else None
                 fact_type = row["fact_type"] if row else None
+
+                if bank_id is not None and resolved_bank_id is not None and resolved_bank_id != bank_id:
+                    raise ValueError(f"Memory unit '{unit_id}' does not belong to bank '{bank_id}'")
+
+                # Authorization is deliberately enforced after resolving the
+                # target but before any mutation. The original public MCP path
+                # was removed because handler-only checks could bypass bank
+                # write policy; keeping this at the engine seam protects every
+                # current and future caller (issue #3006).
+                if resolved_bank_id and self._operation_validator:
+                    from hindsight_api.extensions import BankWriteContext, BankWriteOperation
+
+                    ctx = BankWriteContext(
+                        bank_id=resolved_bank_id,
+                        operation=BankWriteOperation.DELETE_MEMORY_UNIT,
+                        request_context=request_context,
+                    )
+                    await self._validate_operation(self._operation_validator.validate_bank_write(ctx))
 
                 # Capture relink victims BEFORE the cascade — once the row is
                 # gone, the join finding them returns nothing.
-                if bank_id and fact_type in ("experience", "world"):
+                if resolved_bank_id and fact_type in ("experience", "world"):
                     from .graph_maintenance import enqueue_relink_victims
 
-                    await enqueue_relink_victims(conn, bank_id, [unit_id], ops=backend.ops)
+                    await enqueue_relink_victims(conn, resolved_bank_id, [str(unit_uuid)], ops=backend.ops)
 
                 # Delete the memory unit first (cascades to links and associations).
                 # The stale-observation sweep runs AFTER the delete so it also catches
@@ -6249,40 +6277,42 @@ class MemoryEngine(MemoryEngineInterface):
                 # racing insert committed between the sweep and the delete would
                 # leave an orphan referencing this just-deleted source memory).
                 deleted = await conn.fetchval(
-                    f"DELETE FROM {fq_table('memory_units')} WHERE id = $1 RETURNING id", unit_id
+                    f"DELETE FROM {fq_table('memory_units')} WHERE id = $1 RETURNING id", str(unit_uuid)
                 )
 
                 # Invalidate observations referencing this (now-deleted) source memory
-                if bank_id and fact_type in ("experience", "world"):
-                    invalidated_obs = await self._delete_stale_observations_for_memories(conn, bank_id, [unit_id])
+                if resolved_bank_id and fact_type in ("experience", "world"):
+                    invalidated_obs = await self._delete_stale_observations_for_memories(
+                        conn, resolved_bank_id, [str(unit_uuid)]
+                    )
                     if invalidated_obs > 0:
-                        bank_id_for_consolidation = bank_id
+                        bank_id_for_consolidation = resolved_bank_id
 
                 # Run graph_maintenance whenever a source-memory unit was
                 # removed — even if no relink victims were enqueued, the
                 # deleted unit's entities may now be orphans.
-                if deleted and bank_id and fact_type in ("experience", "world"):
-                    bank_id_for_graph_maintenance = bank_id
+                if deleted and resolved_bank_id and fact_type in ("experience", "world"):
+                    bank_id_for_graph_maintenance = resolved_bank_id
 
-                result = {
-                    "success": deleted is not None,
-                    "unit_id": str(deleted) if deleted else None,
-                    "message": "Memory unit and all its links deleted successfully"
-                    if deleted
-                    else "Memory unit not found",
-                }
+                result = MemoryUnitDeleteResult(
+                    success=deleted is not None,
+                    unit_id=str(deleted) if deleted else None,
+                    message=(
+                        "Memory unit and all its links deleted successfully" if deleted else "Memory unit not found"
+                    ),
+                )
 
         # Drop any cached stats for this bank — the deleted unit (and its
         # cascaded links/entities) changed the counts get_bank_stats reports,
         # which the TTL would otherwise serve at pre-delete values for up to a
         # minute (mirrors delete_bank). Best-effort: a cache-eviction failure
         # must not fail an already-committed delete.
-        if deleted and bank_id:
+        if deleted and resolved_bank_id:
             try:
-                await self._bank_stats_cache.invalidate(get_current_schema(), bank_id)
+                await self._bank_stats_cache.invalidate(get_current_schema(), resolved_bank_id)
             except Exception as e:
                 logger.warning(
-                    f"Failed to invalidate bank stats cache after memory unit deletion for bank {bank_id}: {e}"
+                    f"Failed to invalidate bank stats cache after memory unit deletion for bank {resolved_bank_id}: {e}"
                 )
 
         if bank_id_for_consolidation:
@@ -6315,8 +6345,9 @@ class MemoryEngine(MemoryEngineInterface):
         self,
         unit_ids: list[str],
         *,
+        bank_id: str | None = None,
         request_context: "RequestContext",
-    ) -> dict[str, Any]:
+    ) -> MemoryUnitsDeleteResult:
         """Bulk delete memory units, keeping the same lifecycle as the single-id path.
 
         Callers pass a list of ``unit_ids`` and this method runs the same steps
@@ -6355,11 +6386,13 @@ class MemoryEngine(MemoryEngineInterface):
         Args:
             unit_ids: List of memory-unit UUIDs to delete. Empty list is a
                 no-op that returns zero counts.
+            bank_id: Optional bank scope. If supplied, every resolved memory
+                must belong to this bank.
             request_context: Request context for authentication (tenant
                 resolution runs before any writes).
 
         Returns:
-            Dict with:
+            Typed result with:
                 - ``requested``: len of ``unit_ids`` as supplied
                 - ``deleted``: number of rows actually removed
                 - ``per_bank``: mapping of ``bank_id -> {deleted, invalidated_observations}``
@@ -6371,7 +6404,7 @@ class MemoryEngine(MemoryEngineInterface):
         # tenant context resolved (matches ``delete_document`` / ``delete_bank``
         # empty-input behaviour).
         if not unit_ids:
-            return {"requested": 0, "deleted": 0, "per_bank": {}}
+            return MemoryUnitsDeleteResult(requested=0, deleted=0, per_bank={})
 
         # Validate every UUID up-front so a bad id doesn't leak through and
         # surface as an asyncpg InvalidTextRepresentationError mid-cascade.
@@ -6385,7 +6418,7 @@ class MemoryEngine(MemoryEngineInterface):
         await self._authenticate_tenant(request_context)
         backend = await self._get_backend()
 
-        per_bank: dict[str, dict[str, int]] = {}
+        per_bank: dict[str, BankMemoryUnitDeleteCounts] = {}
         # Banks whose deletes touched source facts — used to fan out
         # graph_maintenance + consolidation after the transaction commits.
         banks_with_source_deletes: set[str] = set()
@@ -6400,7 +6433,13 @@ class MemoryEngine(MemoryEngineInterface):
                 # been deleted between the caller's discovery query and this
                 # call; a missing id is not an error).
                 rows = await conn.fetch(
-                    f"SELECT id, bank_id, fact_type FROM {fq_table('memory_units')} WHERE id = ANY($1::uuid[])",
+                    f"""
+                    SELECT id, bank_id, fact_type
+                    FROM {fq_table("memory_units")}
+                    WHERE id = ANY($1::uuid[])
+                    ORDER BY id
+                    FOR UPDATE
+                    """,
                     validated_ids,
                 )
 
@@ -6412,6 +6451,27 @@ class MemoryEngine(MemoryEngineInterface):
                     by_bank.setdefault(bid, []).append(str(row["id"]))
                     if row["fact_type"] in ("experience", "world"):
                         source_ids_by_bank.setdefault(bid, []).append(str(row["id"]))
+
+                if bank_id is not None:
+                    if any(resolved != bank_id for resolved in by_bank):
+                        raise ValueError(
+                            f"All memory units must belong to bank '{bank_id}'; "
+                            "one or more units belong to another bank"
+                        )
+
+                # Resolve and authorize the complete set before the first
+                # DELETE. A denial for any bank therefore rolls back without
+                # producing a partially authorized batch.
+                if self._operation_validator:
+                    from hindsight_api.extensions import BankWriteContext, BankWriteOperation
+
+                    for resolved_bank_id in sorted(by_bank):
+                        ctx = BankWriteContext(
+                            bank_id=resolved_bank_id,
+                            operation=BankWriteOperation.DELETE_MEMORY_UNIT,
+                            request_context=request_context,
+                        )
+                        await self._validate_operation(self._operation_validator.validate_bank_write(ctx))
 
                 # Step 3 — per-bank cascade.
                 for bank_id, ids_for_bank in by_bank.items():
@@ -6452,16 +6512,16 @@ class MemoryEngine(MemoryEngineInterface):
                     if source_ids:
                         banks_with_source_deletes.add(bank_id)
 
-                    per_bank[bank_id] = {
-                        "deleted": deleted_this_bank,
-                        "invalidated_observations": invalidated,
-                    }
+                    per_bank[bank_id] = BankMemoryUnitDeleteCounts(
+                        deleted=deleted_this_bank,
+                        invalidated_observations=invalidated,
+                    )
                     total_deleted += deleted_this_bank
 
         # Step 4 — post-commit side effects, best-effort per bank.
         current_schema = get_current_schema()
         for bank_id, counts in per_bank.items():
-            if counts["deleted"] <= 0:
+            if counts.deleted <= 0:
                 continue
             try:
                 await self._bank_stats_cache.invalidate(current_schema, bank_id)
@@ -6484,11 +6544,11 @@ class MemoryEngine(MemoryEngineInterface):
             except Exception as e:
                 logger.warning(f"Failed to submit graph maintenance after bulk memory deletion for bank {bank_id}: {e}")
 
-        return {
-            "requested": len(unit_ids),
-            "deleted": total_deleted,
-            "per_bank": per_bank,
-        }
+        return MemoryUnitsDeleteResult(
+            requested=len(unit_ids),
+            deleted=total_deleted,
+            per_bank=per_bank,
+        )
 
     async def delete_bank(
         self,

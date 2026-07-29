@@ -43,7 +43,7 @@ async def test_empty_unit_ids_returns_zero_without_auth():
         request_context=RequestContext(api_key="anything"),
     )
 
-    assert result == {"requested": 0, "deleted": 0, "per_bank": {}}
+    assert result.model_dump() == {"requested": 0, "deleted": 0, "per_bank": {}}
     engine._authenticate_tenant.assert_not_awaited()
     engine._get_backend.assert_not_awaited()
 

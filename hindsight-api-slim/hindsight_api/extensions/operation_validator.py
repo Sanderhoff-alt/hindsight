@@ -358,6 +358,7 @@ class BankWriteOperation(StrEnum):
     DELETE_BANK = "delete_bank"
     DELETE_DIRECTIVE = "delete_directive"
     DELETE_DOCUMENT = "delete_document"
+    DELETE_MEMORY_UNIT = "delete_memory_unit"
     DELETE_MENTAL_MODEL = "delete_mental_model"
     DELETE_OPERATION = "delete_operation"
     DELETE_WEBHOOK = "delete_webhook"

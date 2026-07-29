@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from pydantic import BaseModel
+
 if TYPE_CHECKING:
     from hindsight_api.engine.memory_engine import BankLlmHealthInfo, Budget
     from hindsight_api.engine.response_models import RecallResult, ReflectResult
@@ -32,6 +34,29 @@ class BankTemplateImportWrite:
 
     operation: "BankWriteOperation"
     target: str | None = None
+
+
+class MemoryUnitDeleteResult(BaseModel):
+    """Result of irreversibly deleting one memory unit."""
+
+    success: bool
+    unit_id: str | None
+    message: str
+
+
+class BankMemoryUnitDeleteCounts(BaseModel):
+    """Bulk-deletion counts for one affected bank."""
+
+    deleted: int
+    invalidated_observations: int
+
+
+class MemoryUnitsDeleteResult(BaseModel):
+    """Result of irreversibly deleting a batch of memory units."""
+
+    requested: int
+    deleted: int
+    per_bank: dict[str, BankMemoryUnitDeleteCounts]
 
 
 class MemoryEngineInterface(ABC):
@@ -345,6 +370,36 @@ class MemoryEngineInterface(ABC):
 
         Returns:
             Dict with 'items', 'total', 'limit', 'offset'.
+        """
+        ...
+
+    @abstractmethod
+    async def delete_memory_unit(
+        self,
+        unit_id: str,
+        *,
+        bank_id: str | None = None,
+        request_context: "RequestContext",
+    ) -> MemoryUnitDeleteResult:
+        """Irreversibly delete one memory unit after authorizing its bank.
+
+        ``bank_id`` scopes public callers. If supplied, the target must belong
+        to that bank.
+        """
+        ...
+
+    @abstractmethod
+    async def delete_memory_units(
+        self,
+        unit_ids: list[str],
+        *,
+        bank_id: str | None = None,
+        request_context: "RequestContext",
+    ) -> MemoryUnitsDeleteResult:
+        """Irreversibly delete memory units after authorizing every affected bank.
+
+        ``bank_id`` scopes public callers. If supplied, every resolved target
+        must belong to that bank.
         """
         ...
 

@@ -1736,6 +1736,15 @@ class UpdateMemoryRequest(BaseModel):
         return self
 
 
+class BulkDeleteMemoriesRequest(BaseModel):
+    """Memory-unit IDs to irreversibly delete from one bank."""
+
+    unit_ids: list[str] = Field(
+        min_length=1,
+        description="Memory-unit UUIDs to permanently delete. Every unit must belong to the bank in the URL.",
+    )
+
+
 class DeleteDocumentResponse(BaseModel):
     """Response model for delete document endpoint."""
 
@@ -3970,6 +3979,91 @@ def _register_routes(app: FastAPI):
 
             error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
             logger.error(f"Error in /v1/default/banks/{bank_id}/memories/dry-run-extract: {error_detail}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post(
+        "/v1/default/banks/{bank_id}/memories/bulk-delete",
+        response_model=DeleteResponse,
+        summary="Permanently delete memory units",
+        description=(
+            "Irreversibly hard-delete multiple memory units and their associated links. "
+            "This is different from setting memory state to 'invalidated': deleted units "
+            "are not archived and cannot be restored. Every supplied unit must belong to "
+            "the bank in the URL."
+        ),
+        operation_id="bulk_delete_memories",
+        tags=["Memory"],
+    )
+    @audited("bulk_delete_memories", request_param="body")
+    async def api_bulk_delete_memories(
+        bank_id: str,
+        body: BulkDeleteMemoriesRequest,
+        request_context: RequestContext = Depends(get_request_context),
+    ) -> DeleteResponse:
+        """Permanently delete memory units scoped to one bank."""
+        try:
+            result = await app.state.memory.delete_memory_units(
+                body.unit_ids,
+                bank_id=bank_id,
+                request_context=request_context,
+            )
+            return DeleteResponse(
+                success=True,
+                deleted_count=result.deleted,
+                message=f"Permanently deleted {result.deleted} memory units",
+            )
+        except OperationValidationError as e:
+            raise HTTPException(status_code=e.status_code, detail=e.reason)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except (AuthenticationError, HTTPException):
+            raise
+        except Exception as e:
+            import traceback
+
+            error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+            logger.error(f"Error in POST /v1/default/banks/{bank_id}/memories/bulk-delete: {error_detail}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.delete(
+        "/v1/default/banks/{bank_id}/memories/{memory_id}",
+        response_model=DeleteResponse,
+        summary="Permanently delete memory unit",
+        description=(
+            "Irreversibly hard-delete one memory unit and its associated links. "
+            "This is different from setting memory state to 'invalidated': the "
+            "deleted unit is not archived and cannot be restored."
+        ),
+        operation_id="delete_memory",
+        tags=["Memory"],
+    )
+    @audited("delete_memory", request_param=None)
+    async def api_delete_memory(
+        bank_id: str,
+        memory_id: str,
+        request_context: RequestContext = Depends(get_request_context),
+    ) -> DeleteResponse:
+        """Permanently delete one memory unit scoped to a bank."""
+        try:
+            result = await app.state.memory.delete_memory_unit(
+                memory_id,
+                bank_id=bank_id,
+                request_context=request_context,
+            )
+            if not result.success:
+                raise HTTPException(status_code=404, detail=f"Memory unit '{memory_id}' not found")
+            return DeleteResponse(success=True, deleted_count=1, message=result.message)
+        except OperationValidationError as e:
+            raise HTTPException(status_code=e.status_code, detail=e.reason)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except (AuthenticationError, HTTPException):
+            raise
+        except Exception as e:
+            import traceback
+
+            error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+            logger.error(f"Error in DELETE /v1/default/banks/{bank_id}/memories/{memory_id}: {error_detail}")
             raise HTTPException(status_code=500, detail=str(e))
 
     @app.get(
