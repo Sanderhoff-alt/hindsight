@@ -520,7 +520,142 @@
         }
       }
     },
+    "/v1/default/banks/{bank_id}/memories/bulk-delete": {
+      "post": {
+        "tags": [
+          "Memory"
+        ],
+        "summary": "Permanently delete memory units",
+        "description": "Irreversibly hard-delete multiple memory units and their associated links. This is different from setting memory state to 'invalidated': deleted units are not archived and cannot be restored. Every supplied unit must belong to the bank in the URL.",
+        "operationId": "bulk_delete_memories",
+        "parameters": [
+          {
+            "name": "bank_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Bank Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkDeleteMemoriesRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/default/banks/{bank_id}/memories/{memory_id}": {
+      "delete": {
+        "tags": [
+          "Memory"
+        ],
+        "summary": "Permanently delete memory unit",
+        "description": "Irreversibly hard-delete one memory unit and its associated links. This is different from setting memory state to 'invalidated': the deleted unit is not archived and cannot be restored.",
+        "operationId": "delete_memory",
+        "parameters": [
+          {
+            "name": "bank_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Bank Id"
+            }
+          },
+          {
+            "name": "memory_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Memory Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
       "get": {
         "tags": [
           "Memory"
@@ -7415,6 +7550,25 @@
         ],
         "title": "Budget",
         "description": "Budget levels for recall/reflect operations."
+      },
+      "BulkDeleteMemoriesRequest": {
+        "properties": {
+          "unit_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Unit Ids",
+            "description": "Memory-unit UUIDs to permanently delete. Every unit must belong to the bank in the URL."
+          }
+        },
+        "type": "object",
+        "required": [
+          "unit_ids"
+        ],
+        "title": "BulkDeleteMemoriesRequest",
+        "description": "Memory-unit IDs to irreversibly delete from one bank."
       },
       "CancelOperationResponse": {
         "properties": {

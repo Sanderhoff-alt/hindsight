@@ -866,6 +866,20 @@ export type BodyImportDocuments = {
 export type Budget = "low" | "mid" | "high";
 
 /**
+ * BulkDeleteMemoriesRequest
+ *
+ * Memory-unit IDs to irreversibly delete from one bank.
+ */
+export type BulkDeleteMemoriesRequest = {
+  /**
+   * Unit Ids
+   *
+   * Memory-unit UUIDs to permanently delete. Every unit must belong to the bank in the URL.
+   */
+  unit_ids: Array<string>;
+};
+
+/**
  * CancelOperationResponse
  *
  * Response model for cancel operation endpoint.
@@ -4448,6 +4462,83 @@ export type DryRunExtractMemoriesResponses = {
 
 export type DryRunExtractMemoriesResponse =
   DryRunExtractMemoriesResponses[keyof DryRunExtractMemoriesResponses];
+
+export type BulkDeleteMemoriesData = {
+  body: BulkDeleteMemoriesRequest;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+  };
+  query?: never;
+  url: "/v1/default/banks/{bank_id}/memories/bulk-delete";
+};
+
+export type BulkDeleteMemoriesErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type BulkDeleteMemoriesError = BulkDeleteMemoriesErrors[keyof BulkDeleteMemoriesErrors];
+
+export type BulkDeleteMemoriesResponses = {
+  /**
+   * Successful Response
+   */
+  200: DeleteResponse;
+};
+
+export type BulkDeleteMemoriesResponse =
+  BulkDeleteMemoriesResponses[keyof BulkDeleteMemoriesResponses];
+
+export type DeleteMemoryData = {
+  body?: never;
+  headers?: {
+    /**
+     * Authorization
+     */
+    authorization?: string | null;
+  };
+  path: {
+    /**
+     * Bank Id
+     */
+    bank_id: string;
+    /**
+     * Memory Id
+     */
+    memory_id: string;
+  };
+  query?: never;
+  url: "/v1/default/banks/{bank_id}/memories/{memory_id}";
+};
+
+export type DeleteMemoryErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError;
+};
+
+export type DeleteMemoryError = DeleteMemoryErrors[keyof DeleteMemoryErrors];
+
+export type DeleteMemoryResponses = {
+  /**
+   * Successful Response
+   */
+  200: DeleteResponse;
+};
+
+export type DeleteMemoryResponse = DeleteMemoryResponses[keyof DeleteMemoryResponses];
 
 export type GetMemoryData = {
   body?: never;

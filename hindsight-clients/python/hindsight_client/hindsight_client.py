@@ -42,6 +42,8 @@ from hindsight_client_api.models import (
 from hindsight_client_api.models.reflect_include_options import ReflectIncludeOptions
 from hindsight_client_api.models.tool_calls_include_options import ToolCallsIncludeOptions
 from hindsight_client_api.models.bank_profile_response import BankProfileResponse
+from hindsight_client_api.models.bulk_delete_memories_request import BulkDeleteMemoriesRequest
+from hindsight_client_api.models.delete_response import DeleteResponse
 from hindsight_client_api.models.file_retain_response import FileRetainResponse
 from hindsight_client_api.models.list_memory_units_response import ListMemoryUnitsResponse
 from hindsight_client_api.models.recall_response import RecallResponse
@@ -591,6 +593,35 @@ class Hindsight:
                 offset=offset,
                 _request_timeout=self._timeout,
             )
+        )
+
+    def delete_memory_unit(self, bank_id: str, memory_id: str) -> DeleteResponse:
+        """Permanently delete one memory unit.
+
+        This is an irreversible hard delete, unlike setting the memory state
+        to ``invalidated``.
+        """
+        return _run_async(self.adelete_memory_unit(bank_id, memory_id))
+
+    async def adelete_memory_unit(self, bank_id: str, memory_id: str) -> DeleteResponse:
+        """Permanently delete one memory unit (async)."""
+        return await self._memory_api.delete_memory(
+            bank_id,
+            memory_id,
+            _request_timeout=self._timeout,
+        )
+
+    def delete_memory_units(self, bank_id: str, memory_ids: list[str]) -> DeleteResponse:
+        """Permanently delete multiple memory units from one bank."""
+        return _run_async(self.adelete_memory_units(bank_id, memory_ids))
+
+    async def adelete_memory_units(self, bank_id: str, memory_ids: list[str]) -> DeleteResponse:
+        """Permanently delete multiple memory units from one bank (async)."""
+        request = BulkDeleteMemoriesRequest(unit_ids=memory_ids)
+        return await self._memory_api.bulk_delete_memories(
+            bank_id,
+            request,
+            _request_timeout=self._timeout,
         )
 
     def create_bank(

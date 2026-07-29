@@ -99,7 +99,8 @@ All API endpoints are available as async methods on the `Client` struct:
 - `batch_put_memories()` - Store multiple memories
 - `batch_put_async()` - Queue memories for background processing
 - `list_memories()` - List memory units with pagination
-- `delete_memory_unit()` - Delete a specific memory
+- `delete_memory()` - Permanently delete a specific memory
+- `bulk_delete_memories()` - Permanently delete multiple memories from one bank
 - `clear_agent_memories()` - Clear all or filtered memories
 
 ### Document Management

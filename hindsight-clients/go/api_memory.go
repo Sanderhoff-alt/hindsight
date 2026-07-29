@@ -24,6 +24,139 @@ import (
 // MemoryAPIService MemoryAPI service
 type MemoryAPIService service
 
+type ApiBulkDeleteMemoriesRequest struct {
+	ctx context.Context
+	ApiService *MemoryAPIService
+	bankId string
+	bulkDeleteMemoriesRequest *BulkDeleteMemoriesRequest
+	authorization *string
+}
+
+func (r ApiBulkDeleteMemoriesRequest) BulkDeleteMemoriesRequest(bulkDeleteMemoriesRequest BulkDeleteMemoriesRequest) ApiBulkDeleteMemoriesRequest {
+	r.bulkDeleteMemoriesRequest = &bulkDeleteMemoriesRequest
+	return r
+}
+
+func (r ApiBulkDeleteMemoriesRequest) Authorization(authorization string) ApiBulkDeleteMemoriesRequest {
+	r.authorization = &authorization
+	return r
+}
+
+func (r ApiBulkDeleteMemoriesRequest) Execute() (*DeleteResponse, *http.Response, error) {
+	return r.ApiService.BulkDeleteMemoriesExecute(r)
+}
+
+/*
+BulkDeleteMemories Permanently delete memory units
+
+Irreversibly hard-delete multiple memory units and their associated links. This is different from setting memory state to 'invalidated': deleted units are not archived and cannot be restored. Every supplied unit must belong to the bank in the URL.
+
+ @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
+ @param bankId
+ @return ApiBulkDeleteMemoriesRequest
+*/
+func (a *MemoryAPIService) BulkDeleteMemories(ctx context.Context, bankId string) ApiBulkDeleteMemoriesRequest {
+	return ApiBulkDeleteMemoriesRequest{
+		ApiService: a,
+		ctx: ctx,
+		bankId: bankId,
+	}
+}
+
+// Execute executes the request
+//  @return DeleteResponse
+func (a *MemoryAPIService) BulkDeleteMemoriesExecute(r ApiBulkDeleteMemoriesRequest) (*DeleteResponse, *http.Response, error) {
+	var (
+		localVarHTTPMethod   = http.MethodPost
+		localVarPostBody     interface{}
+		formFiles            []formFile
+		localVarReturnValue  *DeleteResponse
+	)
+
+	localBasePath, err := a.client.cfg.ServerURLWithContext(r.ctx, "MemoryAPIService.BulkDeleteMemories")
+	if err != nil {
+		return localVarReturnValue, nil, &GenericOpenAPIError{error: err.Error()}
+	}
+
+	localVarPath := localBasePath + "/v1/default/banks/{bank_id}/memories/bulk-delete"
+	localVarPath = strings.Replace(localVarPath, "{"+"bank_id"+"}", url.PathEscape(parameterValueToString(r.bankId, "bankId")), -1)
+
+	localVarHeaderParams := make(map[string]string)
+	localVarQueryParams := url.Values{}
+	localVarFormParams := url.Values{}
+	if r.bulkDeleteMemoriesRequest == nil {
+		return localVarReturnValue, nil, reportError("bulkDeleteMemoriesRequest is required and must be specified")
+	}
+
+	// to determine the Content-Type header
+	localVarHTTPContentTypes := []string{"application/json"}
+
+	// set Content-Type header
+	localVarHTTPContentType := selectHeaderContentType(localVarHTTPContentTypes)
+	if localVarHTTPContentType != "" {
+		localVarHeaderParams["Content-Type"] = localVarHTTPContentType
+	}
+
+	// to determine the Accept header
+	localVarHTTPHeaderAccepts := []string{"application/json"}
+
+	// set Accept header
+	localVarHTTPHeaderAccept := selectHeaderAccept(localVarHTTPHeaderAccepts)
+	if localVarHTTPHeaderAccept != "" {
+		localVarHeaderParams["Accept"] = localVarHTTPHeaderAccept
+	}
+	if r.authorization != nil {
+		parameterAddToHeaderOrQuery(localVarHeaderParams, "authorization", r.authorization, "simple", "")
+	}
+	// body params
+	localVarPostBody = r.bulkDeleteMemoriesRequest
+	req, err := a.client.prepareRequest(r.ctx, localVarPath, localVarHTTPMethod, localVarPostBody, localVarHeaderParams, localVarQueryParams, localVarFormParams, formFiles)
+	if err != nil {
+		return localVarReturnValue, nil, err
+	}
+
+	localVarHTTPResponse, err := a.client.callAPI(req)
+	if err != nil || localVarHTTPResponse == nil {
+		return localVarReturnValue, localVarHTTPResponse, err
+	}
+
+	localVarBody, err := io.ReadAll(localVarHTTPResponse.Body)
+	localVarHTTPResponse.Body.Close()
+	localVarHTTPResponse.Body = io.NopCloser(bytes.NewBuffer(localVarBody))
+	if err != nil {
+		return localVarReturnValue, localVarHTTPResponse, err
+	}
+
+	if localVarHTTPResponse.StatusCode >= 300 {
+		newErr := &GenericOpenAPIError{
+			body:  localVarBody,
+			error: localVarHTTPResponse.Status,
+		}
+		if localVarHTTPResponse.StatusCode == 422 {
+			var v HTTPValidationError
+			err = a.client.decode(&v, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
+			if err != nil {
+				newErr.error = err.Error()
+				return localVarReturnValue, localVarHTTPResponse, newErr
+			}
+					newErr.error = formatErrorMessage(localVarHTTPResponse.Status, &v)
+					newErr.model = v
+		}
+		return localVarReturnValue, localVarHTTPResponse, newErr
+	}
+
+	err = a.client.decode(&localVarReturnValue, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
+	if err != nil {
+		newErr := &GenericOpenAPIError{
+			body:  localVarBody,
+			error: err.Error(),
+		}
+		return localVarReturnValue, localVarHTTPResponse, newErr
+	}
+
+	return localVarReturnValue, localVarHTTPResponse, nil
+}
+
 type ApiClearBankMemoriesRequest struct {
 	ctx context.Context
 	ApiService *MemoryAPIService
@@ -208,6 +341,132 @@ func (a *MemoryAPIService) ClearMemoryObservationsExecute(r ApiClearMemoryObserv
 	}
 
 	localVarPath := localBasePath + "/v1/default/banks/{bank_id}/memories/{memory_id}/observations"
+	localVarPath = strings.Replace(localVarPath, "{"+"bank_id"+"}", url.PathEscape(parameterValueToString(r.bankId, "bankId")), -1)
+	localVarPath = strings.Replace(localVarPath, "{"+"memory_id"+"}", url.PathEscape(parameterValueToString(r.memoryId, "memoryId")), -1)
+
+	localVarHeaderParams := make(map[string]string)
+	localVarQueryParams := url.Values{}
+	localVarFormParams := url.Values{}
+
+	// to determine the Content-Type header
+	localVarHTTPContentTypes := []string{}
+
+	// set Content-Type header
+	localVarHTTPContentType := selectHeaderContentType(localVarHTTPContentTypes)
+	if localVarHTTPContentType != "" {
+		localVarHeaderParams["Content-Type"] = localVarHTTPContentType
+	}
+
+	// to determine the Accept header
+	localVarHTTPHeaderAccepts := []string{"application/json"}
+
+	// set Accept header
+	localVarHTTPHeaderAccept := selectHeaderAccept(localVarHTTPHeaderAccepts)
+	if localVarHTTPHeaderAccept != "" {
+		localVarHeaderParams["Accept"] = localVarHTTPHeaderAccept
+	}
+	if r.authorization != nil {
+		parameterAddToHeaderOrQuery(localVarHeaderParams, "authorization", r.authorization, "simple", "")
+	}
+	req, err := a.client.prepareRequest(r.ctx, localVarPath, localVarHTTPMethod, localVarPostBody, localVarHeaderParams, localVarQueryParams, localVarFormParams, formFiles)
+	if err != nil {
+		return localVarReturnValue, nil, err
+	}
+
+	localVarHTTPResponse, err := a.client.callAPI(req)
+	if err != nil || localVarHTTPResponse == nil {
+		return localVarReturnValue, localVarHTTPResponse, err
+	}
+
+	localVarBody, err := io.ReadAll(localVarHTTPResponse.Body)
+	localVarHTTPResponse.Body.Close()
+	localVarHTTPResponse.Body = io.NopCloser(bytes.NewBuffer(localVarBody))
+	if err != nil {
+		return localVarReturnValue, localVarHTTPResponse, err
+	}
+
+	if localVarHTTPResponse.StatusCode >= 300 {
+		newErr := &GenericOpenAPIError{
+			body:  localVarBody,
+			error: localVarHTTPResponse.Status,
+		}
+		if localVarHTTPResponse.StatusCode == 422 {
+			var v HTTPValidationError
+			err = a.client.decode(&v, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
+			if err != nil {
+				newErr.error = err.Error()
+				return localVarReturnValue, localVarHTTPResponse, newErr
+			}
+					newErr.error = formatErrorMessage(localVarHTTPResponse.Status, &v)
+					newErr.model = v
+		}
+		return localVarReturnValue, localVarHTTPResponse, newErr
+	}
+
+	err = a.client.decode(&localVarReturnValue, localVarBody, localVarHTTPResponse.Header.Get("Content-Type"))
+	if err != nil {
+		newErr := &GenericOpenAPIError{
+			body:  localVarBody,
+			error: err.Error(),
+		}
+		return localVarReturnValue, localVarHTTPResponse, newErr
+	}
+
+	return localVarReturnValue, localVarHTTPResponse, nil
+}
+
+type ApiDeleteMemoryRequest struct {
+	ctx context.Context
+	ApiService *MemoryAPIService
+	bankId string
+	memoryId string
+	authorization *string
+}
+
+func (r ApiDeleteMemoryRequest) Authorization(authorization string) ApiDeleteMemoryRequest {
+	r.authorization = &authorization
+	return r
+}
+
+func (r ApiDeleteMemoryRequest) Execute() (*DeleteResponse, *http.Response, error) {
+	return r.ApiService.DeleteMemoryExecute(r)
+}
+
+/*
+DeleteMemory Permanently delete memory unit
+
+Irreversibly hard-delete one memory unit and its associated links. This is different from setting memory state to 'invalidated': the deleted unit is not archived and cannot be restored.
+
+ @param ctx context.Context - for authentication, logging, cancellation, deadlines, tracing, etc. Passed from http.Request or context.Background().
+ @param bankId
+ @param memoryId
+ @return ApiDeleteMemoryRequest
+*/
+func (a *MemoryAPIService) DeleteMemory(ctx context.Context, bankId string, memoryId string) ApiDeleteMemoryRequest {
+	return ApiDeleteMemoryRequest{
+		ApiService: a,
+		ctx: ctx,
+		bankId: bankId,
+		memoryId: memoryId,
+	}
+}
+
+// Execute executes the request
+//  @return DeleteResponse
+func (a *MemoryAPIService) DeleteMemoryExecute(r ApiDeleteMemoryRequest) (*DeleteResponse, *http.Response, error) {
+	var (
+		localVarHTTPMethod   = http.MethodDelete
+		localVarPostBody     interface{}
+		formFiles            []formFile
+		localVarReturnValue  *DeleteResponse
+	)
+
+	localBasePath, err := a.client.cfg.ServerURLWithContext(r.ctx, "MemoryAPIService.DeleteMemory")
+	if err != nil {
+		return localVarReturnValue, nil, &GenericOpenAPIError{error: err.Error()}
+	}
+
+	localVarPath := localBasePath + "/v1/default/banks/{bank_id}/memories/{memory_id}"
 	localVarPath = strings.Replace(localVarPath, "{"+"bank_id"+"}", url.PathEscape(parameterValueToString(r.bankId, "bankId")), -1)
 	localVarPath = strings.Replace(localVarPath, "{"+"memory_id"+"}", url.PathEscape(parameterValueToString(r.memoryId, "memoryId")), -1)
 

@@ -14,6 +14,9 @@ import type {
   AuditLogStatsData,
   AuditLogStatsErrors,
   AuditLogStatsResponses,
+  BulkDeleteMemoriesData,
+  BulkDeleteMemoriesErrors,
+  BulkDeleteMemoriesResponses,
   CancelOperationData,
   CancelOperationErrors,
   CancelOperationResponses,
@@ -50,6 +53,9 @@ import type {
   DeleteDocumentData,
   DeleteDocumentErrors,
   DeleteDocumentResponses,
+  DeleteMemoryData,
+  DeleteMemoryErrors,
+  DeleteMemoryResponses,
   DeleteMentalModelData,
   DeleteMentalModelErrors,
   DeleteMentalModelResponses,
@@ -335,6 +341,40 @@ export const dryRunExtractMemories = <ThrowOnError extends boolean = false>(
       "Content-Type": "application/json",
       ...options.headers,
     },
+  });
+
+/**
+ * Permanently delete memory units
+ *
+ * Irreversibly hard-delete multiple memory units and their associated links. This is different from setting memory state to 'invalidated': deleted units are not archived and cannot be restored. Every supplied unit must belong to the bank in the URL.
+ */
+export const bulkDeleteMemories = <ThrowOnError extends boolean = false>(
+  options: Options<BulkDeleteMemoriesData, ThrowOnError>
+) =>
+  (options.client ?? client).post<
+    BulkDeleteMemoriesResponses,
+    BulkDeleteMemoriesErrors,
+    ThrowOnError
+  >({
+    url: "/v1/default/banks/{bank_id}/memories/bulk-delete",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  });
+
+/**
+ * Permanently delete memory unit
+ *
+ * Irreversibly hard-delete one memory unit and its associated links. This is different from setting memory state to 'invalidated': the deleted unit is not archived and cannot be restored.
+ */
+export const deleteMemory = <ThrowOnError extends boolean = false>(
+  options: Options<DeleteMemoryData, ThrowOnError>
+) =>
+  (options.client ?? client).delete<DeleteMemoryResponses, DeleteMemoryErrors, ThrowOnError>({
+    url: "/v1/default/banks/{bank_id}/memories/{memory_id}",
+    ...options,
   });
 
 /**

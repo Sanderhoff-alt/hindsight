@@ -332,7 +332,99 @@ paths:
       summary: "Dry-run fact extraction (preview, no persistence)"
       tags:
       - Memory
+  /v1/default/banks/{bank_id}/memories/bulk-delete:
+    post:
+      description: "Irreversibly hard-delete multiple memory units and their associated\
+        \ links. This is different from setting memory state to 'invalidated': deleted\
+        \ units are not archived and cannot be restored. Every supplied unit must\
+        \ belong to the bank in the URL."
+      operationId: bulk_delete_memories
+      parameters:
+      - explode: false
+        in: path
+        name: bank_id
+        required: true
+        schema:
+          title: Bank Id
+          type: string
+        style: simple
+      - explode: false
+        in: header
+        name: authorization
+        required: false
+        schema:
+          nullable: true
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkDeleteMemoriesRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteResponse'
+          description: Successful Response
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Permanently delete memory units
+      tags:
+      - Memory
   /v1/default/banks/{bank_id}/memories/{memory_id}:
+    delete:
+      description: "Irreversibly hard-delete one memory unit and its associated links.\
+        \ This is different from setting memory state to 'invalidated': the deleted\
+        \ unit is not archived and cannot be restored."
+      operationId: delete_memory
+      parameters:
+      - explode: false
+        in: path
+        name: bank_id
+        required: true
+        schema:
+          title: Bank Id
+          type: string
+        style: simple
+      - explode: false
+        in: path
+        name: memory_id
+        required: true
+        schema:
+          title: Memory Id
+          type: string
+        style: simple
+      - explode: false
+        in: header
+        name: authorization
+        required: false
+        schema:
+          nullable: true
+          type: string
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteResponse'
+          description: Successful Response
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Permanently delete memory unit
+      tags:
+      - Memory
     get:
       description: "Get a single memory unit by ID with all its metadata including\
         \ entities and tags. Note: the 'history' field is deprecated and always returns\
@@ -4927,6 +5019,23 @@ components:
       - high
       title: Budget
       type: string
+    BulkDeleteMemoriesRequest:
+      description: Memory-unit IDs to irreversibly delete from one bank.
+      example:
+        unit_ids:
+        - unit_ids
+        - unit_ids
+      properties:
+        unit_ids:
+          description: Memory-unit UUIDs to permanently delete. Every unit must belong
+            to the bank in the URL.
+          items:
+            type: string
+          minItems: 1
+          type: array
+      required:
+      - unit_ids
+      title: BulkDeleteMemoriesRequest
     CancelOperationResponse:
       description: Response model for cancel operation endpoint.
       example:

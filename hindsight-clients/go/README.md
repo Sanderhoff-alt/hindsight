@@ -103,7 +103,9 @@ Class | Method | HTTP request | Description
 *EntitiesAPI* | [**GetEntity**](docs/EntitiesAPI.md#getentity) | **Get** /v1/default/banks/{bank_id}/entities/{entity_id} | Get entity details
 *EntitiesAPI* | [**ListEntities**](docs/EntitiesAPI.md#listentities) | **Get** /v1/default/banks/{bank_id}/entities | List entities
 *EntitiesAPI* | [**RegenerateEntityObservations**](docs/EntitiesAPI.md#regenerateentityobservations) | **Post** /v1/default/banks/{bank_id}/entities/{entity_id}/regenerate | Regenerate entity observations (deprecated)
+*MemoryAPI* | [**BulkDeleteMemories**](docs/MemoryAPI.md#bulkdeletememories) | **Post** /v1/default/banks/{bank_id}/memories/bulk-delete | Permanently delete memory units
 *MemoryAPI* | [**ClearBankMemories**](docs/MemoryAPI.md#clearbankmemories) | **Delete** /v1/default/banks/{bank_id}/memories | Clear memory bank memories
+*MemoryAPI* | [**DeleteMemory**](docs/MemoryAPI.md#deletememory) | **Delete** /v1/default/banks/{bank_id}/memories/{memory_id} | Permanently delete memory unit
 *MemoryAPI* | [**GetGraph**](docs/MemoryAPI.md#getgraph) | **Get** /v1/default/banks/{bank_id}/graph | Get memory graph data
 *MemoryAPI* | [**GetMemory**](docs/MemoryAPI.md#getmemory) | **Get** /v1/default/banks/{bank_id}/memories/{memory_id} | Get memory unit
 *MemoryAPI* | [**ListMemories**](docs/MemoryAPI.md#listmemories) | **Get** /v1/default/banks/{bank_id}/memories/list | List memory units
@@ -137,6 +139,7 @@ Class | Method | HTTP request | Description
  - [BankProfileResponse](docs/BankProfileResponse.md)
  - [BankStatsResponse](docs/BankStatsResponse.md)
  - [Budget](docs/Budget.md)
+ - [BulkDeleteMemoriesRequest](docs/BulkDeleteMemoriesRequest.md)
  - [CancelOperationResponse](docs/CancelOperationResponse.md)
  - [ChunkData](docs/ChunkData.md)
  - [ChunkIncludeOptions](docs/ChunkIncludeOptions.md)
@@ -221,6 +224,4 @@ Each of these functions takes a value of the given basic type and returns a poin
 * `PtrTime`
 
 ## Author
-
-
 

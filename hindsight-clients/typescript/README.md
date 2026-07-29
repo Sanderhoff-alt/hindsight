@@ -114,6 +114,33 @@ await client.createBank("my-bank", {
 });
 ```
 
+### Permanently delete memories
+
+Hard deletion is available through the generated low-level SDK and cannot be
+undone:
+
+```typescript
+import { createClient, createConfig, sdk } from "@vectorize-io/hindsight-client";
+
+const rawClient = createClient(createConfig({ baseUrl: "http://localhost:8888" }));
+
+await sdk.deleteMemory({
+  client: rawClient,
+  path: {
+    bank_id: "my-bank",
+    memory_id: "11111111-1111-1111-1111-111111111111",
+  },
+});
+
+await sdk.bulkDeleteMemories({
+  client: rawClient,
+  path: { bank_id: "my-bank" },
+  body: {
+    unit_ids: ["11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"],
+  },
+});
+```
+
 ## Documentation
 
 For full documentation, visit [hindsight](https://github.com/vectorize-io/hindsight).
