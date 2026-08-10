@@ -96,6 +96,10 @@ export function KnowledgeBaseView() {
   // Derived from the backing mental model's reflect_response (not the page endpoint).
   const [supportingCount, setSupportingCount] = useState(0);
   const [selectedMmId, setSelectedMmId] = useState<string | null>(null);
+  const [exactPageStaleness, setExactPageStaleness] = useState<{
+    pageId: string;
+    isStale: boolean;
+  } | null>(null);
   // Non-null while the provenance dialog (the backing model's based_on) is open.
   const [provenanceMmId, setProvenanceMmId] = useState<string | null>(null);
   // Mirror of open tabs for the auto-refresh interval / openPage without re-arming.
@@ -211,12 +215,13 @@ export function KnowledgeBaseView() {
   );
   const folders = useMemo(() => allNodes.filter((n) => n.kind === "folder"), [allNodes]);
 
-  // Sync status for the open page, read from the tree (the page detail response
-  // doesn't carry it); updates as the auto-refresh poll refreshes the tree.
-  const selectedStale = useMemo(
-    () => (selected ? (allNodes.find((n) => n.id === selected.id)?.is_stale ?? null) : null),
-    [selected, allNodes]
-  );
+  // The tree's watermark result is only an approximation. The existing backing-MM
+  // request below returns the exact result, so prefer it when it belongs to this tab.
+  const selectedStale = useMemo(() => {
+    if (!selected) return null;
+    if (exactPageStaleness?.pageId === selected.id) return exactPageStaleness.isStale;
+    return allNodes.find((n) => n.id === selected.id)?.is_stale ?? null;
+  }, [selected, allNodes, exactPageStaleness]);
 
   // Provenance count: fetch the open page's backing mental model and sum the
   // source memories (world/experience/observation) in its reflect_response —
@@ -224,12 +229,14 @@ export function KnowledgeBaseView() {
   useEffect(() => {
     if (!selected || !currentBank) {
       setSupportingCount(0);
+      setExactPageStaleness(null);
       return;
     }
     const mmId = allNodes.find((n) => n.id === selected.id)?.mental_model_id;
     setSelectedMmId(mmId ?? null);
     if (!mmId) {
       setSupportingCount(0);
+      setExactPageStaleness(null);
       return;
     }
     let cancelled = false;
@@ -237,6 +244,9 @@ export function KnowledgeBaseView() {
       .getMentalModel(currentBank, mmId)
       .then((mm) => {
         if (cancelled) return;
+        setExactPageStaleness(
+          typeof mm.is_stale === "boolean" ? { pageId: selected.id, isStale: mm.is_stale } : null
+        );
         const basedOn = mm.reflect_response?.based_on ?? {};
         const count = (["world", "experience", "observation"] as const).reduce(
           (sum, ft) => sum + (basedOn[ft]?.length ?? 0),
