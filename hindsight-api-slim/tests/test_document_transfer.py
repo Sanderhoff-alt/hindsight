@@ -10,6 +10,8 @@ import json
 import uuid
 import zipfile
 from datetime import datetime, timezone
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -20,7 +22,7 @@ from hindsight_api.engine.consolidation.consolidator import _create_observation_
 from hindsight_api.engine.db_utils import acquire_with_retry
 from hindsight_api.engine.schema import fq_table
 from hindsight_api.engine.transfer import import_documents
-from hindsight_api.engine.transfer.importer import parse_archive
+from hindsight_api.engine.transfer.importer import _rebuild_mental_model_search_state, parse_archive
 from hindsight_api.engine.transfer.schema import (
     SCHEMA_VERSION,
     TransferCausalRelation,
@@ -63,6 +65,59 @@ class _RetainResultCapture(OperationValidatorExtension):
 
     async def on_retain_complete(self, result: RetainResult) -> None:
         self.results.append(result)
+
+
+@pytest.mark.asyncio
+async def test_rebuild_mental_model_search_state_rebuilds_regular_search_vector():
+    """Imported mental models must use the target text backend."""
+    conn = AsyncMock()
+    conn.fetchrow.return_value = {"is_generated": "NEVER"}
+    config = SimpleNamespace(
+        database_backend="postgresql",
+        text_search_extension="vchord",
+        text_search_extension_native_language="english",
+    )
+    rows = [
+        {"id": "mm-1", "name": "One", "content": "First"},
+        {"id": "mm-2", "name": "Two", "content": "Second"},
+    ]
+
+    await _rebuild_mental_model_search_state(
+        conn,
+        rows,
+        bank_id="bank-1",
+        embedding_values=["[0.1, 0.2]", "[0.3, 0.4]"],
+        config=config,
+    )
+
+    assert conn.execute.await_count == 2
+    first_query = conn.execute.await_args_list[0].args[0]
+    assert "embedding = $1" in first_query
+    assert "search_vector = tokenize(" in first_query
+
+
+@pytest.mark.asyncio
+async def test_rebuild_mental_model_search_state_skips_generated_search_vector():
+    """PostgreSQL generates native search vectors when the column is generated."""
+    conn = AsyncMock()
+    conn.fetchrow.return_value = {"is_generated": "ALWAYS"}
+    config = SimpleNamespace(
+        database_backend="postgresql",
+        text_search_extension="native",
+        text_search_extension_native_language="english",
+    )
+
+    await _rebuild_mental_model_search_state(
+        conn,
+        [{"id": "mm-1", "name": "One", "content": "First"}],
+        bank_id="bank-1",
+        embedding_values=["[0.1, 0.2]"],
+        config=config,
+    )
+
+    query = conn.execute.await_args.args[0]
+    assert "embedding = $1" in query
+    assert "search_vector =" not in query
 
 
 @pytest_asyncio.fixture
@@ -389,6 +444,14 @@ async def _bank_content_snapshot(memory, bank_id):
             f"WHERE bank_id = $1 AND fact_type != 'observation' AND embedding IS NULL",
             bank_id,
         )
+        null_mm_emb = await conn.fetchval(
+            f"SELECT count(*) FROM {fq_table('mental_models')} WHERE bank_id = $1 AND embedding IS NULL",
+            bank_id,
+        )
+        null_mm_search = await conn.fetchval(
+            f"SELECT count(*) FROM {fq_table('mental_models')} WHERE bank_id = $1 AND search_vector IS NULL",
+            bank_id,
+        )
     return {
         "bank": (bank["name"], _as_json(bank["disposition"]), bank["mission"], _as_json(bank["config"])),
         "documents": sorted(
@@ -404,6 +467,8 @@ async def _bank_content_snapshot(memory, bank_id):
             (m["subtype"], m["name"], m["description"], tuple(sorted(m["tags"] or []))) for m in mms
         ),
         "null_embeddings": null_emb,
+        "null_mm_embeddings": null_mm_emb,
+        "null_mm_search_vectors": null_mm_search,
     }
 
 
@@ -601,6 +666,8 @@ async def test_bank_export_import_exact_roundtrip(memory, request_context):
         assert before["facts"] and before["entities"] and before["links"]
         assert before["webhooks"] and before["directives"] and before["mental_models"]
         assert before["bank"][0] == "My Bank"
+        assert before["null_mm_embeddings"] == 0
+        assert before["null_mm_search_vectors"] == 0
 
         from hindsight_api.engine.transfer import export_bank
 
@@ -626,6 +693,8 @@ async def test_bank_export_import_exact_roundtrip(memory, request_context):
         assert after_semantic > 0, "semantic links should be regenerated on import"
         # Facts were re-embedded on import (no NULL vectors).
         assert after["null_embeddings"] == 0
+        assert after["null_mm_embeddings"] == 0
+        assert after["null_mm_search_vectors"] == 0
     finally:
         await memory.delete_bank(bank, request_context=request_context)
 

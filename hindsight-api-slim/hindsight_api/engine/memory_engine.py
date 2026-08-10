@@ -4419,8 +4419,9 @@ class MemoryEngine(MemoryEngineInterface):
         """Restore a whole bank from an :func:`transfer.export_bank` archive.
 
         Re-embeds facts with this instance's embedding model and rebuilds links and
-        indexes; restores bank config, mental models, directives and webhooks as
-        exported (no consolidation/webhooks — a migration restores exact state). The
+        indexes; restores bank config, mental model logical fields, directives and
+        webhooks as exported while rebuilding target-derived mental model search
+        state (no consolidation/webhooks — a migration restores exact state). The
         target bank must not already exist (import restores a whole bank, not a merge).
         """
         from .transfer import import_bank

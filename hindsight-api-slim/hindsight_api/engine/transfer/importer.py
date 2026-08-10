@@ -21,7 +21,15 @@ from typing import Any, Literal
 
 from ..causal_links import CANONICAL_CAUSAL_LINK_TYPE, LEGACY_CAUSAL_LINK_TYPES
 from ..db_utils import acquire_with_retry
-from ..retain import bank_utils, chunk_storage, embedding_processing, fact_storage, link_utils, orchestrator
+from ..retain import (
+    bank_utils,
+    chunk_storage,
+    embedding_processing,
+    embedding_utils,
+    fact_storage,
+    link_utils,
+    orchestrator,
+)
 from ..retain.types import (
     CausalRelation,
     ChunkMetadata,
@@ -349,6 +357,67 @@ async def _restore_rows(
     return inserted
 
 
+async def _rebuild_mental_model_search_state(
+    conn: Any,
+    rows: list[dict],
+    *,
+    bank_id: str,
+    embedding_values: list[str | None],
+    config: Any,
+) -> None:
+    """Rebuild target-derived search fields for carried mental models.
+
+    Whole-bank archives deliberately omit ``embedding`` and ``search_vector``.
+    Mental models are restored as rows rather than through ``create_mental_model``,
+    so the target-side embedding and text-search lifecycle must be applied here.
+    Native generated search columns are populated by the INSERT; regular vector
+    columns (notably VectorChord, and native columns after the configurable-language
+    migration) need an explicit expression using the target configuration.
+    """
+    if not rows:
+        return
+
+    search_vector_expr: str | None = None
+    if config.database_backend == "postgresql":
+        from ..memory_engine import get_current_schema
+
+        schema = get_current_schema()
+        column = await conn.fetchrow(
+            """
+            SELECT is_generated
+            FROM information_schema.columns
+            WHERE table_schema = $1 AND table_name = 'mental_models' AND column_name = 'search_vector'
+            """,
+            schema,
+        )
+        if not (column and column["is_generated"] == "ALWAYS"):
+            from ..db.ops_postgresql import pg_search_vector_expr
+
+            search_vector_expr = pg_search_vector_expr(
+                config,
+                text_col="name",
+                context_col="''",
+                signals_col="content",
+            )
+
+    for row, embedding in zip(rows, embedding_values):
+        if search_vector_expr is None:
+            await conn.execute(
+                f"UPDATE {fq_table('mental_models')} SET embedding = $1 WHERE bank_id = $2 AND id = $3",
+                embedding,
+                bank_id,
+                row["id"],
+            )
+        else:
+            await conn.execute(
+                f"UPDATE {fq_table('mental_models')} SET embedding = $1, search_vector = {search_vector_expr} "
+                "WHERE bank_id = $2 AND id = $3",
+                embedding,
+                bank_id,
+                row["id"],
+            )
+
+
 async def import_bank(
     *,
     backend: Any,
@@ -372,7 +441,8 @@ async def import_bank(
     target id is present, this raises — delete it first or pass ``target_bank_id``
     for a fresh id. A migration restores *exact* state, so unlike the document
     import it fires no retain webhooks and triggers no consolidation/graph
-    maintenance: observations and mental models are restored as exported.
+    maintenance: observations and mental model logical fields are restored as
+    exported, while target-derived mental model search state is rebuilt.
 
     Takes ``resolve_config`` rather than a resolved config because the only correct
     moment to resolve one is *inside* this function, after the archive's bank row
@@ -451,12 +521,32 @@ async def import_bank(
         facts_imported=doc_result.facts_imported,
         observations_imported=doc_result.observations_imported,
     )
+    mental_model_rows = parsed.bank_rows.get("mental_models", [])
+    # A slow embedder must not pin a pooled connection while the target-side
+    # derived search fields are rebuilt below.
+    embeddings = (
+        await embedding_utils.generate_embeddings_batch(
+            embeddings_model,
+            [f"{row['name']} {row['content']}" for row in mental_model_rows],
+        )
+        if mental_model_rows
+        else []
+    )
+    mental_model_embedding_values = [str(value) if value else None for value in embeddings]
+
     async with acquire_with_retry(backend) as conn:
         result.mental_models_imported = await _restore_rows(
             conn,
             "mental_models",
-            parsed.bank_rows.get("mental_models", []),
+            mental_model_rows,
             bank_rows_json_encoding=bank_rows_json_encoding,
+        )
+        await _rebuild_mental_model_search_state(
+            conn,
+            mental_model_rows,
+            bank_id=bank_id,
+            embedding_values=mental_model_embedding_values,
+            config=config,
         )
         # Restored after mental_models so the (mental_model_id, bank_id) FK resolves.
         result.mental_model_history_imported = await _restore_rows(
