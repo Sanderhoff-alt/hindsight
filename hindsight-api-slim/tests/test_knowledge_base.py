@@ -5,8 +5,10 @@ tree, markdown rendering, move/rename, and cascade-delete behaviour can be asser
 without consolidation.
 """
 
+import asyncio
 import urllib.parse
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, NoReturn
 
@@ -14,6 +16,7 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
+import hindsight_api.engine.memory_engine as memory_engine_module
 from hindsight_api.engine.db import DatabaseConnection
 from hindsight_api.engine.memory_engine import MemoryEngine, _may_need_refresh
 from hindsight_api.extensions import (
@@ -851,6 +854,73 @@ class TestMoveRenameDelete:
             json={"parent_id": ids.sub},
         )
         assert resp.status_code == 400
+
+    async def test_concurrent_opposite_moves_are_serialized(self, memory: MemoryEngine, request_context, monkeypatch):
+        """The second opposite move must observe the first committed parent link.
+
+        Pause the first request only after its real ``FOR NO KEY UPDATE`` query has
+        acquired the bank lock. The second request then reaches the same query
+        but cannot finish it until the first commits, making this a deterministic
+        regression test rather than a timing-dependent concurrent test.
+        """
+        bank_id = f"test-kb-move-race-{uuid.uuid4().hex[:8]}"
+        folder_a = await memory.create_knowledge_folder(bank_id, "A", request_context=request_context)
+        folder_b = await memory.create_knowledge_folder(bank_id, "B", request_context=request_context)
+        first_lock_acquired = asyncio.Event()
+        second_lock_attempted = asyncio.Event()
+        release_first_lock = asyncio.Event()
+        original_acquire = memory_engine_module.acquire_with_retry
+        lock_query = "FOR NO KEY UPDATE"
+        lock_query_count = 0
+
+        class _PausingConnection:
+            def __init__(self, conn):
+                self._conn = conn
+
+            async def fetchrow(self, query, *args, **kwargs):
+                nonlocal lock_query_count
+                if lock_query in query:
+                    lock_query_count += 1
+                    if lock_query_count == 1:
+                        row = await self._conn.fetchrow(query, *args, **kwargs)
+                        first_lock_acquired.set()
+                        await release_first_lock.wait()
+                        return row
+                    second_lock_attempted.set()
+                return await self._conn.fetchrow(query, *args, **kwargs)
+
+            async def fetch(self, query, *args, **kwargs):
+                return await self._conn.fetch(query, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self._conn, name)
+
+        @asynccontextmanager
+        async def pausing_acquire(backend, *args, **kwargs):
+            async with original_acquire(backend, *args, **kwargs) as conn:
+                yield _PausingConnection(conn)
+
+        monkeypatch.setattr(memory_engine_module, "acquire_with_retry", pausing_acquire)
+        try:
+            first = asyncio.create_task(
+                memory.move_knowledge_node(bank_id, folder_a["id"], folder_b["id"], request_context=request_context)
+            )
+            await asyncio.wait_for(first_lock_acquired.wait(), timeout=5)
+
+            second = asyncio.create_task(
+                memory.move_knowledge_node(bank_id, folder_b["id"], folder_a["id"], request_context=request_context)
+            )
+            await asyncio.wait_for(second_lock_attempted.wait(), timeout=5)
+            assert not second.done(), "second move must not finish before the first commits"
+
+            release_first_lock.set()
+            first_result = await first
+            assert first_result["parent_id"] == folder_b["id"]
+            with pytest.raises(ValueError, match="own subtree"):
+                await second
+        finally:
+            release_first_lock.set()
+            await memory.delete_bank(bank_id, request_context=request_context)
 
     async def test_delete_folder_cascades(self, api_client, kb_bank, memory, request_context):
         bank_id, ids = kb_bank
