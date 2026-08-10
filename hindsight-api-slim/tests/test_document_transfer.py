@@ -22,7 +22,11 @@ from hindsight_api.engine.consolidation.consolidator import _create_observation_
 from hindsight_api.engine.db_utils import acquire_with_retry
 from hindsight_api.engine.schema import fq_table
 from hindsight_api.engine.transfer import import_documents
-from hindsight_api.engine.transfer.importer import _rebuild_mental_model_search_state, parse_archive
+from hindsight_api.engine.transfer.importer import (
+    _order_knowledge_pages,
+    _rebuild_mental_model_search_state,
+    parse_archive,
+)
 from hindsight_api.engine.transfer.schema import (
     SCHEMA_VERSION,
     TransferCausalRelation,
@@ -118,6 +122,17 @@ async def test_rebuild_mental_model_search_state_skips_generated_search_vector()
     query = conn.execute.await_args.args[0]
     assert "embedding = $1" in query
     assert "search_vector =" not in query
+
+
+def test_order_knowledge_pages_restores_parents_first():
+    """Knowledge-page archive order must not violate the self-referential FK."""
+    rows = [
+        {"id": "page", "parent_id": "nested"},
+        {"id": "nested", "parent_id": "root"},
+        {"id": "root", "parent_id": None},
+    ]
+
+    assert [row["id"] for row in _order_knowledge_pages(rows)] == ["root", "nested", "page"]
 
 
 @pytest_asyncio.fixture
@@ -377,7 +392,7 @@ async def test_export_bank_contents(memory, request_context):
         assert manifest.bank_rows_json_encoding == "serialized"
         assert manifest.document_count == 1
         assert manifest.webhook_count == 1
-        assert "mental_models.json" in names and "directives.json" in names
+        assert "mental_models.json" in names and "knowledge_pages.json" in names and "directives.json" in names
         assert "mental_model_history.json" in names
         assert any(d.endswith(".json") and d.startswith("documents/") for d in names)
         # No history files unless requested.
@@ -439,6 +454,11 @@ async def _bank_content_snapshot(memory, bank_id):
         mms = await conn.fetch(
             f"SELECT subtype, name, description, tags FROM {fq_table('mental_models')} WHERE bank_id = $1", bank_id
         )
+        knowledge_pages = await conn.fetch(
+            f"SELECT id, parent_id, kind, name, mental_model_id, sort_order, managed "
+            f"FROM {fq_table('knowledge_pages')} WHERE bank_id = $1",
+            bank_id,
+        )
         null_emb = await conn.fetchval(
             f"SELECT count(*) FROM {fq_table('memory_units')} "
             f"WHERE bank_id = $1 AND fact_type != 'observation' AND embedding IS NULL",
@@ -465,6 +485,18 @@ async def _bank_content_snapshot(memory, bank_id):
         "directives": sorted((d["name"], d["content"], d["priority"], d["is_active"]) for d in dirs),
         "mental_models": sorted(
             (m["subtype"], m["name"], m["description"], tuple(sorted(m["tags"] or []))) for m in mms
+        ),
+        "knowledge_pages": sorted(
+            (
+                p["id"],
+                p["parent_id"],
+                p["kind"],
+                p["name"],
+                p["mental_model_id"],
+                p["sort_order"],
+                p["managed"],
+            )
+            for p in knowledge_pages
         ),
         "null_embeddings": null_emb,
         "null_mm_embeddings": null_mm_emb,
@@ -660,11 +692,24 @@ async def test_bank_export_import_exact_roundtrip(memory, request_context):
             tags=["people"],
             request_context=request_context,
         )
+        folder = await memory.create_knowledge_folder(bank, "Docs", request_context=request_context)
+        nested = await memory.create_knowledge_folder(
+            bank, "Nested", parent_id=folder["id"], request_context=request_context
+        )
+        await memory.create_knowledge_page(
+            bank,
+            "Guide",
+            "How should the guide be written?",
+            "The guide content.",
+            parent_id=nested["id"],
+            request_context=request_context,
+        )
 
         before = await _bank_content_snapshot(memory, bank)
         # Sanity: the source genuinely has rich content in every section we carry.
         assert before["facts"] and before["entities"] and before["links"]
         assert before["webhooks"] and before["directives"] and before["mental_models"]
+        assert len(before["knowledge_pages"]) == 3
         assert before["bank"][0] == "My Bank"
         assert before["null_mm_embeddings"] == 0
         assert before["null_mm_search_vectors"] == 0
@@ -679,7 +724,7 @@ async def test_bank_export_import_exact_roundtrip(memory, request_context):
         assert result.bank_id == bank
         assert result.webhooks_imported == 1
         assert result.directives_imported == 1
-        assert result.mental_models_imported == 1
+        assert result.mental_models_imported == 2
 
         after = await _bank_content_snapshot(memory, bank)
         # Semantic links are an ANN-approximate retrieval index regenerated from the

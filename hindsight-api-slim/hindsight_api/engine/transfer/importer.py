@@ -238,7 +238,7 @@ async def import_documents(
 
 # Bank-level config/state tables restored verbatim from a whole-bank archive.
 # Order matters for foreign keys: banks (parent) is restored before any child.
-_BANK_CHILD_TABLES = ("mental_models", "directives", "webhooks")
+_BANK_CHILD_TABLES = ("mental_models", "knowledge_pages", "directives", "webhooks")
 # Child-history carried verbatim; restored after its parent (mental_models) so the
 # foreign key resolves. Surrogate ids were dropped on export (the target reassigns
 # them), so these restore via fresh IDENTITY values.
@@ -264,10 +264,29 @@ class ParsedBankArchive:
     """The bank-level sections of a whole-bank archive (documents read separately)."""
 
     manifest: TransferManifest
-    # table name -> list of verbatim row dicts (banks, mental_models, directives, webhooks)
+    # table name -> list of verbatim row dicts (banks, mental_models, knowledge_pages, directives, webhooks)
     bank_rows: dict[str, list[dict]] = field(default_factory=dict)
     # table name -> rows (audit_log, llm_requests), present only with --include-history
     history_rows: dict[str, list[dict]] = field(default_factory=dict)
+
+
+def _order_knowledge_pages(rows: list[dict]) -> list[dict]:
+    """Order knowledge nodes so every self-referential parent is inserted first."""
+    pending = list(rows)
+    ordered: list[dict] = []
+    restored_ids: set[str] = set()
+    while pending:
+        next_pending: list[dict] = []
+        for row in pending:
+            if row["parent_id"] is None or row["parent_id"] in restored_ids:
+                ordered.append(row)
+                restored_ids.add(row["id"])
+            else:
+                next_pending.append(row)
+        if len(next_pending) == len(pending):
+            raise ValueError("Knowledge-page archive contains an unresolved parent or cycle")
+        pending = next_pending
+    return ordered
 
 
 def parse_bank_archive(archive_bytes: bytes) -> ParsedBankArchive:
@@ -547,6 +566,12 @@ async def import_bank(
             bank_id=bank_id,
             embedding_values=mental_model_embedding_values,
             config=config,
+        )
+        await _restore_rows(
+            conn,
+            "knowledge_pages",
+            _order_knowledge_pages(parsed.bank_rows.get("knowledge_pages", [])),
+            bank_rows_json_encoding=bank_rows_json_encoding,
         )
         # Restored after mental_models so the (mental_model_id, bank_id) FK resolves.
         result.mental_model_history_imported = await _restore_rows(
