@@ -17,6 +17,26 @@ def embedded_client():
     )
 
 
+def test_llm_api_key_three_state_config():
+    """llm_api_key uses three-state semantics (#3253).
+
+    None/omitted → key absent (inherit parent env / profile .env)
+    ""           → present as empty string (explicit clear)
+    non-empty    → present as override
+    """
+    omitted = HindsightEmbedded(profile="test", llm_provider="openai")
+    assert "HINDSIGHT_API_LLM_API_KEY" not in omitted.config
+    assert omitted.config["HINDSIGHT_API_LLM_PROVIDER"] == "openai"
+
+    empty = HindsightEmbedded(profile="test", llm_provider="openai", llm_api_key="")
+    assert empty.config["HINDSIGHT_API_LLM_API_KEY"] == ""
+
+    provided = HindsightEmbedded(
+        profile="test", llm_provider="openai", llm_api_key="sk-real"
+    )
+    assert provided.config["HINDSIGHT_API_LLM_API_KEY"] == "sk-real"
+
+
 def test_banks_create_ensures_daemon_started(embedded_client):
     """Test that banks.create() calls _ensure_started()."""
     # Mock _ensure_started to track calls

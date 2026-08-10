@@ -67,7 +67,7 @@ class HindsightEmbedded:
     Args:
         profile: Profile name for data isolation (default: "default")
         llm_provider: LLM provider ("groq", "openai", "ollama", "gemini", "anthropic", "lmstudio")
-        llm_api_key: API key for the LLM provider
+        llm_api_key: API key for the LLM provider. Omit to inherit parent env / profile .env.
         llm_model: Model name to use
         llm_base_url: Optional custom base URL for LLM API
         database_url: Optional database URL override (default: profile-specific pg0)
@@ -82,7 +82,7 @@ class HindsightEmbedded:
         self,
         profile: str = "default",
         llm_provider: str = "groq",
-        llm_api_key: str = "",
+        llm_api_key: Optional[str] = None,
         llm_model: str = "openai/gpt-oss-120b",
         llm_base_url: Optional[str] = None,
         database_url: Optional[str] = None,
@@ -98,7 +98,8 @@ class HindsightEmbedded:
         Args:
             profile: Profile name for data isolation
             llm_provider: LLM provider
-            llm_api_key: API key for the LLM provider
+            llm_api_key: API key for the LLM provider. Omit to inherit parent env / profile .env;
+                pass "" to explicitly use no key.
             llm_model: Model name to use
             llm_base_url: Optional custom base URL for LLM API
             database_url: Optional database URL override
@@ -110,14 +111,17 @@ class HindsightEmbedded:
         """
         self.profile = profile
 
-        # Build config dict for daemon (matches CLI format)
+        # Omit an unspecified key so the daemon can inherit it from the profile
+        # or parent environment (#3253). An explicit empty string remains an override.
         self.config = {
             "HINDSIGHT_API_LLM_PROVIDER": llm_provider,
-            "HINDSIGHT_API_LLM_API_KEY": llm_api_key,
             "HINDSIGHT_API_LLM_MODEL": llm_model,
             "HINDSIGHT_API_LOG_LEVEL": log_level,
             "HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT": str(idle_timeout),
         }
+
+        if llm_api_key is not None:
+            self.config["HINDSIGHT_API_LLM_API_KEY"] = llm_api_key
 
         if llm_base_url:
             self.config["HINDSIGHT_API_LLM_BASE_URL"] = llm_base_url
