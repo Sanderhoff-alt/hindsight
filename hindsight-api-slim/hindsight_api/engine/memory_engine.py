@@ -2898,7 +2898,12 @@ class MemoryEngine(MemoryEngineInterface):
                 "timeout": http_config.timeout_seconds,
             }
             if http_config.method.upper() == "GET":
-                response = await self._http_client.get(url, **request_kwargs)
+                # GET webhooks use the same signed-payload contract as POST webhooks,
+                # so the exact bytes covered by X-Hindsight-Signature must be sent. GET
+                # caches do not generally key on body content, so prevent a cached
+                # response from suppressing delivery of a later event to the same URL.
+                headers["Cache-Control"] = "no-cache, no-store"
+                response = await self._http_client.request("GET", url, content=payload_bytes, **request_kwargs)
             else:
                 response = await self._http_client.post(url, content=payload_bytes, **request_kwargs)
             response.raise_for_status()

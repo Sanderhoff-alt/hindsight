@@ -1,7 +1,19 @@
 
 # Webhooks
 
-Hindsight can notify your application in real-time when memory events occur by sending HTTP POST requests to a URL you configure.
+Hindsight can notify your application in real-time when memory events occur by sending HTTP requests to a URL you configure. Deliveries use POST by default; per-bank webhooks can select GET through `http_config.method`.
+
+## HTTP Delivery
+
+The event payload is sent as the JSON request body for both POST and GET deliveries. Because GET request bodies are not supported consistently by every HTTP server, proxy, or framework, use POST unless the receiving stack is known to preserve GET bodies. GET deliveries include `Cache-Control: no-cache, no-store` so caches do not suppress later events sent to the same URL.
+
+Every delivery includes `X-Hindsight-Event` with the event type. When the webhook has a signing secret, it also includes `X-Hindsight-Signature` in the following form:
+
+```text
+sha256=<HMAC-SHA256(secret, raw_request_body)>
+```
+
+Verify the signature against the exact request body bytes before parsing JSON. Re-serializing parsed JSON can change whitespace or escaping and produce a different signature.
 
 ## Delivery and Retries
 

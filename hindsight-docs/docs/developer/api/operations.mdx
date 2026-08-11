@@ -96,7 +96,7 @@ Bank-deduped at submit time, so concurrent triggers against the same bank coales
 
 ### `webhook_delivery`
 
-After certain operations complete (e.g., consolidation finishing on a bank with a registered webhook), Hindsight enqueues a `webhook_delivery` task. The handler POSTs the payload to the configured URL and retries on transient failures.
+After certain operations complete (e.g., consolidation finishing on a bank with a registered webhook), Hindsight enqueues a `webhook_delivery` task. The handler sends the payload to the configured URL (POST by default, or GET when configured) and retries on transient failures.
 
 ## Endpoints
 

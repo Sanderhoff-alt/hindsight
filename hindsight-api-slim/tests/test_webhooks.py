@@ -7,6 +7,8 @@ Covers:
 - HTTP API integration tests for CRUD and delivery listing endpoints
 """
 
+import hashlib
+import hmac
 import json
 import uuid
 from datetime import datetime, timezone
@@ -406,6 +408,43 @@ class TestHandleWebhookDelivery:
         with patch.object(memory._http_client, "post", new=AsyncMock(return_value=mock_response)):
             # Should not raise
             await memory._handle_webhook_delivery(task_dict)
+
+    @pytest.mark.asyncio
+    async def test_get_delivers_the_signed_payload(self, memory: MemoryEngine):
+        """A GET delivery sends the exact payload bytes covered by its signature."""
+        task_dict = _make_delivery_task(retry_count=0)
+        task_dict["secret"] = "test-secret"
+        task_dict["http_config"] = {"method": "GET", "params": {"source": "hindsight"}}
+        received_request: httpx.Request | None = None
+
+        async def receive(request: httpx.Request) -> httpx.Response:
+            nonlocal received_request
+            received_request = request
+            return httpx.Response(204)
+
+        transport = httpx.MockTransport(receive)
+        async with httpx.AsyncClient(transport=transport) as client:
+            with patch.object(memory, "_http_client", client):
+                await memory._handle_webhook_delivery(task_dict)
+
+        assert received_request is not None
+        expected_signature = "sha256=" + hmac.new(b"test-secret", received_request.content, hashlib.sha256).hexdigest()
+
+        assert received_request.method == "GET"
+        assert received_request.url == "https://example.com/hook?source=hindsight"
+        assert received_request.content == task_dict["payload"].encode()
+        assert received_request.headers["X-Hindsight-Signature"] == expected_signature
+        assert received_request.headers["Cache-Control"] == "no-cache, no-store"
+
+    @pytest.mark.asyncio
+    async def test_get_delivery_failure_raises_retry_task_at(self, memory: MemoryEngine):
+        """A failed HTTP GET schedules a retry just like a failed POST."""
+        task_dict = _make_delivery_task(retry_count=0)
+        task_dict["http_config"] = {"method": "GET"}
+
+        with patch.object(memory._http_client, "request", new=AsyncMock(side_effect=Exception("connection refused"))):
+            with pytest.raises(RetryTaskAt):
+                await memory._handle_webhook_delivery(task_dict)
 
     @pytest.mark.asyncio
     async def test_deliver_failure_raises_retry_task_at(self, memory: MemoryEngine):
