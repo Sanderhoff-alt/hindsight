@@ -5,12 +5,17 @@ tree, markdown rendering, move/rename, and cascade-delete behaviour can be asser
 without consolidation.
 """
 
+import asyncio
 import urllib.parse
 import uuid
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock
 
+import pytest
 import pytest_asyncio
 
+from hindsight_api import RequestContext
+from hindsight_api.engine.db import DatabaseConnection
 from hindsight_api.engine.memory_engine import MemoryEngine, _may_need_refresh
 from hindsight_api.extensions import (
     BankReadContext,
@@ -364,6 +369,177 @@ class TestCreate:
             json={"name": "Nope", "parent_id": ids.orders},
         )
         assert resp.status_code == 400
+
+    async def test_create_page_missing_parent_does_not_leak_mental_model(self, memory: MemoryEngine, request_context):
+        bank_id = f"test-kb-create-{uuid.uuid4().hex[:8]}"
+        await memory.create_knowledge_folder(bank_id, "Root", request_context=request_context)
+        before = await memory.list_mental_models(bank_id, request_context=request_context)
+
+        with pytest.raises(ValueError, match="not found"):
+            await memory.create_knowledge_page(
+                bank_id,
+                "Orphan",
+                "What is orphaned?",
+                "seed",
+                parent_id="missing-parent",
+                request_context=request_context,
+            )
+
+        after = await memory.list_mental_models(bank_id, request_context=request_context)
+        assert {mm["id"] for mm in after} == {mm["id"] for mm in before}
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+    async def test_create_page_under_page_does_not_leak_mental_model(self, memory: MemoryEngine, request_context):
+        bank_id = f"test-kb-create-{uuid.uuid4().hex[:8]}"
+        parent = await memory.create_knowledge_page(
+            bank_id, "Parent page", "What is the parent?", "seed", request_context=request_context
+        )
+        before = await memory.list_mental_models(bank_id, request_context=request_context)
+
+        with pytest.raises(ValueError, match="is not a folder"):
+            await memory.create_knowledge_page(
+                bank_id,
+                "Orphan",
+                "What is orphaned?",
+                "seed",
+                parent_id=parent["id"],
+                request_context=request_context,
+            )
+
+        after = await memory.list_mental_models(bank_id, request_context=request_context)
+        assert {mm["id"] for mm in after} == {mm["id"] for mm in before}
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+    async def test_create_page_post_mental_model_failure_is_compensated(
+        self, memory: MemoryEngine, request_context, monkeypatch
+    ):
+        bank_id = f"test-kb-create-{uuid.uuid4().hex[:8]}"
+        parent = await memory.create_knowledge_folder(bank_id, "Root", request_context=request_context)
+        mental_model_id = f"mm-{uuid.uuid4().hex}"
+        assert_parent = AsyncMock(side_effect=[None, RuntimeError("page write failed")])
+        monkeypatch.setattr(memory, "_kp_assert_folder_parent", assert_parent)
+
+        with pytest.raises(RuntimeError, match="page write failed"):
+            await memory.create_knowledge_page(
+                bank_id,
+                "Orphan",
+                "What is orphaned?",
+                "seed",
+                parent_id=parent["id"],
+                mental_model_id=mental_model_id,
+                request_context=request_context,
+            )
+
+        assert await memory.get_mental_model(bank_id, mental_model_id, request_context=request_context) is None
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+    async def test_create_page_cancellation_after_mental_model_creation_is_compensated(
+        self, memory: MemoryEngine, request_context, monkeypatch
+    ):
+        bank_id = f"test-kb-create-{uuid.uuid4().hex[:8]}"
+        parent = await memory.create_knowledge_folder(bank_id, "Root", request_context=request_context)
+        mental_model_id = f"mm-{uuid.uuid4().hex}"
+        entered_page_phase = asyncio.Event()
+        never_complete = asyncio.Event()
+        cleanup_started = asyncio.Event()
+        allow_cleanup = asyncio.Event()
+        validation_count = 0
+        delete_mental_model = memory.delete_mental_model
+
+        async def controlled_assert_parent(_conn: DatabaseConnection, _bank_id: str, _parent_id: str | None) -> None:
+            nonlocal validation_count
+            validation_count += 1
+            if validation_count == 1:
+                return
+            entered_page_phase.set()
+            await never_complete.wait()
+
+        async def delayed_delete(
+            delete_bank_id: str,
+            delete_mental_model_id: str,
+            *,
+            request_context: RequestContext,
+        ) -> bool:
+            cleanup_started.set()
+            await allow_cleanup.wait()
+            return await delete_mental_model(
+                delete_bank_id,
+                delete_mental_model_id,
+                request_context=request_context,
+            )
+
+        monkeypatch.setattr(memory, "_kp_assert_folder_parent", controlled_assert_parent)
+        monkeypatch.setattr(memory, "delete_mental_model", delayed_delete)
+
+        create_task = asyncio.create_task(
+            memory.create_knowledge_page(
+                bank_id,
+                "Cancelled",
+                "What was cancelled?",
+                "seed",
+                parent_id=parent["id"],
+                mental_model_id=mental_model_id,
+                request_context=request_context,
+            )
+        )
+        await entered_page_phase.wait()
+        create_task.cancel()
+        await cleanup_started.wait()
+        create_task.cancel()
+        allow_cleanup.set()
+        with pytest.raises(asyncio.CancelledError):
+            await create_task
+
+        assert await memory.get_mental_model(bank_id, mental_model_id, request_context=request_context) is None
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+    @pytest.mark.parametrize("cleanup_error", [RuntimeError("cleanup failed"), asyncio.CancelledError()])
+    async def test_cleanup_failure_preserves_page_creation_error(
+        self, memory: MemoryEngine, request_context, monkeypatch, cleanup_error: BaseException
+    ):
+        bank_id = f"test-kb-create-{uuid.uuid4().hex[:8]}"
+        parent = await memory.create_knowledge_folder(bank_id, "Root", request_context=request_context)
+        mental_model_id = f"mm-{uuid.uuid4().hex}"
+        assert_parent = AsyncMock(side_effect=[None, RuntimeError("page write failed")])
+        delete_mental_model = AsyncMock(side_effect=cleanup_error)
+        monkeypatch.setattr(memory, "_kp_assert_folder_parent", assert_parent)
+        monkeypatch.setattr(memory, "delete_mental_model", delete_mental_model)
+
+        with pytest.raises(RuntimeError, match="page write failed"):
+            await memory.create_knowledge_page(
+                bank_id,
+                "Orphan",
+                "What is orphaned?",
+                "seed",
+                parent_id=parent["id"],
+                mental_model_id=mental_model_id,
+                request_context=request_context,
+            )
+
+        assert await memory.get_mental_model(bank_id, mental_model_id, request_context=request_context) is not None
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+    async def test_duplicate_page_cleanup_failure_preserves_conflict_result(
+        self, memory: MemoryEngine, request_context, monkeypatch
+    ):
+        bank_id = f"test-kb-create-{uuid.uuid4().hex[:8]}"
+        await memory.create_knowledge_page(bank_id, "Existing", "What exists?", "seed", request_context=request_context)
+        mental_model_id = f"mm-{uuid.uuid4().hex}"
+        delete_mental_model = AsyncMock(side_effect=RuntimeError("cleanup failed"))
+        monkeypatch.setattr(memory, "delete_mental_model", delete_mental_model)
+
+        duplicate = await memory.create_knowledge_page(
+            bank_id,
+            "Existing",
+            "What is duplicated?",
+            "seed",
+            mental_model_id=mental_model_id,
+            request_context=request_context,
+        )
+
+        assert duplicate is None
+        assert await memory.get_mental_model(bank_id, mental_model_id, request_context=request_context) is not None
+        await memory.delete_bank(bank_id, request_context=request_context)
 
 
 class TestExport:

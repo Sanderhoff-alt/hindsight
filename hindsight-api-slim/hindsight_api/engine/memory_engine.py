@@ -13624,6 +13624,37 @@ class MemoryEngine(MemoryEngineInterface):
                 )
         return self._row_to_knowledge_node(row)
 
+    async def _compensate_knowledge_page_mental_model(
+        self,
+        bank_id: str,
+        mental_model_id: str,
+        request_context: "RequestContext",
+    ) -> None:
+        """Best-effort removal of a committed MM after page creation fails."""
+        cleanup_task = asyncio.create_task(
+            self.delete_mental_model(bank_id, mental_model_id, request_context=request_context)
+        )
+        deferred_cancellation: asyncio.CancelledError | None = None
+        while not cleanup_task.done():
+            try:
+                await asyncio.shield(cleanup_task)
+            except asyncio.CancelledError as exc:
+                if cleanup_task.cancelled():
+                    break
+                # Shield alone would leave cleanup running in the background.
+                # Delay repeated cancellation until the compensating write ends.
+                deferred_cancellation = exc
+            except Exception:
+                break
+        try:
+            cleanup_task.result()
+        except asyncio.CancelledError:
+            logger.error("Cleanup was cancelled for mental model %s after page creation failed", mental_model_id)
+        except Exception:
+            logger.exception("Failed to clean up mental model %s after page creation failed", mental_model_id)
+        if deferred_cancellation is not None:
+            raise deferred_cancellation
+
     async def create_knowledge_page(
         self,
         bank_id: str,
@@ -13660,6 +13691,13 @@ class MemoryEngine(MemoryEngineInterface):
                 request_context=request_context,
             )
             await self._validate_operation(self._operation_validator.validate_bank_write(ctx))
+        backend = await self._get_backend()
+        # Reject deterministic parent errors before creating the independently
+        # committed mental model. The page transaction repeats this validation so
+        # its INSERT still observes the latest parent state.
+        if parent_id is not None:
+            async with acquire_with_retry(backend) as conn:
+                await self._kp_assert_folder_parent(conn, bank_id, parent_id)
         # The mental model carries the content (and is created by the existing
         # path, including lazy bank creation); the node only refs it. The write is
         # already authorized above, so the nested mental-model create/delete run
@@ -13676,7 +13714,6 @@ class MemoryEngine(MemoryEngineInterface):
                 trigger=trigger if trigger is not None else dict(self.KNOWLEDGE_PAGE_DEFAULT_TRIGGER),
                 request_context=request_context,
             )
-            backend = await self._get_backend()
             page_id = f"kp-{uuid.uuid4().hex}"
             try:
                 async with acquire_with_retry(backend) as conn:
@@ -13697,11 +13734,23 @@ class MemoryEngine(MemoryEngineInterface):
                             managed,
                         )
             except asyncpg.UniqueViolationError:
-                # Duplicate page name in this folder (uq_kp_folder_pagename). Roll back
-                # by deleting the orphan mental model we just created, then signal the
-                # caller that the page already exists.
-                await self.delete_mental_model(bank_id, mm["id"], request_context=request_context)
+                # Preserve the duplicate-page 409 contract even if best-effort
+                # cleanup of the independently committed model fails.
+                await self._compensate_knowledge_page_mental_model(bank_id, mm["id"], request_context)
                 return None
+            except asyncio.CancelledError:
+                # Cancellation is delivered outside Exception on Python 3.11.
+                try:
+                    await self._compensate_knowledge_page_mental_model(bank_id, mm["id"], request_context)
+                except asyncio.CancelledError:
+                    pass
+                raise
+            except Exception:
+                # create_mental_model commits independently, so every later failure
+                # triggers best-effort compensation. Preserve the page error even if
+                # cleanup also fails so the API reports the actual failed operation.
+                await self._compensate_knowledge_page_mental_model(bank_id, mm["id"], request_context)
+                raise
         node = self._row_to_knowledge_node(row)
         # Surface the mental-model metadata so the caller can render markdown or
         # schedule a content refresh without a second fetch.
