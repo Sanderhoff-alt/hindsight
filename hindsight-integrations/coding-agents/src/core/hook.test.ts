@@ -67,6 +67,7 @@ describe("buildHookOutput", () => {
     const cached = JSON.parse(readFileSync(cacheFile, "utf8"));
     expect(cached.turns).toBe(1);
     expect(cached.reflectAnswer).toBe("REFLECT_ANSWER");
+    expect(cached.reflectStatus).toBe("success");
   });
 
   it("reflect runs ONCE per session: cached on turn 1, not called again on turn 2", async () => {
@@ -122,7 +123,7 @@ describe("buildHookOutput", () => {
     expect(second.context).toContain("REFLECT_ANSWER");
   });
 
-  it("reflect rejection: caches '' (no retry next turn), no throw, no context at all", async () => {
+  it("reflect rejection: caches an error status, shows a notice, and does not retry", async () => {
     const cfg = resolveConfig({});
     const client = makeClient({
       reflect: vi.fn(async () => {
@@ -138,8 +139,9 @@ describe("buildHookOutput", () => {
     });
     // Reflect failed -> no reflect block; pages are never auto-injected -> nothing to inject.
     expect(t1.context).toBeUndefined();
-    expect(t1.notice).toBeUndefined();
+    expect(t1.notice).toContain("automatic memory synthesis failed");
     expect(JSON.parse(readFileSync(cacheFile, "utf8")).reflectAnswer).toBe("");
+    expect(JSON.parse(readFileSync(cacheFile, "utf8")).reflectStatus).toBe("error");
 
     await buildHookOutput({
       harness: "claude-code",
@@ -150,6 +152,42 @@ describe("buildHookOutput", () => {
     });
     // The failure is cached as "" — reflect is NOT retried on the next turn.
     expect(client.reflect).toHaveBeenCalledTimes(1);
+  });
+
+  it("reflect timeout: caches timeout status and shows a timeout notice", async () => {
+    const cfg = resolveConfig({});
+    const client = makeClient({
+      reflect: vi.fn(async () => {
+        throw new Error("This operation was aborted");
+      }),
+    });
+    const result = await buildHookOutput({
+      harness: "claude-code",
+      prompt: "the prompt",
+      cfg,
+      client,
+      cacheFile,
+    });
+    expect(result.notice).toContain("automatic memory synthesis timed out");
+    expect(JSON.parse(readFileSync(cacheFile, "utf8")).reflectStatus).toBe("timeout");
+  });
+
+  it("classifies timeout from the full error before truncating diagnostics", async () => {
+    const cfg = resolveConfig({});
+    const client = makeClient({
+      reflect: vi.fn(async () => {
+        throw new Error(`${"x".repeat(240)} timeout`);
+      }),
+    });
+    const result = await buildHookOutput({
+      harness: "claude-code",
+      prompt: "the prompt",
+      cfg,
+      client,
+      cacheFile,
+    });
+    expect(result.notice).toContain("automatic memory synthesis timed out");
+    expect(JSON.parse(readFileSync(cacheFile, "utf8")).reflectStatus).toBe("timeout");
   });
 
   it("uses a bounded low-budget reflect and caps its timeout at 25000ms", async () => {

@@ -101,13 +101,15 @@ export async function buildHookOutput(args: {
   // autoReflect false = tool-only mode: no injected synthesis; the roster's tool guide instead
   // instructs the agent to call hindsight_reflect itself when a new goal is set.
   let reflectAnswer = cached.reflectAnswer;
+  // Support caches written before reflectStatus existed.
+  let reflectStatus = cached.reflectStatus;
   let reflectRanThisTurn = false;
   const deferInitialReflect = cached.deferInitialReflect === true;
   if (deferInitialReflect) {
     // A new bank has no useful history yet. Do not burn the once-per-session synthesis on prompt
     // one; this marker is deliberately consumed below so prompt two remains eligible to reflect.
     diag(harness, "reflect_deferred_new_bank", { query: prompt.slice(0, 80) });
-  } else if (cfg.autoReflect && reflectAnswer === undefined) {
+  } else if (cfg.autoReflect && reflectAnswer === undefined && reflectStatus === undefined) {
     reflectRanThisTurn = true;
     const t0 = Date.now();
     try {
@@ -118,6 +120,7 @@ export async function buildHookOutput(args: {
         budget: "low",
         timeoutMs: Math.min(cfg.reflectTimeoutMs, HOOK_REFLECT_CAP_MS),
       });
+      reflectStatus = reflectAnswer ? "success" : "error";
       diag(harness, reflectAnswer ? "reflect_ok" : "reflect_empty", {
         ms: Date.now() - t0,
         chars: reflectAnswer.length,
@@ -127,13 +130,16 @@ export async function buildHookOutput(args: {
         answer: reflectAnswer.slice(0, 8000),
       });
     } catch (e) {
-      reflectAnswer = ""; // ran and failed — don't retry every turn; the diag trail records it
+      reflectAnswer = ""; // ran and failed — don't retry every turn; the status records why
+      const fullMessage = String((e as Error)?.message || e);
+      const message = fullMessage.slice(0, 200);
+      reflectStatus = /abort|timeout|deadline/i.test(fullMessage) ? "timeout" : "error";
       log.warn(harness, "reflect failed — session runs without memory", {
-        error: String((e as Error)?.message || e).slice(0, 200),
+        error: message,
       });
       diag(harness, "reflect_failed", {
         ms: Date.now() - t0,
-        error: String((e as Error)?.message || e).slice(0, 200),
+        error: message,
         query: prompt.slice(0, 80),
       });
     }
@@ -163,6 +169,7 @@ export async function buildHookOutput(args: {
   writeSessionCache(cacheFile, {
     turns,
     reflectAnswer,
+    reflectStatus,
     pages: { atTurn: stale ? turns : (cached.pages?.atTurn ?? turns), list: pages },
   } satisfies SessionCache);
 
@@ -193,6 +200,10 @@ export async function buildHookOutput(args: {
     notice =
       `${brandWord()} · goal: recall this repo's past decisions about “${excerpt}”\n` +
       `↳ ${preview.length > 140 ? `${preview.slice(0, 140)}…` : preview}`;
+  } else if (reflectRanThisTurn && reflectStatus) {
+    notice = `${brandWord()} · automatic memory synthesis ${
+      reflectStatus === "timeout" ? "timed out" : "failed"
+    } this turn; continuing without synthesized memory. You can call hindsight_reflect manually if needed.`;
   }
 
   return { context: kept.length ? kept.join("\n\n") : undefined, notice, pagesKnown: pages.length };

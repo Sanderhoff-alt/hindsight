@@ -9,7 +9,9 @@ import type { RetainCursor, RetainCursorStore } from "./retain-cursor";
  * bank state. */
 export interface SessionCache {
   turns?: number;
-  reflectAnswer?: string; // present (even "") = reflect already ran this session
+  reflectAnswer?: string;
+  /** Automatic reflect outcome; any defined status means it was attempted this session. */
+  reflectStatus?: "success" | "timeout" | "error";
   /** SessionStart saw a new/empty bank; consume this on prompt one, then allow reflect. */
   deferInitialReflect?: boolean;
   pages?: { atTurn: number; list: PageRef[] };
