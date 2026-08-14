@@ -276,6 +276,7 @@ export function MemoryDetailPanel({
         occurredEnd: fields.occurredEnd,
         factType: fields.factType,
         entities: fields.entities,
+        entityResolutionMode: "exact",
       });
       const refreshed = await client.getMemory(id, bankId);
       setFullMemory(refreshed);

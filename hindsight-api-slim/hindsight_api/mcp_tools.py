@@ -9,7 +9,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable, get_args
+from typing import Any, Callable, Literal, get_args
 
 from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
@@ -2467,8 +2467,10 @@ def _register_update_memory(mcp: FastMCP, memory: MemoryEngine, config: MCPTools
             Pass any of text / context / occurred_start / occurred_end / fact_type /
             entities. For context and the dates, "" clears the field and omitting it
             leaves it unchanged; entities replaces the fact's entity set ([] detaches
-            all). The memory is re-embedded and its derived observations, links, and
-            graph are recomputed automatically.
+            all). By default entity names use fuzzy resolution; pass
+            entity_resolution_mode="exact" for explicit corrections to only reuse
+            case-insensitively identical names. The memory is re-embedded and its
+            derived observations, links, and graph are recomputed automatically.
 
             Only raw world/experience facts can be edited; observations are derived.
             To retire or restore a fact, use invalidate_memory instead.
@@ -2485,6 +2487,7 @@ def _register_update_memory(mcp: FastMCP, memory: MemoryEngine, config: MCPTools
             occurred_end: str | None = None,
             fact_type: str | None = None,
             entities: list[str] | None = None,
+            entity_resolution_mode: Literal["fuzzy", "exact"] = "fuzzy",
             bank_id: str | None = None,
         ) -> str:
             """
@@ -2506,6 +2509,7 @@ def _register_update_memory(mcp: FastMCP, memory: MemoryEngine, config: MCPTools
                     occurred_end=occurred_end,
                     new_fact_type=fact_type,
                     entities=entities,
+                    entity_resolution_mode=entity_resolution_mode,
                     request_context=_get_request_context(config),
                 )
                 if result is None:
@@ -2531,6 +2535,7 @@ def _register_update_memory(mcp: FastMCP, memory: MemoryEngine, config: MCPTools
             occurred_end: str | None = None,
             fact_type: str | None = None,
             entities: list[str] | None = None,
+            entity_resolution_mode: Literal["fuzzy", "exact"] = "fuzzy",
         ) -> dict:
             """
             Args:
@@ -2550,6 +2555,7 @@ def _register_update_memory(mcp: FastMCP, memory: MemoryEngine, config: MCPTools
                     occurred_end=occurred_end,
                     new_fact_type=fact_type,
                     entities=entities,
+                    entity_resolution_mode=entity_resolution_mode,
                     request_context=_get_request_context(config),
                 )
                 if result is None:

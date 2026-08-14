@@ -6,6 +6,7 @@ import logging
 import re
 import time
 from datetime import UTC
+from typing import Literal
 
 from ..._vector_index import ann_search_tuning_settings, configured_vector_extension
 from ..causal_links import (
@@ -291,6 +292,7 @@ async def resolve_entities_only(
     llm_entities: list[list[dict]],
     log_buffer: list[str] = None,
     entity_labels: list | None = None,
+    resolution_mode: Literal["fuzzy", "exact"] = "fuzzy",
 ) -> EntityResolutionResult:
     """
     Phase 1 of entity processing: resolve entity names to canonical IDs.
@@ -310,6 +312,8 @@ async def resolve_entities_only(
         llm_entities: Per-fact entity lists from LLM extraction
         log_buffer: Optional logging buffer
         entity_labels: Optional entity label taxonomy
+        resolution_mode: ``fuzzy`` preserves retain's normal behavior; ``exact``
+            is for explicit curation names and only reuses exact matches.
 
     Returns:
         EntityResolutionResult carrying the resolved entity identities (id +
@@ -333,6 +337,7 @@ async def resolve_entities_only(
         unit_event_date=None,
         conn=conn,
         entity_labels=entity_labels,
+        resolution_mode=resolution_mode,
     )
     _log(
         log_buffer,

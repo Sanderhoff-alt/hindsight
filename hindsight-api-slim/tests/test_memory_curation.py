@@ -469,6 +469,44 @@ class TestEdit:
         await memory.delete_bank(bank_id, request_context=request_context)
 
     @pytest.mark.asyncio
+    async def test_edit_entities_exact_mode_does_not_fuzzy_substitute(
+        self, memory: MemoryEngine, request_context: RequestContext
+    ):
+        bank_id = f"test-curation-editent-exact-{uuid.uuid4().hex[:8]}"
+        await _ensure_bank(memory, bank_id, request_context)
+
+        pool = await memory._get_pool()
+        async with pool.acquire() as conn:
+            m1 = await _insert_memory(conn, memory, bank_id, "Alice takes Medication X.")
+            similar = await _insert_entity(conn, bank_id, "Medication Xtra")
+
+        with (
+            patch.object(memory, "submit_async_consolidation", new=AsyncMock()),
+            patch.object(memory, "submit_async_graph_maintenance", new=AsyncMock()),
+        ):
+            result = await memory.update_memory_unit(
+                bank_id,
+                str(m1),
+                entities=["Medication X"],
+                entity_resolution_mode="exact",
+                request_context=request_context,
+            )
+
+        assert result is not None
+        assert result["entities"] == ["Medication X"]
+        async with pool.acquire() as conn:
+            entity_rows = await conn.fetch(
+                "SELECT e.id, e.canonical_name FROM unit_entities ue "
+                "JOIN entities e ON e.id = ue.entity_id WHERE ue.unit_id = $1",
+                m1,
+            )
+            assert len(entity_rows) == 1
+            assert entity_rows[0]["canonical_name"] == "Medication X"
+            assert entity_rows[0]["id"] != similar
+
+        await memory.delete_bank(bank_id, request_context=request_context)
+
+    @pytest.mark.asyncio
     async def test_edit_empty_entities_detaches_all(self, memory: MemoryEngine, request_context: RequestContext):
         bank_id = f"test-curation-editent0-{uuid.uuid4().hex[:8]}"
         await _ensure_bank(memory, bank_id, request_context)

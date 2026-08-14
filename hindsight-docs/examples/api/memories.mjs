@@ -67,11 +67,13 @@ await patchMemory(memoryId, { text: 'The user visited Paris in 2023.', reason: '
 
 // [docs:edit-memory-fields]
 // Correct dates, fact type, and entities in one call. "" clears a field;
-// entities replaces the set ([] detaches all); omit to leave unchanged.
+// entities replaces the set ([] detaches all); omit to leave unchanged. Use
+// exact resolution for user-authored corrections.
 await patchMemory(memoryId, {
     occurred_start: '2023-06-01',
     fact_type: 'experience',
     entities: ['Alice', 'Paris'],
+    entity_resolution_mode: 'exact',
 });
 // [/docs:edit-memory-fields]
 

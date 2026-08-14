@@ -9861,6 +9861,16 @@ components:
             type: string
           nullable: true
           type: array
+        entity_resolution_mode:
+          default: fuzzy
+          description: How to resolve submitted entity names. 'fuzzy' preserves the
+            legacy disambiguation behavior; 'exact' only reuses case-insensitively
+            identical names and creates unmatched entities.
+          enum:
+          - fuzzy
+          - exact
+          title: Entity Resolution Mode
+          type: string
         state:
           nullable: true
           type: string

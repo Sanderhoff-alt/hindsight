@@ -8389,6 +8389,7 @@ class MemoryEngine(MemoryEngineInterface):
         occurred_end: str | None = None,
         new_fact_type: str | None = None,
         entities: list[str] | None = None,
+        entity_resolution_mode: Literal["fuzzy", "exact"] = "fuzzy",
         state: str | None = None,
         reason: str | None = None,
         request_context: "RequestContext",
@@ -8401,7 +8402,10 @@ class MemoryEngine(MemoryEngineInterface):
         graph queries therefore need no state predicate.
 
         - **Edit** (``text``/``context``/``occurred_start``/``occurred_end``/
-          ``new_fact_type``/``entities``): correct what the LLM extracted.
+          ``new_fact_type``/``entities``): correct what the LLM extracted. Entity
+          names use fuzzy resolution by default for compatibility; callers doing
+          explicit corrections can pass ``entity_resolution_mode='exact'`` to
+          reuse only case-insensitively identical names or create new entities.
           Re-embeds (text + dates + entities feed the embedding), drops derived
           observations + temporal/semantic links, and re-consolidates. For date/context fields,
           ``""`` clears to NULL and ``None`` leaves unchanged; ``new_fact_type``
@@ -8443,6 +8447,8 @@ class MemoryEngine(MemoryEngineInterface):
             raise ValueError("text must not be empty.")
         if new_fact_type is not None and new_fact_type not in ("world", "experience"):
             raise ValueError(f"Invalid fact_type '{new_fact_type}': expected 'world' or 'experience'.")
+        if entity_resolution_mode not in ("fuzzy", "exact"):
+            raise ValueError(f"Invalid entity resolution mode '{entity_resolution_mode}': expected 'fuzzy' or 'exact'.")
         # Normalize the entity list up front: drop blanks/whitespace and de-dup
         # case-insensitively (the resolver would coalesce these anyway). A
         # provided-but-empty list means "detach all entities"; None means leave
@@ -8568,6 +8574,7 @@ class MemoryEngine(MemoryEngineInterface):
                         [entity_date],
                         [[{"text": name, "type": "CONCEPT"} for name in new_entities]],
                         entity_labels=entity_labels,
+                        resolution_mode=entity_resolution_mode,
                     )
                     resolved_for_unit = entity_resolution.unit_to_entity_ids.get(str(memory_uuid), [])
                     edit_entity_ids = [str(eid) for eid in resolved_for_unit]

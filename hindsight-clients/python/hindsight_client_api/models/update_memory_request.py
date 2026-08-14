@@ -17,7 +17,7 @@ import pprint
 import re  # noqa: F401
 import json
 
-from pydantic import BaseModel, ConfigDict, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
 from typing import Any, ClassVar, Dict, List, Optional
 from typing import Optional, Set
 from typing_extensions import Self
@@ -32,9 +32,20 @@ class UpdateMemoryRequest(BaseModel):
     occurred_end: Optional[StrictStr] = None
     fact_type: Optional[StrictStr] = None
     entities: Optional[List[StrictStr]] = None
+    entity_resolution_mode: Optional[StrictStr] = Field(default='fuzzy', description="How to resolve submitted entity names. 'fuzzy' preserves the legacy disambiguation behavior; 'exact' only reuses case-insensitively identical names and creates unmatched entities.")
     state: Optional[StrictStr] = None
     reason: Optional[StrictStr] = None
-    __properties: ClassVar[List[str]] = ["text", "context", "occurred_start", "occurred_end", "fact_type", "entities", "state", "reason"]
+    __properties: ClassVar[List[str]] = ["text", "context", "occurred_start", "occurred_end", "fact_type", "entities", "entity_resolution_mode", "state", "reason"]
+
+    @field_validator('entity_resolution_mode')
+    def entity_resolution_mode_validate_enum(cls, value):
+        """Validates the enum"""
+        if value is None:
+            return value
+
+        if value not in set(['fuzzy', 'exact']):
+            raise ValueError("must be one of enum values ('fuzzy', 'exact')")
+        return value
 
     model_config = ConfigDict(
         populate_by_name=True,
@@ -133,6 +144,7 @@ class UpdateMemoryRequest(BaseModel):
             "occurred_end": obj.get("occurred_end"),
             "fact_type": obj.get("fact_type"),
             "entities": obj.get("entities"),
+            "entity_resolution_mode": obj.get("entity_resolution_mode") if obj.get("entity_resolution_mode") is not None else 'fuzzy',
             "state": obj.get("state"),
             "reason": obj.get("reason")
         })

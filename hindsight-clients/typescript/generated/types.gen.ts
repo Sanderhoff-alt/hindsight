@@ -4949,9 +4949,15 @@ export type UpdateMemoryRequest = {
   /**
    * Entities
    *
-   * Replace the fact's entities. Names are resolved/find-or-created the same way retain does; '[]' detaches all entities. Omit to leave unchanged.
+   * Replace the fact's entities. By default names use the same fuzzy resolution as retain; set entity_resolution_mode to 'exact' to only reuse case-insensitively identical names. '[]' detaches all entities. Omit to leave unchanged.
    */
   entities?: Array<string> | null;
+  /**
+   * Entity Resolution Mode
+   *
+   * How to resolve submitted entity names. 'fuzzy' preserves the legacy disambiguation behavior; 'exact' only reuses case-insensitively identical names and creates unmatched entities.
+   */
+  entity_resolution_mode?: "fuzzy" | "exact";
   /**
    * State
    *

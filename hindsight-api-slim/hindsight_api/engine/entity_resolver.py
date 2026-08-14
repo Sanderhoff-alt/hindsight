@@ -15,7 +15,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
-from typing import Any, Final, cast
+from typing import Any, Final, Literal, cast
 
 from .db_utils import acquire_with_retry
 from .memory_engine import fq_table
@@ -414,6 +414,7 @@ class EntityResolver:
         unit_event_date,
         conn=None,
         entity_labels: list | None = None,
+        resolution_mode: Literal["fuzzy", "exact"] = "fuzzy",
     ) -> list[ResolvedEntity]:
         """
         Resolve multiple entities in batch (MUCH faster than sequential).
@@ -427,6 +428,9 @@ class EntityResolver:
             context: Context where entities appear
             unit_event_date: When this unit was created
             conn: Optional connection to use (if None, acquires from pool)
+            resolution_mode: ``fuzzy`` preserves the normal retain behavior;
+                ``exact`` reuses only case-insensitively identical names and
+                creates a new entity for every unmatched name.
 
         Returns:
             Resolved entity identities (id + stored canonical name) in the same
@@ -434,18 +438,101 @@ class EntityResolver:
         """
         if not entities_data:
             return []
+        if resolution_mode not in ("fuzzy", "exact"):
+            raise ValueError(f"Invalid entity resolution mode '{resolution_mode}': expected 'fuzzy' or 'exact'.")
 
         taxonomy_lookup = self._build_labels_lookup(entity_labels)
         labels_cfg = _parse_entity_labels(entity_labels)
         if conn is None:
             async with acquire_with_retry(self.pool) as conn:
+                if resolution_mode == "exact":
+                    return await self._resolve_entities_batch_exact(
+                        conn, bank_id, entities_data, unit_event_date, taxonomy_lookup, labels_cfg
+                    )
                 return await self._resolve_entities_batch_impl(
                     conn, bank_id, entities_data, context, unit_event_date, taxonomy_lookup, labels_cfg
                 )
         else:
+            if resolution_mode == "exact":
+                return await self._resolve_entities_batch_exact(
+                    conn, bank_id, entities_data, unit_event_date, taxonomy_lookup, labels_cfg
+                )
             return await self._resolve_entities_batch_impl(
                 conn, bank_id, entities_data, context, unit_event_date, taxonomy_lookup, labels_cfg
             )
+
+    async def _resolve_entities_batch_exact(
+        self,
+        conn,
+        bank_id: str,
+        entities_data: list[dict],
+        unit_event_date,
+        taxonomy_lookup: set[str] | None = None,
+        labels_cfg=None,
+    ) -> list[ResolvedEntity]:
+        """Resolve explicit curation names without fuzzy identity substitution.
+
+        ``update_memory`` accepts user-authored corrections, so a similar existing
+        entity is not evidence that the caller meant that entity. Exact mode still
+        reuses an existing case-insensitive name, while unmatched names flow through
+        the normal create/upsert path in ``_resolve_from_candidates``.
+        """
+        entity_texts = list(dict.fromkeys(e["text"] for e in entities_data))
+        rows = []
+        is_oracle = self._ops is not None and self._ops.get_entity_resolution_strategy() == "oracle_fuzzy"
+        entities_table = fq_table("entities")
+
+        for entity_text_batch in self._chunked(entity_texts, self.entity_resolution_batch_size):
+            if is_oracle:
+                rows.extend(
+                    await conn.fetch(
+                        f"""
+                        SELECT e.id, e.canonical_name, e.metadata, e.last_seen, e.mention_count,
+                               q.query_text
+                        FROM JSON_TABLE($2, '$[*]' COLUMNS (query_text VARCHAR2(4000) PATH '$')) q
+                        JOIN {entities_table} e ON (
+                            e.bank_id = $1
+                            AND LOWER(e.canonical_name) = LOWER(q.query_text)
+                        )
+                        """,
+                        bank_id,
+                        json.dumps(entity_text_batch),
+                    )
+                )
+            else:
+                rows.extend(
+                    await conn.fetch(
+                        f"""
+                        SELECT e.id, e.canonical_name, e.metadata, e.last_seen, e.mention_count,
+                               q.query_text
+                        FROM unnest($2::text[]) AS q(query_text)
+                        JOIN {entities_table} e ON (
+                            e.bank_id = $1
+                            AND LOWER(e.canonical_name) = LOWER(q.query_text)
+                        )
+                        """,
+                        bank_id,
+                        entity_text_batch,
+                    )
+                )
+
+        all_candidates: dict[str, list] = {text: [] for text in entity_texts}
+        for row in rows:
+            all_candidates[row["query_text"]].append(
+                (row["id"], row["canonical_name"], row["metadata"], row["last_seen"], row["mention_count"])
+            )
+
+        return await self._resolve_from_candidates(
+            conn,
+            bank_id,
+            entities_data,
+            unit_event_date,
+            all_candidates,
+            {},
+            taxonomy_lookup,
+            labels_cfg,
+            resolution_mode="exact",
+        )
 
     async def _resolve_entities_batch_impl(
         self,
@@ -903,6 +990,7 @@ class EntityResolver:
         cooccurrence_map: dict[str, set[str]],
         taxonomy_lookup: set[str] | None = None,
         labels_cfg=None,
+        resolution_mode: Literal["fuzzy", "exact"] = "fuzzy",
     ) -> list[ResolvedEntity]:
         """Shared scoring + upsert logic used by both lookup strategies."""
 
@@ -955,6 +1043,28 @@ class EntityResolver:
                 # Will create new entity
                 entities_to_create.append(
                     _EntityToCreate(idx=idx, name=entity_text, event_date=entity_event_date, is_label=is_label)
+                )
+                continue
+
+            if resolution_mode == "exact":
+                entity_text_lower = entity_text.lower()
+                exact_candidate = next(
+                    (candidate for candidate in candidates if candidate[1].lower() == entity_text_lower),
+                    None,
+                )
+                if exact_candidate is None:
+                    entities_to_create.append(
+                        _EntityToCreate(idx=idx, name=entity_text, event_date=entity_event_date, is_label=is_label)
+                    )
+                    continue
+                resolved_entity = ResolvedEntity(
+                    entity_id=exact_candidate[0],
+                    canonical_name=exact_candidate[1],
+                    entity_kind="label" if is_label else "regular",
+                )
+                resolved[idx] = resolved_entity
+                entities_to_update.append(
+                    _EntityStat(entity_id=resolved_entity.entity_id, event_date=entity_event_date)
                 )
                 continue
 
@@ -1058,7 +1168,11 @@ class EntityResolver:
             # this, resolution only compares against already-persisted rows, so the first sighting
             # of each variant in a batch always creates a distinct entity (issue #3107). Labels are
             # excluded and keep exact grouping.
-            canonical_by_member = self._intrabatch_canonical_map(entities_to_create)
+            # Exact curation mode must not reintroduce fuzzy matching through the
+            # same-batch dedup pass; each unmatched submitted name remains distinct.
+            canonical_by_member = (
+                {} if resolution_mode == "exact" else self._intrabatch_canonical_map(entities_to_create)
+            )
 
             @dataclass
             class _NameGroup:

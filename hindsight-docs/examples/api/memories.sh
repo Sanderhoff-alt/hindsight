@@ -46,10 +46,11 @@ if [ -n "$MEMORY_ID" ]; then
 
   # [docs:edit-memory-fields]
   # Correct dates, fact type, and entities in one call. "" clears a field;
-  # entities replaces the set ([] detaches all); omit to leave unchanged.
+  # entities replaces the set ([] detaches all); omit to leave unchanged. Use
+  # exact resolution for user-authored corrections.
   curl -s -X PATCH "$HINDSIGHT_URL/v1/default/banks/$BANK_ID/memories/$MEMORY_ID" \
     -H "Content-Type: application/json" \
-    -d '{"occurred_start": "2023-06-01", "fact_type": "experience", "entities": ["Alice", "Paris"]}'
+    -d '{"occurred_start": "2023-06-01", "fact_type": "experience", "entities": ["Alice", "Paris"], "entity_resolution_mode": "exact"}'
   # [/docs:edit-memory-fields]
 
   # [docs:invalidate-memory]

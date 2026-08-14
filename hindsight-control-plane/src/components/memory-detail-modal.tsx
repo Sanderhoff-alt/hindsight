@@ -160,6 +160,7 @@ export function MemoryDetailModal({
         occurredEnd: fields.occurredEnd,
         factType: fields.factType,
         entities: fields.entities,
+        entityResolutionMode: "exact",
       });
       const data = await client.getMemory(memory.id, currentBank);
       setMemory(data);

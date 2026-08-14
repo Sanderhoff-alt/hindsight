@@ -6,11 +6,13 @@ import itertools
 import json
 import uuid
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from hindsight_api.engine.db import create_database_backend
+from hindsight_api.engine.db.ops_oracle import OracleOps
 from hindsight_api.engine.db.result import DictResultRow as ResultRow
 from hindsight_api.engine.entity_resolver import EntityResolver, _canonical_cooccurrence_pairs
 from hindsight_api.engine.retain.types import ResolvedEntity
@@ -248,6 +250,66 @@ async def test_fuzzy_scoring_never_merges_regular_text_into_label_row():
 
     assert resolved == [ResolvedEntity(entity_id="new-entity-id", canonical_name="topic empathy")]
     ops.bulk_insert_entities.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_exact_resolution_creates_name_instead_of_using_similar_candidate():
+    """Explicit curation names must not be silently replaced by fuzzy candidates."""
+    submitted_name = "Medication X"
+    created_id = "new-medication-id"
+    ops = SimpleNamespace(
+        bulk_insert_entities=AsyncMock(return_value={submitted_name.lower(): created_id}),
+        fetch_missing_entity_ids=AsyncMock(return_value=[]),
+    )
+    resolver = EntityResolver(pool=SimpleNamespace(ops=ops), entity_lookup="full")
+
+    resolved = await resolver._resolve_from_candidates(
+        conn=AsyncMock(),
+        bank_id="bank-1",
+        entities_data=[{"text": submitted_name, "nearby_entities": []}],
+        unit_event_date=None,
+        all_candidates={
+            submitted_name: [("wrong-person-id", "Medication Xtra", {}, None, 100)],
+        },
+        cooccurrence_map={},
+        resolution_mode="exact",
+    )
+
+    assert resolved == [ResolvedEntity(entity_id=created_id, canonical_name=submitted_name)]
+    ops.bulk_insert_entities.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Oracle exact entity resolution — unit tests (mock conn, no live DB)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_exact_resolution_uses_oracle_case_insensitive_lookup():
+    """Exact mode must use Oracle JSON_TABLE without fuzzy SQL functions."""
+    resolver = EntityResolver(pool=SimpleNamespace(ops=OracleOps()), entity_lookup="full")
+    conn = AsyncMock()
+    conn.fetch = AsyncMock(return_value=[])
+
+    with patch.object(resolver, "_resolve_from_candidates", new_callable=AsyncMock, return_value=[]) as resolve:
+        await resolver.resolve_entities_batch(
+            bank_id="bank-1",
+            entities_data=[{"text": "Alice", "nearby_entities": []}],
+            context="",
+            unit_event_date=None,
+            conn=conn,
+            resolution_mode="exact",
+        )
+
+    conn.fetch.assert_called_once()
+    query = conn.fetch.call_args.args[0]
+    assert "JSON_TABLE" in query
+    assert "LOWER(e.canonical_name) = LOWER(q.query_text)" in query
+    assert "UTL_MATCH" not in query
+    assert "unnest" not in query.lower()
+    assert conn.fetch.call_args.args[1] == "bank-1"
+    assert json.loads(conn.fetch.call_args.args[2]) == ["Alice"]
+    assert resolve.call_args.kwargs["resolution_mode"] == "exact"
 
 
 # ---------------------------------------------------------------------------
