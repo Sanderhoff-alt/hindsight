@@ -15,6 +15,7 @@ and marks the operation as failed on the first occurrence.
 import json
 import uuid
 from contextlib import ExitStack
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -308,6 +309,114 @@ async def test_update_action_writes_history_when_row_present():
 
     assert result is not None, "Expected the embedding string back on a successful update"
     append_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_update_action_merges_event_date_with_source_temporal_fields() -> None:
+    """The PostgreSQL UPDATE path must carry event_date through the same min merge as CREATE."""
+    from hindsight_api.engine.consolidation import consolidator
+
+    observation_id = str(uuid.uuid4())
+    source_ids = [uuid.uuid4()]
+    source_event_date = datetime(2023, 1, 1, tzinfo=timezone.utc)
+    source_occurred_start = datetime(2023, 2, 1, tzinfo=timezone.utc)
+    source_occurred_end = datetime(2024, 2, 1, tzinfo=timezone.utc)
+    source_mentioned_at = datetime(2024, 3, 1, tzinfo=timezone.utc)
+
+    conn = AsyncMock()
+    conn.execute_rows_affected = AsyncMock(return_value=1)
+    conn.transaction = MagicMock(return_value=_AsyncNullCtx(None))
+    memory_engine = MagicMock()
+    memory_engine._backend.ops.uses_observation_sources_table = False
+    append_mock = AsyncMock()
+
+    with _patch_update_action_deps(consolidator, conn, source_ids, append_mock):
+        result = await consolidator._execute_update_action(
+            pool=MagicMock(),
+            memory_engine=memory_engine,
+            bank_id="bank-x",
+            source_memory_ids=source_ids,
+            observation_id=observation_id,
+            new_text="new observation text",
+            observations=[_observation_fact(observation_id)],
+            source_fact_tags=["scope_b"],
+            source_event_date=source_event_date,
+            source_occurred_start=source_occurred_start,
+            source_occurred_end=source_occurred_end,
+            source_mentioned_at=source_mentioned_at,
+        )
+
+    assert result is not None
+    update_args = conn.execute_rows_affected.await_args.args
+    update_sql = update_args[0]
+    assert "event_date = CASE" in update_sql
+    assert "ELSE LEAST(event_date, $6)" in update_sql
+    assert update_args[6:10] == (
+        source_event_date,
+        source_occurred_start,
+        source_occurred_end,
+        source_mentioned_at,
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_action_store_branch_merges_event_date() -> None:
+    """The external-store UPDATE path must also min-merge event_date."""
+    from hindsight_api.engine.consolidation import consolidator
+
+    observation_id = str(uuid.uuid4())
+    source_ids = [uuid.uuid4()]
+    early = datetime(2023, 1, 1, tzinfo=timezone.utc)
+    late = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    current = SimpleNamespace(
+        event_date=late,
+        created_at=late,
+        tags=["scope_a"],
+        source_memory_ids=[str(uuid.uuid4())],
+    )
+    store = SimpleNamespace(
+        writes_memory_rows_in_sql_for=lambda bank_id: False,
+        get_memories=AsyncMock(return_value=[current]),
+        upsert_observation=AsyncMock(),
+    )
+    conn = AsyncMock()
+    conn.transaction = MagicMock(return_value=_AsyncNullCtx(None))
+    memory_engine = MagicMock()
+    memory_engine._backend.ops.uses_observation_sources_table = False
+
+    with ExitStack() as stack:
+        stack.enter_context(patch("hindsight_api.config.get_config", _fake_config))
+        stack.enter_context(
+            patch.object(consolidator, "acquire_with_retry", MagicMock(return_value=_AsyncNullCtx(conn)))
+        )
+        stack.enter_context(patch.object(consolidator, "get_memories", MagicMock(return_value=store)))
+        stack.enter_context(patch.object(consolidator, "_any_live_source_memory", AsyncMock(return_value=True)))
+        stack.enter_context(
+            patch.object(consolidator, "_filter_live_source_memories", AsyncMock(return_value=source_ids))
+        )
+        stack.enter_context(
+            patch.object(
+                consolidator.embedding_utils,
+                "generate_embeddings_batch",
+                AsyncMock(return_value=[[0.1, 0.2, 0.3]]),
+            )
+        )
+        stack.enter_context(patch.object(consolidator, "_append_observation_history", AsyncMock()))
+        result = await consolidator._execute_update_action(
+            pool=MagicMock(),
+            memory_engine=memory_engine,
+            bank_id="bank-x",
+            source_memory_ids=source_ids,
+            observation_id=observation_id,
+            new_text="new observation text",
+            observations=[_observation_fact(observation_id)],
+            source_fact_tags=["scope_b"],
+            source_event_date=early,
+        )
+
+    assert result is not None
+    record = store.upsert_observation.await_args.kwargs["record"]
+    assert record.event_date == early
 
 
 @pytest.mark.parametrize(

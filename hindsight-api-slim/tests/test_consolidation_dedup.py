@@ -10,6 +10,7 @@ import types
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from unittest.mock import DEFAULT, AsyncMock, patch
 
 import pytest
@@ -22,7 +23,10 @@ from hindsight_api.engine.consolidation.consolidator import (
     _dedup_reconcile_update,
     _DedupDecision,
     _duplicate_create_target,
+    _merge_temporal_fields,
     _norm_obs_text,
+    _reconcile_merge_via_store,
+    _TemporalFields,
 )
 from hindsight_api.engine.memories import RecallArms
 from hindsight_api.engine.search.types import RetrievalResult
@@ -195,6 +199,12 @@ def _ctx(threshold: float = 0.97):
         create_text="YouTube content in Uzbek is very rich.",
         create_source_ids=[uuid.uuid4()],
         tags=["t1"],
+        source_temporal_fields=_TemporalFields(
+            event_date=datetime(2024, 1, 2, tzinfo=timezone.utc),
+            occurred_start=datetime(2023, 1, 2, tzinfo=timezone.utc),
+            occurred_end=datetime(2024, 1, 3, tzinfo=timezone.utc),
+            mentioned_at=datetime(2024, 1, 4, tzinfo=timezone.utc),
+        ),
     )
     return kwargs, conn, llm
 
@@ -332,9 +342,25 @@ async def test_dedup_llm_merge_folds_into_twin() -> None:
     assert result == _TWIN_ID  # merged into the twin; caller skips the CREATE
     conn.fetchval.assert_awaited_once()  # fold is a RETURNING-gated UPDATE
     args = conn.fetchval.await_args.args
+    fold_sql = args[0]
     assert args[1] == "Uzbek content on YouTube is very rich."  # merged text persisted
     assert args[2] == kwargs["create_source_ids"]  # new (live) source facts folded in
     assert args[3] == uuid.UUID(_TWIN_ID)  # onto the twin row
+    assert "event_date = CASE" in fold_sql
+    assert "occurred_start = CASE" in fold_sql
+    assert "occurred_end = CASE" in fold_sql
+    assert "mentioned_at = CASE" in fold_sql
+    assert "ELSE LEAST(event_date, $5)" in fold_sql
+    assert "ELSE LEAST(occurred_start, $6)" in fold_sql
+    assert "ELSE GREATEST(occurred_end, $7)" in fold_sql
+    assert "ELSE GREATEST(mentioned_at, $8)" in fold_sql
+    assert args[4] == "Uzbek content on YouTube is described as very rich."
+    assert args[5:] == (
+        kwargs["source_temporal_fields"].event_date,
+        kwargs["source_temporal_fields"].occurred_start,
+        kwargs["source_temporal_fields"].occurred_end,
+        kwargs["source_temporal_fields"].mentioned_at,
+    )
 
 
 async def test_dedup_llm_merge_sanitizes_text_before_write() -> None:
@@ -411,10 +437,19 @@ async def test_dedup_update_merge_folds_into_twin_and_deletes_updated() -> None:
     # LIVE sources (snapshotted via fetchrow, filtered FOR SHARE).
     conn.fetchval.assert_awaited_once()
     fold_args = conn.fetchval.await_args.args
+    fold_sql = fold_args[0]
     assert fold_args[1] == "Uzbek YouTube content is very rich and growing."  # merged text on the twin
     assert fold_args[2] == uuid.UUID(_TWIN_ID)  # survivor = the twin
     assert fold_args[3] == uuid.UUID(_UPDATED_ID)  # folded-from = the updated row
     assert fold_args[6] == conn.fetchrow_result["source_memory_ids"]  # only live updated-row sources
+    assert "event_date = CASE" in fold_sql
+    assert "occurred_start = CASE" in fold_sql
+    assert "occurred_end = CASE" in fold_sql
+    assert "mentioned_at = CASE" in fold_sql
+    assert "ELSE LEAST(t.event_date, u.event_date)" in fold_sql
+    assert "ELSE LEAST(t.occurred_start, u.occurred_start)" in fold_sql
+    assert "ELSE GREATEST(t.occurred_end, u.occurred_end)" in fold_sql
+    assert "ELSE GREATEST(t.mentioned_at, u.mentioned_at)" in fold_sql
     # Then the updated row is deleted: DELETE of the row, and DELETE of its observation_history
     # (no longer cascaded from memory_units — that FK was dropped).
     assert conn.execute.await_count == 2
@@ -578,6 +613,81 @@ async def test_dedup_update_all_updated_sources_deleted_skips_fold_and_delete() 
         await _dedup_reconcile_update(**kwargs)
     conn.fetchval.assert_not_called()
     conn.execute.assert_not_called()
+
+
+def test_merge_temporal_fields_uses_min_max_and_preserves_non_null_values() -> None:
+    early = datetime(2023, 1, 1, tzinfo=timezone.utc)
+    late = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    survivor = _TemporalFields(
+        event_date=late,
+        occurred_start=late,
+        occurred_end=early,
+        mentioned_at=early,
+    )
+    incoming = _TemporalFields(
+        event_date=early,
+        occurred_start=None,
+        occurred_end=late,
+        mentioned_at=None,
+    )
+
+    merged = _merge_temporal_fields(survivor, incoming)
+
+    assert merged == _TemporalFields(
+        event_date=early,
+        occurred_start=late,
+        occurred_end=late,
+        mentioned_at=early,
+    )
+
+
+async def test_store_dedup_fold_merges_temporal_fields() -> None:
+    early = datetime(2023, 1, 1, tzinfo=timezone.utc)
+    late = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    store = types.SimpleNamespace(
+        get_memories=AsyncMock(
+            return_value=[
+                types.SimpleNamespace(
+                    source_memory_ids=["existing-source"],
+                    event_date=late,
+                    occurred_start=late,
+                    occurred_end=early,
+                    mentioned_at=early,
+                    tags=["t1"],
+                    created_at=late,
+                )
+            ]
+        ),
+        upsert_observation=AsyncMock(),
+    )
+    memory_engine = types.SimpleNamespace(embeddings=object())
+    incoming = _TemporalFields(
+        event_date=early,
+        occurred_start=None,
+        occurred_end=late,
+        mentioned_at=None,
+    )
+
+    with patch(
+        "hindsight_api.engine.consolidation.consolidator.embedding_utils.generate_embeddings_batch",
+        new=AsyncMock(return_value=[[0.1, 0.2, 0.3]]),
+    ):
+        await _reconcile_merge_via_store(
+            store,
+            conn=object(),
+            memory_engine=memory_engine,
+            bank_id="bank1",
+            observation_id=_TWIN_ID,
+            merged_text="merged text",
+            add_source_ids=[uuid.UUID("55555555-5555-4555-8555-555555555555")],
+            add_temporal_fields=incoming,
+        )
+
+    record = store.upsert_observation.await_args.kwargs["record"]
+    assert record.event_date == early
+    assert record.occurred_start == late
+    assert record.occurred_end == late
+    assert record.mentioned_at == early
 
 
 # ── _process_memory_batch create-contract (created vs skipped) ────────────────
