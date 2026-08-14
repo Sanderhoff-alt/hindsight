@@ -115,9 +115,9 @@ export const RETAIN_STRATEGIES = {
 // ── passive tier tagging (entity_labels) ───────────────────────────────────────
 // A single hierarchical bank-config group set by `configureBank` at seed time. `tag: true` makes the
 // extractor copy each selected `knowledge:<value>` onto the fact's tags (via `_inject_label_tags`),
-// giving every durable fact a knowledge-tier routing tag the server-side knowledge base (and any
+// giving every durable fact a knowledge-page routing tag the server-side knowledge base (and any
 // tag-filtered query) can select on. The vocabulary is FIXED (not per-feature) because tag matching
-// is exact set-ops with no wildcards.
+// is exact set-ops with no wildcards. `external` is an exclusion marker, not a page tier.
 export interface EntityLabelValue {
   value: string;
   description: string;
@@ -144,7 +144,11 @@ export const KNOWLEDGE_LABELS: EntityLabelGroup = {
     "it is durable, reusable knowledge a developer would still want surfaced in future sessions. " +
     "IMPORTANT: leave this EMPTY for routine, transient, or operational facts — a passing test, a " +
     "one-off command, a status update, a debugging dead-end. MOST facts should get no label here. " +
-    "Assign more than one value only when the fact genuinely fits several.",
+    "Assign more than one value only when the fact genuinely fits several. " +
+    "Use 'external' ONLY when the fact's subject is another project's own implementation or decision. " +
+    "A decision about how THIS project uses, integrates, configures, or depends on another project is " +
+    "still knowledge about THIS project and must use its normal page tier. 'external' is mutually " +
+    "exclusive with the other knowledge values. If the subject is unclear, leave 'external' empty.",
   values: [
     {
       value: "feature-work",
@@ -176,6 +180,13 @@ export const KNOWLEDGE_LABELS: EntityLabelGroup = {
         "A domain concept, key abstraction, or piece of project vocabulary a new contributor must " +
         "understand to work effectively.",
     },
+    {
+      value: "external",
+      description:
+        "The fact is about another project's own codebase, implementation, configuration, or decision. " +
+        "Do not use this merely because this project discusses or depends on that project. Choose this " +
+        "alone, never alongside decision, convention, component, concept, or feature-work.",
+    },
   ],
 };
 
@@ -183,9 +194,9 @@ export const KNOWLEDGE_LABELS: EntityLabelGroup = {
 // CONSOLIDATED from the ingested MEMORY (commit history + past conversations) — NOT mirrored from the
 // current source (which would need constant re-sync). A universal 5-page taxonomy that generalizes to
 // any repo; the curator populates each from history+chats and can spawn per-component sub-pages.
-// A seeded page is a tag-scoped synthesis view: `tags` pins it to one `knowledge:<tier>` label so
-// its synthesis draws from the facts the extractor routed to that tier (exact set-ops — see
-// KNOWLEDGE_LABELS above; names/tiers mirror the label vocabulary).
+// A seeded page is a tag-scoped synthesis view: its trigger requires one `knowledge:<tier>` label and
+// explicitly excludes `knowledge:external`. The flat `tags` field remains the page's display/routing
+// label, while `tag_groups` supplies the negative filter (see KNOWLEDGE_LABELS above).
 export interface KnowledgePage {
   name: string;
   source_query: string;
@@ -243,6 +254,27 @@ export const PAGE_TRIGGER = {
   fact_types: ["world", "experience", "observation"],
   refresh_after_consolidation: true,
 } as const;
+
+export type KnowledgePageTagGroup =
+  | { tags: string[]; match: "all_strict" | "any_strict" }
+  | { not: KnowledgePageTagGroup };
+
+export interface KnowledgePageTrigger {
+  fact_types: readonly ["world", "experience", "observation"];
+  refresh_after_consolidation: true;
+  tag_groups: [KnowledgePageTagGroup, KnowledgePageTagGroup];
+}
+
+/** Build the refresh scope for one page: its tier, excluding facts marked external. */
+export function pageTrigger(page: Pick<KnowledgePage, "tags">): KnowledgePageTrigger {
+  return {
+    ...PAGE_TRIGGER,
+    tag_groups: [
+      { tags: [...page.tags], match: "all_strict" },
+      { not: { tags: ["knowledge:external"], match: "any_strict" } },
+    ],
+  };
+}
 
 // ── the bank template ──────────────────────────────────────────────────────────
 // The bank's CONFIG — missions, retain strategies, entity labels — as a single manifest for

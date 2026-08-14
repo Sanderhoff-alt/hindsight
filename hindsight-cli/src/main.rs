@@ -1220,6 +1220,10 @@ enum KnowledgeBaseCommands {
         /// Pages only: new maximum tokens for generated content
         #[arg(long)]
         max_tokens: Option<i64>,
+
+        /// Pages only: replace the complete refresh trigger as a JSON object
+        #[arg(long, value_name = "JSON")]
+        trigger: Option<String>,
     },
 
     /// Delete a folder or page and its whole subtree
@@ -1969,6 +1973,7 @@ fn run() -> Result<()> {
                 source_query,
                 tags,
                 max_tokens,
+                trigger,
             } => commands::knowledge_base::update(
                 &client,
                 &bank_id,
@@ -1978,6 +1983,7 @@ fn run() -> Result<()> {
                 source_query,
                 tags,
                 max_tokens,
+                trigger,
                 verbose,
                 output_format,
             ),
@@ -2406,7 +2412,7 @@ fn handle_profile(cmd: ProfileCommands, output_format: OutputFormat) -> Result<(
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Commands, OperationCommands};
+    use super::{Cli, Commands, KnowledgeBaseCommands, OperationCommands};
     use clap::Parser;
 
     #[test]
@@ -2432,6 +2438,30 @@ mod tests {
                 assert!(yes);
             }
             _ => panic!("expected operation delete command"),
+        }
+    }
+
+    #[test]
+    fn parses_knowledge_page_update_trigger_json() {
+        let cli = Cli::try_parse_from([
+            "hindsight",
+            "knowledge-base",
+            "update",
+            "bank-1",
+            "page-1",
+            "--trigger",
+            r#"{"tag_groups":[{"tags":["knowledge:external"],"match":"any_strict"}]}"#,
+        ])
+        .expect("knowledge-base update trigger should be a valid command");
+
+        match cli.command {
+            Commands::KnowledgeBase(KnowledgeBaseCommands::Update { trigger, .. }) => {
+                assert_eq!(
+                    trigger.as_deref(),
+                    Some(r#"{"tag_groups":[{"tags":["knowledge:external"],"match":"any_strict"}]}"#)
+                );
+            }
+            _ => panic!("expected knowledge-base update command"),
         }
     }
 }

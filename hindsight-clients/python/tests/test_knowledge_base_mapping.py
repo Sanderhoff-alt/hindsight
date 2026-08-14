@@ -12,13 +12,13 @@ from unittest.mock import MagicMock
 from hindsight_client import Hindsight
 
 
-def _capture(monkeypatch, client, method, captured):
+def _capture(monkeypatch, client, method, captured, *, api=None):
     async def fake(*args, **kwargs):
         captured["args"] = args
         captured["kwargs"] = kwargs
         return MagicMock()
 
-    monkeypatch.setattr(client._knowledge_base_api, method, fake)
+    monkeypatch.setattr(api or client._knowledge_base_api, method, fake)
 
 
 def test_create_page_maps_every_option(monkeypatch):
@@ -60,6 +60,10 @@ def test_create_page_threads_trigger_fields(monkeypatch):
             "refresh_after_consolidation": True,
             "fact_types": ["observation"],
             "exclude_mental_models": True,
+            "tag_groups": [
+                {"tags": ["knowledge:decision"], "match": "all_strict"},
+                {"not": {"tags": ["knowledge:external"], "match": "any_strict"}},
+            ],
         },
     )
 
@@ -68,6 +72,49 @@ def test_create_page_threads_trigger_fields(monkeypatch):
     assert request.trigger.refresh_after_consolidation is True
     assert request.trigger.fact_types == ["observation"]
     assert request.trigger.exclude_mental_models is True
+    assert request.trigger.tag_groups[0].actual_instance.to_dict() == {
+        "tags": ["knowledge:decision"],
+        "match": "all_strict",
+    }
+    assert request.trigger.tag_groups[1].actual_instance.to_dict() == {
+        "not": {"tags": ["knowledge:external"], "match": "any_strict"}
+    }
+
+
+def test_create_mental_model_maps_nested_trigger(monkeypatch):
+    client = Hindsight(base_url="http://example.invalid")
+    captured: dict[str, object] = {}
+    _capture(monkeypatch, client, "create_mental_model", captured, api=client._mental_models_api)
+
+    client.create_mental_model(
+        "bank-1",
+        name="Decisions",
+        source_query="What decisions were made?",
+        trigger={"tag_groups": [{"tags": ["knowledge:decision"], "match": "all_strict"}]},
+    )
+
+    _, request = captured["args"]
+    assert request.trigger.tag_groups[0].actual_instance.to_dict() == {
+        "tags": ["knowledge:decision"],
+        "match": "all_strict",
+    }
+
+
+def test_update_mental_model_maps_nested_trigger(monkeypatch):
+    client = Hindsight(base_url="http://example.invalid")
+    captured: dict[str, object] = {}
+    _capture(monkeypatch, client, "update_mental_model", captured, api=client._mental_models_api)
+
+    client.update_mental_model(
+        "bank-1",
+        "mm-1",
+        trigger={"tag_groups": [{"not": {"tags": ["knowledge:external"], "match": "any_strict"}}]},
+    )
+
+    _, _, request = captured["args"]
+    assert request.trigger.tag_groups[0].actual_instance.to_dict() == {
+        "not": {"tags": ["knowledge:external"], "match": "any_strict"}
+    }
 
 
 def test_update_node_sends_only_provided_fields(monkeypatch):
@@ -100,12 +147,32 @@ def test_update_node_maps_page_options(monkeypatch):
     captured: dict[str, object] = {}
     _capture(monkeypatch, client, "update_knowledge_node", captured)
 
-    client.update_knowledge_node("bank-1", "kp-1", source_query="New question?", tags=[], max_tokens=2048)
+    client.update_knowledge_node(
+        "bank-1",
+        "kp-1",
+        source_query="New question?",
+        tags=[],
+        max_tokens=2048,
+        trigger={
+            "refresh_after_consolidation": True,
+            "tag_groups": [
+                {"tags": ["knowledge:decision"], "match": "all_strict"},
+                {"not": {"tags": ["knowledge:external"], "match": "any_strict"}},
+            ],
+        },
+    )
 
     _, _, request = captured["args"]
     assert request.source_query == "New question?"
     assert request.tags == []
     assert request.max_tokens == 2048
+    assert request.trigger.tag_groups[0].actual_instance.to_dict() == {
+        "tags": ["knowledge:decision"],
+        "match": "all_strict",
+    }
+    assert request.trigger.tag_groups[1].actual_instance.to_dict() == {
+        "not": {"tags": ["knowledge:external"], "match": "any_strict"}
+    }
 
 
 def test_search_forwards_query_and_limit(monkeypatch):

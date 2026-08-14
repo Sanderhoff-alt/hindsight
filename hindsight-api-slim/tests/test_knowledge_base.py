@@ -5,6 +5,7 @@ tree, markdown rendering, move/rename, and cascade-delete behaviour can be asser
 without consolidation.
 """
 
+import json
 import urllib.parse
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -28,6 +29,33 @@ from hindsight_api.extensions import (
 
 def _enc(bank_id: str) -> str:
     return urllib.parse.quote(bank_id, safe="")
+
+
+def test_row_to_knowledge_node_decodes_string_trigger() -> None:
+    trigger = {
+        "mode": "delta",
+        "tag_groups": [{"tags": ["knowledge:decision"], "match": "all_strict"}],
+    }
+    row = {
+        "id": "kp-1",
+        "bank_id": "bank-1",
+        "parent_id": None,
+        "kind": "page",
+        "name": "Decisions",
+        "mental_model_id": "mm-1",
+        "sort_order": 0,
+        "managed": False,
+        "created_at": None,
+        "updated_at": None,
+        "mm_tags": ["knowledge:decision"],
+        "mm_source_query": "What decisions were made?",
+        "mm_trigger": json.dumps(trigger),
+        "mm_last_refreshed_at": None,
+    }
+
+    node = MemoryEngine._row_to_knowledge_node(row)
+
+    assert node["trigger"] == trigger
 
 
 class _RecordingValidator(OperationValidatorExtension):
@@ -533,21 +561,53 @@ class TestMoveRenameDelete:
 
     async def test_update_page_options(self, api_client, kb_bank):
         bank_id, ids = kb_bank
+        trigger = {
+            "fact_types": ["world", "experience", "observation"],
+            "refresh_after_consolidation": True,
+            "tag_groups": [
+                {"tags": ["knowledge:decision"], "match": "all_strict"},
+                {"not": {"tags": ["knowledge:external"], "match": "any_strict"}},
+            ],
+        }
         resp = await api_client.patch(
             f"/v1/default/banks/{_enc(bank_id)}/knowledge-base/nodes/{ids.orders}",
             json={
                 "source_query": "summarize every order fact and its revenue",
                 "tags": ["type:runbook", "sales", "priority"],
                 "max_tokens": 2048,
+                "trigger": trigger,
             },
         )
         assert resp.status_code == 200, resp.text
         node = resp.json()
         assert node["kind"] == "page"
         assert set(node["tags"]) == {"type:runbook", "sales", "priority"}
+        assert node["trigger"]["tag_groups"] == trigger["tag_groups"]
         # source_query persists — it surfaces as the `description` on the page.
         page = (await api_client.get(f"/v1/default/banks/{_enc(bank_id)}/knowledge-base/pages/{ids.orders}")).json()
         assert page["description"] == "summarize every order fact and its revenue"
+
+    async def test_update_rejects_explicit_null_trigger(self, api_client, kb_bank):
+        bank_id, ids = kb_bank
+        before = await api_client.get(f"/v1/default/banks/{_enc(bank_id)}/knowledge-base/tree")
+        assert before.status_code == 200, before.text
+        before_orders = next(
+            child for root in before.json()["roots"] for child in root.get("children", []) if child["id"] == ids.orders
+        )
+
+        resp = await api_client.patch(
+            f"/v1/default/banks/{_enc(bank_id)}/knowledge-base/nodes/{ids.orders}",
+            json={"trigger": None},
+        )
+
+        assert resp.status_code == 400
+        assert "trigger cannot be null" in resp.json()["detail"]
+        after = await api_client.get(f"/v1/default/banks/{_enc(bank_id)}/knowledge-base/tree")
+        assert after.status_code == 200, after.text
+        after_orders = next(
+            child for root in after.json()["roots"] for child in root.get("children", []) if child["id"] == ids.orders
+        )
+        assert after_orders["trigger"] == before_orders["trigger"]
 
     async def test_update_requires_a_field(self, api_client, kb_bank):
         bank_id, ids = kb_bank

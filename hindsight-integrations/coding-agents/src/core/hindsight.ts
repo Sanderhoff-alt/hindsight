@@ -9,9 +9,10 @@ import {
   CODING_BANK_STRUCTURE,
   CODING_BANK_TEMPLATE,
   PAGE_MAX_TOKENS,
-  PAGE_TRIGGER,
   PAGES,
+  pageTrigger,
 } from "./missions";
+import type { KnowledgePageTagGroup, KnowledgePageTrigger } from "./missions";
 import { pool, semverGte, sleep } from "./util";
 import type { RetainStamp } from "./retain-stamp";
 
@@ -22,6 +23,8 @@ export interface KnowledgeNode {
   name: string;
   /** The page's source query (OKF `description`) — what a re-sync compares against. */
   description?: string;
+  /** Refresh filter returned for pages so managed trigger changes can be re-synced idempotently. */
+  trigger?: { tag_groups?: KnowledgePageTagGroup[] };
   children?: KnowledgeNode[];
 }
 
@@ -84,6 +87,9 @@ export class KnowledgePagesUnavailableError extends Error {
   }
 }
 
+/** HTTP statuses used by older deployments when the Knowledge Base surface is absent. */
+const KNOWLEDGE_PAGES_UNAVAILABLE_STATUSES = [405, 501] as const;
+
 const TERMINAL = new Set(["completed", "failed", "cancelled", "error"]);
 
 /** Default cap on concurrent retain-related requests; configurable via `maxParallelRetains`. */
@@ -108,6 +114,26 @@ const RETRY_AFTER_CEILING_MS = 60 * 1000;
 
 /** Bank-level missions the template seeds once and then leaves alone (#2492). */
 const MISSION_FIELDS = ["reflect_mission", "retain_mission", "observations_mission"] as const;
+
+/** Serialize JSON-like values with sorted object keys so API field order cannot cause drift. */
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, nested]) => nested !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right));
+    return `{${entries.map(([key, nested]) => `${JSON.stringify(key)}:${stableJson(nested)}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+/** Only tag_groups are plugin-owned; server-added trigger defaults must not cause perpetual PATCHes. */
+function hasPageTagGroups(
+  existing: KnowledgeNode["trigger"],
+  desired: KnowledgePageTrigger
+): boolean {
+  return stableJson(existing?.tag_groups) === stableJson(desired.tag_groups);
+}
 
 export class HindsightClient {
   readonly apiUrl: string;
@@ -389,7 +415,9 @@ export class HindsightClient {
    */
   async tree(): Promise<KnowledgeNode[]> {
     if (this.knowledgePagesSupported === false) throw new KnowledgePagesUnavailableError();
-    const r = await this.req("GET", this.bankUrl("/knowledge-base/tree"));
+    const r = await this.req("GET", this.bankUrl("/knowledge-base/tree"), undefined, [
+      ...KNOWLEDGE_PAGES_UNAVAILABLE_STATUSES,
+    ]);
     if ([404, 405, 501].includes(r.status)) {
       this.knowledgePagesSupported = false;
       throw new KnowledgePagesUnavailableError();
@@ -497,17 +525,21 @@ export class HindsightClient {
     let updated = 0;
     for (const page of PAGES) {
       const hit = existing.get(page.name.toLowerCase());
+      const trigger = pageTrigger(page);
       const body = {
         name: page.name,
         source_query: page.source_query,
         tags: page.tags,
         max_tokens: PAGE_MAX_TOKENS,
-        trigger: PAGE_TRIGGER,
+        trigger,
       };
       if (!hit) {
         // 409 = another deepen run seeded this name between our tree read and this POST. That is
         // the outcome we wanted anyway, so tolerate it rather than failing the whole run.
-        const r = await this.req("POST", this.bankUrl("/knowledge-base/pages"), body, [409]);
+        const r = await this.req("POST", this.bankUrl("/knowledge-base/pages"), body, [
+          409,
+          ...KNOWLEDGE_PAGES_UNAVAILABLE_STATUSES,
+        ]);
         if ([404, 405, 501].includes(r.status)) {
           this.knowledgePagesSupported = false;
           this.log(
@@ -516,12 +548,23 @@ export class HindsightClient {
           return;
         }
         if (r.status !== 409) created++;
-      } else if (hit.description !== page.source_query) {
-        // Only the source query can drift — the name IS the match key, so it can't.
+      } else if (
+        hit.description !== page.source_query ||
+        (Object.prototype.hasOwnProperty.call(hit, "trigger") &&
+          !hasPageTagGroups(hit.trigger, trigger))
+      ) {
+        // The negative tag filter lives in the trigger, not in source_query: a prompt can guide
+        // synthesis but cannot prevent an external-tagged memory from entering the refresh scope.
+        const patch: Record<string, unknown> = { trigger };
+        if (hit.description !== page.source_query) {
+          patch.source_query = page.source_query;
+          patch.tags = page.tags;
+        }
         const r = await this.req(
           "PATCH",
           this.bankUrl(`/knowledge-base/nodes/${encodeURIComponent(hit.id)}`),
-          { source_query: page.source_query, tags: page.tags }
+          patch,
+          [...KNOWLEDGE_PAGES_UNAVAILABLE_STATUSES]
         );
         if ([404, 405, 501].includes(r.status)) {
           this.knowledgePagesSupported = false;

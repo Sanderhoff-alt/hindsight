@@ -1193,7 +1193,7 @@ class Hindsight:
 
         trigger_obj = None
         if trigger:
-            trigger_obj = mental_model_trigger_input.MentalModelTriggerInput(**trigger)
+            trigger_obj = mental_model_trigger_input.MentalModelTriggerInput.from_dict(trigger)
 
         request_obj = create_mental_model_request.CreateMentalModelRequest(
             id=id,
@@ -1355,7 +1355,7 @@ class Hindsight:
 
         trigger_obj = None
         if trigger:
-            trigger_obj = mental_model_trigger_input.MentalModelTriggerInput(**trigger)
+            trigger_obj = mental_model_trigger_input.MentalModelTriggerInput.from_dict(trigger)
 
         request_obj = update_mental_model_request.UpdateMentalModelRequest(
             name=name,
@@ -1472,7 +1472,7 @@ class Hindsight:
 
         trigger_obj = None
         if trigger:
-            trigger_obj = mental_model_trigger_input.MentalModelTriggerInput(**trigger)
+            trigger_obj = mental_model_trigger_input.MentalModelTriggerInput.from_dict(trigger)
 
         request_obj = create_page_request.CreatePageRequest(
             name=name,
@@ -1529,6 +1529,7 @@ class Hindsight:
         source_query: str | None = None,
         tags: list[str] | None = None,
         max_tokens: int | None = None,
+        trigger: dict[str, Any] | None = None,
     ):
         """
         Rename/move a knowledge node and/or update a page's options (sync wrapper —
@@ -1545,11 +1546,12 @@ class Hindsight:
             source_query: Pages only — new question. Changing it rebuilds the page.
             tags: Pages only — replaces the page's tags (pass [] to clear)
             max_tokens: Pages only — new content budget
+            trigger: Pages only — refresh scope and trigger settings
 
         Returns:
             KnowledgeNode
         """
-        from hindsight_client_api.models import update_node_request
+        from hindsight_client_api.models import mental_model_trigger_input, update_node_request
 
         # Build the request from only the arguments the caller supplied: the server
         # treats an absent field as "leave alone" but an explicit null parent_id as
@@ -1566,6 +1568,8 @@ class Hindsight:
             fields["tags"] = tags
         if max_tokens is not None:
             fields["max_tokens"] = max_tokens
+        if trigger is not None:
+            fields["trigger"] = mental_model_trigger_input.MentalModelTriggerInput.from_dict(trigger)
 
         request_obj = update_node_request.UpdateNodeRequest(**fields)
 

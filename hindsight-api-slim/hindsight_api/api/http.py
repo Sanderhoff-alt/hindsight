@@ -2325,7 +2325,7 @@ class MentalModelListResponse(BaseModel):
 class KnowledgeNode(BaseModel):
     """A node in the knowledge-base tree — a folder or a page.
 
-    Pages carry ``description``/``tags`` from their backing mental model. The
+    Pages carry ``description``/``tags``/``trigger`` from their backing mental model. The
     knowledge base is client-managed (CRUD); ``managed`` lets a client tag a node
     as system-owned vs. hand-authored.
     """
@@ -2338,6 +2338,10 @@ class KnowledgeNode(BaseModel):
     managed: bool = Field(default=False, description="Client-set flag: true = system-owned, false = hand-authored.")
     description: str | None = Field(default=None, description="Page source query (the page's `description`).")
     tags: list[str] = FieldWithDefault(list)
+    trigger: MentalModelTrigger | None = Field(
+        default=None,
+        description="Page refresh trigger, including optional compound tag filters.",
+    )
     timestamp: str | None = Field(default=None, description="Last refresh (page) or last update (folder).")
     is_stale: bool | None = Field(
         default=None,
@@ -2380,10 +2384,15 @@ class UpdateNodeRequest(BaseModel):
     name: str | None = None
     parent_id: str | None = None
     # Page-only options (updated on the backing mental model). Changing
-    # source_query schedules an async refresh so the page rebuilds.
+    # source_query schedules an async refresh so the page rebuilds; trigger changes only
+    # change the refresh scope and do not rebuild content by themselves.
     source_query: str | None = None
     tags: list[str] | None = None
     max_tokens: int | None = None
+    trigger: MentalModelTrigger | None = Field(
+        default=None,
+        description="Page refresh trigger. Omit to leave it unchanged; explicit null is rejected.",
+    )
 
 
 class CreateKnowledgePageResponse(BaseModel):
@@ -2450,6 +2459,7 @@ def _knowledge_node_model(node: dict[str, Any]) -> KnowledgeNode:
         managed=bool(node.get("managed")),
         description=node.get("source_query") if is_page else None,
         tags=list(node.get("tags") or []) if is_page else [],
+        trigger=node.get("trigger") if is_page else None,
         timestamp=(node.get("last_refreshed_at") if is_page else node.get("updated_at")),
         is_stale=node.get("is_stale") if is_page else None,
     )
@@ -5787,7 +5797,7 @@ def _register_routes(app: FastAPI):
         response_model=KnowledgeNode,
         summary="Rename/move a knowledge-base node or update a page's options",
         description="Rename a node (set `name`), move it under another folder (set `parent_id`, null "
-        "for the root), and/or update a page's options (`source_query`, `tags`, `max_tokens`). "
+        "for the root), and/or update a page's options (`source_query`, `tags`, `max_tokens`, `trigger`). "
         "Changing `source_query` schedules an async refresh so the page rebuilds against the new question.",
         operation_id="update_knowledge_node",
         tags=["Knowledge Base"],
@@ -5802,6 +5812,11 @@ def _register_routes(app: FastAPI):
         try:
             updated: dict[str, Any] | None = None
             did_change = False
+            if "trigger" in body.model_fields_set and body.trigger is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="trigger cannot be null; omit it to leave the trigger unchanged",
+                )
             if body.name is not None:
                 did_change = True
                 updated = await app.state.memory.rename_knowledge_node(
@@ -5816,7 +5831,7 @@ def _register_routes(app: FastAPI):
                 )
             # Page options live on the backing mental model; each applies only when
             # present in the body (so tags=[] clears, distinct from "not provided").
-            page_fields = {"source_query", "tags", "max_tokens"} & body.model_fields_set
+            page_fields = {"source_query", "tags", "max_tokens", "trigger"} & body.model_fields_set
             if page_fields:
                 did_change = True
                 updated = await app.state.memory.update_knowledge_page(
@@ -5825,6 +5840,7 @@ def _register_routes(app: FastAPI):
                     source_query=body.source_query if "source_query" in page_fields else None,
                     tags=body.tags if "tags" in page_fields else None,
                     max_tokens=body.max_tokens if "max_tokens" in page_fields else None,
+                    trigger=body.trigger.model_dump() if "trigger" in page_fields and body.trigger else None,
                     request_context=request_context,
                 )
                 # A new source query means the content is stale — rebuild it.
@@ -5836,7 +5852,8 @@ def _register_routes(app: FastAPI):
                     )
             if not did_change:
                 raise HTTPException(
-                    status_code=400, detail="Provide name, parent_id, source_query, tags, and/or max_tokens to update"
+                    status_code=400,
+                    detail="Provide name, parent_id, source_query, tags, max_tokens, and/or trigger to update",
                 )
             if updated is None:
                 raise HTTPException(status_code=404, detail=f"Knowledge node '{node_id}' not found")

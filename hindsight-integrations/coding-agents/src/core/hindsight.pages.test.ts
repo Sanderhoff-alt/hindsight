@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HindsightClient } from "./hindsight";
-import { PAGE_MAX_TOKENS, PAGES } from "./missions";
+import { PAGE_MAX_TOKENS, PAGES, pageTrigger } from "./missions";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -22,22 +22,25 @@ function stubFetch(calls: any[], jsonImpl: () => Promise<unknown> = async () => 
  *  or ids stop resolving (search returns kp-… node ids) and seeded pages fall out of the search
  *  corpus (it joins through knowledge_pages). */
 describe("HindsightClient knowledge-page reads", () => {
-  it("recognizes an older server and exposes the missing capability", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => ({
-        ok: false,
-        status: 404,
-        json: async () => ({ detail: "not found" }),
-      })) as any
-    );
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
-    await expect(c.listPages()).rejects.toMatchObject({ code: "knowledge_pages_unavailable" });
-    expect(c.knowledgePagesSupported).toBe(false);
-    await expect(c.searchKnowledgePages("architecture")).rejects.toMatchObject({
-      code: "knowledge_pages_unavailable",
-    });
-  });
+  it.each([404, 405, 501])(
+    "recognizes an older server (%s) and exposes the missing capability",
+    async (status) => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => ({
+          ok: false,
+          status,
+          json: async () => ({ detail: "not found" }),
+        })) as any
+      );
+      const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+      await expect(c.listPages()).rejects.toMatchObject({ code: "knowledge_pages_unavailable" });
+      expect(c.knowledgePagesSupported).toBe(false);
+      await expect(c.searchKnowledgePages("architecture")).rejects.toMatchObject({
+        code: "knowledge_pages_unavailable",
+      });
+    }
+  );
 
   it("listPages reads the knowledge-base tree — never /mental-models", async () => {
     const calls: any[] = [];
@@ -174,8 +177,11 @@ describe("HindsightClient.seedPages", () => {
       expect(post.body.tags[0]).toMatch(
         /^knowledge:(feature-work|decision|convention|component|concept)$/
       );
+      const page = PAGES.find((p) => p.name === post.body.name);
+      expect(page).toBeDefined();
+      expect(post.body.source_query).not.toContain("Only include durable knowledge");
       expect(post.body.max_tokens).toBe(PAGE_MAX_TOKENS);
-      expect(post.body.trigger.refresh_after_consolidation).toBe(true);
+      expect(post.body.trigger).toEqual(pageTrigger(page!));
       expect(post.body.parent_id).toBeUndefined(); // seeded at the tree root
     }
     // Nothing on the mental-models surface.
@@ -193,6 +199,7 @@ describe("HindsightClient.seedPages", () => {
             kind: "page",
             name: p.name,
             description: p.source_query,
+            trigger: pageTrigger(p),
           })),
         },
       },
@@ -202,6 +209,101 @@ describe("HindsightClient.seedPages", () => {
     expect(calls).toHaveLength(1); // the tree GET only
     expect(calls.every((k) => k.method === "GET")).toBe(true);
   });
+
+  it("does not PATCH when trigger object keys arrive in a different order", async () => {
+    const calls: any[] = [];
+    const page = PAGES[0];
+    const trigger = pageTrigger(page);
+    const reorderedTrigger = {
+      ...trigger,
+      tag_groups: [
+        { match: "all_strict", tags: [...page.tags] },
+        { not: { match: "any_strict", tags: ["knowledge:external"] } },
+      ],
+    };
+    stubFetchRouted(calls, [
+      {
+        match: (m, u) => m === "GET" && u.endsWith("/knowledge-base/tree"),
+        json: {
+          roots: PAGES.map((p, i) => ({
+            id: `kp-${i}`,
+            kind: "page",
+            name: p.name,
+            description: p.source_query,
+            trigger: p === page ? reorderedTrigger : pageTrigger(p),
+          })),
+        },
+      },
+    ]);
+    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+
+    await c.seedPages();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].method).toBe("GET");
+  });
+
+  it("PATCHes an existing page whose trigger does not exclude external knowledge", async () => {
+    const calls: any[] = [];
+    const drifted = PAGES[0];
+    stubFetchRouted(calls, [
+      {
+        match: (m, u) => m === "GET" && u.endsWith("/knowledge-base/tree"),
+        json: {
+          roots: PAGES.map((p, i) => ({
+            id: `kp-${i}`,
+            kind: "page",
+            name: p.name,
+            description: p.source_query,
+            trigger: p === drifted ? { refresh_after_consolidation: true } : pageTrigger(p),
+          })),
+        },
+      },
+    ]);
+    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    await c.seedPages();
+
+    const patches = calls.filter((k) => k.method === "PATCH");
+    expect(patches).toHaveLength(1);
+    expect(patches[0].url).toContain("/knowledge-base/nodes/kp-0");
+    expect(patches[0].body).toEqual({ trigger: pageTrigger(drifted) });
+  });
+
+  it.each([405, 501])(
+    "continues when an older server rejects page upgrades with %s",
+    async (status) => {
+      const calls: any[] = [];
+      const drifted = PAGES[0];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: string, init: any) => {
+          const method = init?.method;
+          calls.push({ url, method, body: init?.body ? JSON.parse(init.body) : undefined });
+          if (method === "GET" && url.endsWith("/knowledge-base/tree")) {
+            return {
+              ok: true,
+              status: 200,
+              json: async () => ({
+                roots: PAGES.map((p, i) => ({
+                  id: `kp-${i}`,
+                  kind: "page",
+                  name: p.name,
+                  description: p.source_query,
+                  trigger: p === drifted ? { refresh_after_consolidation: true } : pageTrigger(p),
+                })),
+              }),
+            } as any;
+          }
+          return { ok: false, status, json: async () => ({ detail: "not supported" }) } as any;
+        }) as any
+      );
+      const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+
+      await expect(c.seedPages()).resolves.toBeUndefined();
+      expect(c.knowledgePagesSupported).toBe(false);
+      expect(calls.filter((k) => k.method === "PATCH")).toHaveLength(1);
+    }
+  );
 
   it("tolerates a 409 from a concurrent run that seeded the same name first", async () => {
     const calls: any[] = [];
@@ -238,6 +340,7 @@ describe("HindsightClient.seedPages", () => {
             kind: "page",
             name: p.name.toUpperCase(),
             description: p === drifted ? "an older wording of the query" : p.source_query,
+            trigger: pageTrigger(p),
           })),
         },
       },
@@ -253,6 +356,7 @@ describe("HindsightClient.seedPages", () => {
     expect(patches[0].body).toEqual({
       source_query: drifted.source_query,
       tags: drifted.tags,
+      trigger: pageTrigger(drifted),
     });
   });
 });
@@ -456,6 +560,10 @@ describe("HindsightClient.configureBank template import", () => {
     );
     expect(body.bank.entity_labels).toEqual(
       expect.arrayContaining([expect.objectContaining({ key: "knowledge", tag: true })])
+    );
+    const knowledgeLabels = body.bank.entity_labels.find((group: any) => group.key === "knowledge");
+    expect(knowledgeLabels.values).toEqual(
+      expect.arrayContaining([expect.objectContaining({ value: "external" })])
     );
     expect(body.bank.entities_allow_free_form).toBe(true);
 

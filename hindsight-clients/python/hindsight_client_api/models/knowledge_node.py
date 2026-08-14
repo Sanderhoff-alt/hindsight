@@ -19,12 +19,13 @@ import json
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr, field_validator
 from typing import Any, ClassVar, Dict, List, Optional
+from hindsight_client_api.models.mental_model_trigger_output import MentalModelTriggerOutput
 from typing import Optional, Set
 from typing_extensions import Self
 
 class KnowledgeNode(BaseModel):
     """
-    A node in the knowledge-base tree — a folder or a page.  Pages carry ``description``/``tags`` from their backing mental model. The knowledge base is client-managed (CRUD); ``managed`` lets a client tag a node as system-owned vs. hand-authored.
+    A node in the knowledge-base tree — a folder or a page.  Pages carry ``description``/``tags``/``trigger`` from their backing mental model. The knowledge base is client-managed (CRUD); ``managed`` lets a client tag a node as system-owned vs. hand-authored.
     """ # noqa: E501
     id: StrictStr
     kind: StrictStr
@@ -34,10 +35,11 @@ class KnowledgeNode(BaseModel):
     managed: Optional[StrictBool] = Field(default=False, description="Client-set flag: true = system-owned, false = hand-authored.")
     description: Optional[StrictStr] = None
     tags: Optional[List[StrictStr]] = None
+    trigger: Optional[MentalModelTriggerOutput] = None
     timestamp: Optional[StrictStr] = None
     is_stale: Optional[StrictBool] = None
     children: Optional[List[KnowledgeNode]] = None
-    __properties: ClassVar[List[str]] = ["id", "kind", "name", "parent_id", "mental_model_id", "managed", "description", "tags", "timestamp", "is_stale", "children"]
+    __properties: ClassVar[List[str]] = ["id", "kind", "name", "parent_id", "mental_model_id", "managed", "description", "tags", "trigger", "timestamp", "is_stale", "children"]
 
     @field_validator('kind')
     def kind_validate_enum(cls, value):
@@ -85,6 +87,9 @@ class KnowledgeNode(BaseModel):
             exclude=excluded_fields,
             exclude_none=True,
         )
+        # override the default output from pydantic by calling `to_dict()` of trigger
+        if self.trigger:
+            _dict['trigger'] = self.trigger.to_dict()
         # override the default output from pydantic by calling `to_dict()` of each item in children (list)
         _items = []
         if self.children:
@@ -106,6 +111,11 @@ class KnowledgeNode(BaseModel):
         # and model_fields_set contains the field
         if self.description is None and "description" in self.model_fields_set:
             _dict['description'] = None
+
+        # set to None if trigger (nullable) is None
+        # and model_fields_set contains the field
+        if self.trigger is None and "trigger" in self.model_fields_set:
+            _dict['trigger'] = None
 
         # set to None if timestamp (nullable) is None
         # and model_fields_set contains the field
@@ -137,6 +147,7 @@ class KnowledgeNode(BaseModel):
             "managed": obj.get("managed") if obj.get("managed") is not None else False,
             "description": obj.get("description"),
             "tags": obj.get("tags"),
+            "trigger": MentalModelTriggerOutput.from_dict(obj["trigger"]) if obj.get("trigger") is not None else None,
             "timestamp": obj.get("timestamp"),
             "is_stale": obj.get("is_stale"),
             "children": [KnowledgeNode.from_dict(_item) for _item in obj["children"]] if obj.get("children") is not None else None

@@ -5,7 +5,7 @@
 //! overlap. `hindsight fs` mirrors the same knowledge base read-only onto disk;
 //! these commands are the read/write side.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::api::ApiClient;
 use crate::output::{self, OutputFormat};
@@ -330,6 +330,7 @@ pub fn update(
     source_query: Option<String>,
     tags: Option<Vec<String>>,
     max_tokens: Option<i64>,
+    trigger: Option<String>,
     verbose: bool,
     output_format: OutputFormat,
 ) -> Result<()> {
@@ -338,9 +339,10 @@ pub fn update(
         && source_query.is_none()
         && tags.is_none()
         && max_tokens.is_none()
+        && trigger.is_none()
     {
         anyhow::bail!(
-            "At least one of --name, --parent-id, --source-query, --tags, or --max-tokens must be provided"
+            "At least one of --name, --parent-id, --source-query, --tags, --max-tokens, or --trigger must be provided"
         );
     }
 
@@ -350,12 +352,20 @@ pub fn update(
         None
     };
 
+    let trigger = trigger
+        .map(|value| {
+            serde_json::from_str::<types::MentalModelTriggerInput>(&value)
+                .context("--trigger must be a valid MentalModelTrigger JSON object")
+        })
+        .transpose()?;
+
     let request = types::UpdateNodeRequest {
         name,
         parent_id,
         source_query,
         tags,
         max_tokens,
+        trigger,
     };
 
     let response = client.update_knowledge_node(bank_id, node_id, &request, verbose);

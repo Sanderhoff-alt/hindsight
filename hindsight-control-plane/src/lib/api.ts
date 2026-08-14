@@ -47,6 +47,7 @@ export interface KnowledgeNode {
   managed: boolean;
   description: string | null;
   tags: string[];
+  trigger?: MentalModel["trigger"] | null;
   timestamp: string | null;
   is_stale: boolean | null;
   children: KnowledgeNode[];
@@ -799,6 +800,7 @@ export class ControlPlaneClient {
       source_query?: string;
       tags?: string[];
       max_tokens?: number;
+      trigger?: MentalModel["trigger"] | null;
     }
   ) {
     return this.fetchApi<KnowledgeNode>(

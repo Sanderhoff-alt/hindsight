@@ -19,7 +19,7 @@ import (
 // checks if the KnowledgeNode type satisfies the MappedNullable interface at compile time
 var _ MappedNullable = &KnowledgeNode{}
 
-// KnowledgeNode A node in the knowledge-base tree — a folder or a page.  Pages carry ``description``/``tags`` from their backing mental model. The knowledge base is client-managed (CRUD); ``managed`` lets a client tag a node as system-owned vs. hand-authored.
+// KnowledgeNode A node in the knowledge-base tree — a folder or a page.  Pages carry ``description``/``tags``/``trigger`` from their backing mental model. The knowledge base is client-managed (CRUD); ``managed`` lets a client tag a node as system-owned vs. hand-authored.
 type KnowledgeNode struct {
 	Id string `json:"id"`
 	Kind string `json:"kind"`
@@ -30,6 +30,7 @@ type KnowledgeNode struct {
 	Managed *bool `json:"managed,omitempty"`
 	Description NullableString `json:"description,omitempty"`
 	Tags []string `json:"tags,omitempty"`
+	Trigger NullableMentalModelTriggerOutput `json:"trigger,omitempty"`
 	Timestamp NullableString `json:"timestamp,omitempty"`
 	IsStale NullableBool `json:"is_stale,omitempty"`
 	Children []KnowledgeNode `json:"children,omitempty"`
@@ -323,6 +324,48 @@ func (o *KnowledgeNode) SetTags(v []string) {
 	o.Tags = v
 }
 
+// GetTrigger returns the Trigger field value if set, zero value otherwise (both if not set or set to explicit null).
+func (o *KnowledgeNode) GetTrigger() MentalModelTriggerOutput {
+	if o == nil || IsNil(o.Trigger.Get()) {
+		var ret MentalModelTriggerOutput
+		return ret
+	}
+	return *o.Trigger.Get()
+}
+
+// GetTriggerOk returns a tuple with the Trigger field value if set, nil otherwise
+// and a boolean to check if the value has been set.
+// NOTE: If the value is an explicit nil, `nil, true` will be returned
+func (o *KnowledgeNode) GetTriggerOk() (*MentalModelTriggerOutput, bool) {
+	if o == nil {
+		return nil, false
+	}
+	return o.Trigger.Get(), o.Trigger.IsSet()
+}
+
+// HasTrigger returns a boolean if a field has been set.
+func (o *KnowledgeNode) HasTrigger() bool {
+	if o != nil && o.Trigger.IsSet() {
+		return true
+	}
+
+	return false
+}
+
+// SetTrigger gets a reference to the given NullableMentalModelTriggerOutput and assigns it to the Trigger field.
+func (o *KnowledgeNode) SetTrigger(v MentalModelTriggerOutput) {
+	o.Trigger.Set(&v)
+}
+// SetTriggerNil sets the value for Trigger to be an explicit nil
+func (o *KnowledgeNode) SetTriggerNil() {
+	o.Trigger.Set(nil)
+}
+
+// UnsetTrigger ensures that no value is present for Trigger, not even an explicit nil
+func (o *KnowledgeNode) UnsetTrigger() {
+	o.Trigger.Unset()
+}
+
 // GetTimestamp returns the Timestamp field value if set, zero value otherwise (both if not set or set to explicit null).
 func (o *KnowledgeNode) GetTimestamp() string {
 	if o == nil || IsNil(o.Timestamp.Get()) {
@@ -466,6 +509,9 @@ func (o KnowledgeNode) ToMap() (map[string]interface{}, error) {
 	}
 	if !IsNil(o.Tags) {
 		toSerialize["tags"] = o.Tags
+	}
+	if o.Trigger.IsSet() {
+		toSerialize["trigger"] = o.Trigger.Get()
 	}
 	if o.Timestamp.IsSet() {
 		toSerialize["timestamp"] = o.Timestamp.Get()

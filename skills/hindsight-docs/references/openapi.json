@@ -2587,7 +2587,7 @@
           "Knowledge Base"
         ],
         "summary": "Rename/move a knowledge-base node or update a page's options",
-        "description": "Rename a node (set `name`), move it under another folder (set `parent_id`, null for the root), and/or update a page's options (`source_query`, `tags`, `max_tokens`). Changing `source_query` schedules an async refresh so the page rebuilds against the new question.",
+        "description": "Rename a node (set `name`), move it under another folder (set `parent_id`, null for the root), and/or update a page's options (`source_query`, `tags`, `max_tokens`, `trigger`). Changing `source_query` schedules an async refresh so the page rebuilds against the new question.",
         "operationId": "update_knowledge_node",
         "parameters": [
           {
@@ -10405,6 +10405,17 @@
             "title": "Tags",
             "default": []
           },
+          "trigger": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MentalModelTrigger-Output"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Page refresh trigger, including optional compound tag filters."
+          },
           "timestamp": {
             "anyOf": [
               {
@@ -10445,7 +10456,7 @@
           "name"
         ],
         "title": "KnowledgeNode",
-        "description": "A node in the knowledge-base tree \u2014 a folder or a page.\n\nPages carry ``description``/``tags`` from their backing mental model. The\nknowledge base is client-managed (CRUD); ``managed`` lets a client tag a node\nas system-owned vs. hand-authored."
+        "description": "A node in the knowledge-base tree \u2014 a folder or a page.\n\nPages carry ``description``/``tags``/``trigger`` from their backing mental model. The\nknowledge base is client-managed (CRUD); ``managed`` lets a client tag a node\nas system-owned vs. hand-authored."
       },
       "KnowledgePageBundleFile": {
         "properties": {
@@ -15339,6 +15350,17 @@
               }
             ],
             "title": "Max Tokens"
+          },
+          "trigger": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MentalModelTrigger-Input"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Page refresh trigger. Omit to leave it unchanged; explicit null is rejected."
           }
         },
         "type": "object",

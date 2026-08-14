@@ -112,12 +112,23 @@ describe("updateKnowledgeNode mapping", () => {
       sourceQuery: "New question?",
       tags: [],
       maxTokens: 2048,
+      trigger: {
+        refresh_after_consolidation: true,
+        tag_groups: [
+          { tags: ["knowledge:decision"], match: "all_strict" },
+          { not: { tags: ["knowledge:external"], match: "any_strict" } },
+        ],
+      },
     });
 
     const body = mockedUpdateNode.mock.calls[0][0].body as any;
     expect(body.source_query).toBe("New question?");
     expect(body.tags).toEqual([]);
     expect(body.max_tokens).toBe(2048);
+    expect(body.trigger.tag_groups).toEqual([
+      { tags: ["knowledge:decision"], match: "all_strict" },
+      { not: { tags: ["knowledge:external"], match: "any_strict" } },
+    ]);
   });
 });
 

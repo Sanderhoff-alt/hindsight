@@ -2175,7 +2175,7 @@ export type IncludeOptions = {
  *
  * A node in the knowledge-base tree — a folder or a page.
  *
- * Pages carry ``description``/``tags`` from their backing mental model. The
+ * Pages carry ``description``/``tags``/``trigger`` from their backing mental model. The
  * knowledge base is client-managed (CRUD); ``managed`` lets a client tag a node
  * as system-owned vs. hand-authored.
  */
@@ -2218,6 +2218,10 @@ export type KnowledgeNode = {
    * Tags
    */
   tags?: Array<string>;
+  /**
+   * Page refresh trigger, including optional compound tag filters.
+   */
+  trigger?: MentalModelTriggerOutput | null;
   /**
    * Timestamp
    *
@@ -5029,6 +5033,10 @@ export type UpdateNodeRequest = {
    * Max Tokens
    */
   max_tokens?: number | null;
+  /**
+   * Page refresh trigger. Omit to leave it unchanged; explicit null is rejected.
+   */
+  trigger?: MentalModelTriggerInput | null;
 };
 
 /**

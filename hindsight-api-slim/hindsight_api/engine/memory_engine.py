@@ -13972,6 +13972,16 @@ class MemoryEngine(MemoryEngineInterface):
         if "mm_tags" in row:
             node["tags"] = list(row["mm_tags"] or [])
             node["source_query"] = row["mm_source_query"]
+            # asyncpg has no JSONB codec on the application pool, and Oracle
+            # returns JSON CLOBs as text for aliased columns such as mm_trigger.
+            # Normalize both database representations before the HTTP model sees it.
+            trigger = row["mm_trigger"]
+            if isinstance(trigger, str):
+                try:
+                    trigger = json.loads(trigger)
+                except json.JSONDecodeError:
+                    trigger = None
+            node["trigger"] = trigger
             node["last_refreshed_at"] = row["mm_last_refreshed_at"].isoformat() if row["mm_last_refreshed_at"] else None
         return node
 
@@ -13981,7 +13991,7 @@ class MemoryEngine(MemoryEngineInterface):
     _KP_PAGE_SELECT = (
         "kp.id, kp.bank_id, kp.parent_id, kp.kind, kp.name, kp.mental_model_id, "
         "kp.sort_order, kp.managed, kp.created_at, kp.updated_at, "
-        "mm.tags AS mm_tags, mm.source_query AS mm_source_query, "
+        "mm.tags AS mm_tags, mm.source_query AS mm_source_query, mm.trigger AS mm_trigger, "
         "mm.last_refreshed_at AS mm_last_refreshed_at"
     )
 
