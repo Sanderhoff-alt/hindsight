@@ -192,46 +192,65 @@ export interface KnowledgePage {
   tags: string[];
 }
 
+const CURRENT_STATE_POLICY = [
+  "Current-state policy:",
+  "- Describe the repository's current state, not only its history.",
+  "- Prefer later relevant evidence over earlier evidence when they concern the same subject.",
+  "- When later evidence updates, removes, replaces, or supersedes an earlier fact, " +
+    "do not present the earlier fact as current.",
+  "- Mention superseded, removed, or historical facts only with an explicit status label.",
+  "- If the evidence does not establish the current state, say that it is uncertain.",
+].join("\n");
+
+export function withCurrentStatePolicy(query: string): string {
+  return `${query}\n\n${CURRENT_STATE_POLICY}`;
+}
+
 export const PAGES: KnowledgePage[] = [
   {
     name: "Component map",
-    source_query:
+    source_query: withCurrentStatePolicy(
       "From this project's commit history and past discussions, what are the main " +
-      "components/modules/subsystems, what is each responsible for, and how do they relate to or " +
-      "depend on one another? Describe the structure and responsibilities.",
+        "components/modules/subsystems, what is each responsible for, and how do they relate to or " +
+        "depend on one another? Describe the structure and responsibilities."
+    ),
     tags: ["knowledge:component"],
   },
   {
     name: "Core concepts",
-    source_query:
+    source_query: withCurrentStatePolicy(
       "What are the core concepts, domain abstractions, and key entities in this project — " +
-      "the vocabulary a developer must understand? For each, explain what it represents and its role, " +
-      "drawn from how they are introduced and discussed across the history and conversations.",
+        "the vocabulary a developer must understand? For each, explain what it represents and its role, " +
+        "drawn from how they are introduced and discussed across the history and conversations."
+    ),
     tags: ["knowledge:concept"],
   },
   {
     name: "Conventions and patterns",
-    source_query:
+    source_query: withCurrentStatePolicy(
       "What conventions, idioms, and recurring patterns does this project follow — its " +
-      "approach to testing, error handling, naming, structure, and how changes are typically made? " +
-      "Describe how THIS project does things, as evidenced across its history and discussions.",
+        "approach to testing, error handling, naming, structure, and how changes are typically made? " +
+        "Describe how THIS project does things, as evidenced across its history and discussions."
+    ),
     tags: ["knowledge:convention"],
   },
   {
     name: "Key decisions and rationale",
-    source_query:
+    source_query: withCurrentStatePolicy(
       "What are the significant technical decisions made in this project and the rationale " +
-      "behind them — the durable 'why we do it this way' a developer should know? Summarize the " +
-      "decisions and their reasoning from the commit rationales and past conversations.",
+        "behind them — the durable 'why we do it this way' a developer should know? Summarize the " +
+        "decisions and their reasoning from the commit rationales and past conversations."
+    ),
     tags: ["knowledge:decision"],
   },
   {
     name: "Initiatives and enhancements",
-    source_query:
+    source_query: withCurrentStatePolicy(
       "Based on this repository's commit history, what are the major initiatives, features, and " +
-      "enhancements the project has worked on? Summarize the themes and notable changes over time. " +
-      "When a source memory carries a tag of the form `relatedPageId:<id>`, include a Markdown link " +
-      "`[[page:<id>]]` to that page in the summary, so each initiative links to its detailed page.",
+        "enhancements the project has worked on? Summarize the themes and notable changes over time. " +
+        "When a source memory carries a tag of the form `relatedPageId:<id>`, include a Markdown link " +
+        "`[[page:<id>]]` to that page in the summary, so each initiative links to its detailed page."
+    ),
     tags: ["knowledge:feature-work"],
   },
 ];
@@ -239,7 +258,9 @@ export const PAGES: KnowledgePage[] = [
 // Refresh policy shared by every seeded page: a living document, rebuilt from all three fact
 // tiers whenever consolidation produces new material.
 export const PAGE_MAX_TOKENS = 4096;
+// Keep full mode explicit so page behavior does not depend on the API default.
 export const PAGE_TRIGGER = {
+  mode: "full",
   fact_types: ["world", "experience", "observation"],
   refresh_after_consolidation: true,
 } as const;

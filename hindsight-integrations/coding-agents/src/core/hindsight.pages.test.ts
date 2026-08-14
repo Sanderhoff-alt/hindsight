@@ -175,7 +175,9 @@ describe("HindsightClient.seedPages", () => {
         /^knowledge:(feature-work|decision|convention|component|concept)$/
       );
       expect(post.body.max_tokens).toBe(PAGE_MAX_TOKENS);
+      expect(post.body.trigger.mode).toBe("full");
       expect(post.body.trigger.refresh_after_consolidation).toBe(true);
+      expect(post.body.source_query).toContain("Current-state policy:");
       expect(post.body.parent_id).toBeUndefined(); // seeded at the tree root
     }
     // Nothing on the mental-models surface.
@@ -346,6 +348,8 @@ describe("HindsightClient.captureInitiative", () => {
     expect(pagePost.body.name).toBe("Retry backoff for the uploader");
     expect(pagePost.body.parent_id).toBe("folder-abc");
     expect(pagePost.body.tags).toEqual(["knowledge:feature-work"]);
+    expect(pagePost.body.trigger.mode).toBe("full");
+    expect(pagePost.body.source_query).toContain("Current-state policy:");
 
     // Marker retain POST to /memories: the ONLY tag is relatedPageId, pointing at the REAL
     // server-assigned page id ("pg").

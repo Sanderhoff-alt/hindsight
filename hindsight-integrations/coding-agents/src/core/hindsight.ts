@@ -11,6 +11,7 @@ import {
   PAGE_MAX_TOKENS,
   PAGE_TRIGGER,
   PAGES,
+  withCurrentStatePolicy,
 } from "./missions";
 import { pool, semverGte, sleep } from "./util";
 import type { RetainStamp } from "./retain-stamp";
@@ -570,13 +571,12 @@ export class HindsightClient {
       const folderId = await this.ensureFolder("Initiatives");
       const r = await this.req("POST", this.bankUrl("/knowledge-base/pages"), {
         name: args.title,
-        source_query: `Summarize the "${args.title}" initiative: what is being built or changed and why, and its current state — drawn from the project's memory.`,
+        source_query: withCurrentStatePolicy(
+          `Summarize the "${args.title}" initiative: what is being built or changed and why, and its current state — drawn from the project's memory.`
+        ),
         parent_id: folderId,
         tags: ["knowledge:feature-work"],
-        trigger: {
-          fact_types: ["world", "experience", "observation"],
-          refresh_after_consolidation: true,
-        },
+        trigger: PAGE_TRIGGER,
       });
       try {
         const j = (await r.json()) as { page_id?: string; id?: string };
