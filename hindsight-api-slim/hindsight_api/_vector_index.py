@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
@@ -22,6 +24,16 @@ RESOLVED_EXTENSIONS = (*CONFIGURABLE_EXTENSIONS, "pg_diskann")
 VALID_EXTENSIONS = CONFIGURABLE_EXTENSIONS
 
 SCANN_MIN_ROWS_FOR_AUTO_INDEX = 10_000
+
+FACT_TYPE_INDEXES = {
+    "idx_mu_emb_world": "world",
+    "idx_mu_emb_experience": "experience",
+    "idx_mu_emb_observation": "observation",
+}
+
+_ITERATIVE_SCAN_MIN_VERSION = (0, 8)
+_PGVECTOR_EXTVERSION: str | None = None
+_PGVECTOR_VERSION_QUERIED = False
 
 
 _EXTENSION_NAMES = {
@@ -69,6 +81,37 @@ _ANN_TUNING_LOW_LATENCY: dict[str, tuple[tuple[str, str], ...]] = {
 _ANN_TUNING_HIGH_RECALL: dict[str, tuple[tuple[str, str], ...]] = {
     "pgvector": (("hnsw.ef_search", "200"),),
 }
+
+
+def is_global_fact_type_partial_index(indexdef: str, fact_type: str) -> bool:
+    """Return whether an index definition has the global fact-type predicate."""
+    definition = indexdef.lower()
+    return (
+        f"fact_type = '{fact_type}'" in definition
+        and "bank_id" not in definition
+        and " and " not in definition.split(" where ", 1)[-1]
+    )
+
+
+def iterative_scan_settings(ext: str, extversion: str | None) -> tuple[tuple[str, str], ...]:
+    """Return pgvector iterative-scan GUCs when pgvector is at least 0.8."""
+    if _normalize_resolved(ext) != "pgvector" or not extversion:
+        return ()
+    match = re.match(r"^(\d+)\.(\d+)", extversion.strip())
+    if not match or (int(match.group(1)), int(match.group(2))) < _ITERATIVE_SCAN_MIN_VERSION:
+        return ()
+    return (("hnsw.iterative_scan", "relaxed_order"), ("hnsw.max_scan_tuples", "20000"))
+
+
+async def pgvector_extension_version(conn: Any) -> str | None:
+    """Read and process-cache pgvector's catalog version for this process."""
+    global _PGVECTOR_EXTVERSION, _PGVECTOR_VERSION_QUERIED
+    if not _PGVECTOR_VERSION_QUERIED:
+        row = await conn.fetchrow("SELECT extversion FROM pg_extension WHERE extname = 'vector'")
+        _PGVECTOR_EXTVERSION = row["extversion"] if row else None
+        _PGVECTOR_VERSION_QUERIED = True
+    return _PGVECTOR_EXTVERSION
+
 
 _EXTENSION_INSTALL_SQL = {
     "pgvector": ("CREATE EXTENSION IF NOT EXISTS vector",),
@@ -170,8 +213,8 @@ def ann_search_tuning_settings(ext: str, *, kind: str) -> tuple[tuple[str, str],
     return table.get(_normalize_resolved(ext), ())
 
 
-def uses_per_bank_vector_indexes(ext: str) -> bool:
-    """Return whether the backend should create per-bank partial vector indexes."""
+def uses_fact_type_partial_vector_indexes(ext: str) -> bool:
+    """Return whether the backend uses the three global fact-type partial indexes."""
     return _normalize_resolved(ext) != "scann"
 
 

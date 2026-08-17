@@ -22,7 +22,7 @@ from typing import Any, Literal
 from ..causal_links import CANONICAL_CAUSAL_LINK_TYPE, LEGACY_CAUSAL_LINK_TYPES
 from ..db.ops_postgresql import pg_search_vector_expr
 from ..db_utils import acquire_with_retry
-from ..retain import bank_utils, chunk_storage, embedding_processing, fact_storage, link_utils, orchestrator
+from ..retain import chunk_storage, embedding_processing, fact_storage, link_utils, orchestrator
 from ..retain.types import (
     CausalRelation,
     ChunkMetadata,
@@ -532,9 +532,8 @@ async def import_bank(
                 if "bank_id" in row:
                     row["bank_id"] = bank_id
 
-    # `internal_id` is a globally-unique (banks_internal_id_unique) local identifier
-    # used only for per-bank index naming — it is NOT part of the bank's logical
-    # state and nothing in the archive references it. Drop it so the column DEFAULT
+    # `internal_id` is a globally-unique local identifier and is not part of the
+    # bank's logical state. Drop it so the column DEFAULT
     # (gen_random_uuid) mints a fresh one on insert. Keeping the source value makes
     # the banks INSERT collide with the source bank on a same-instance re-import,
     # where `ON CONFLICT DO NOTHING` then silently skips the parent row and every
@@ -559,17 +558,6 @@ async def import_bank(
             parsed.bank_rows.get("banks", []),
             bank_rows_json_encoding=bank_rows_json_encoding,
         )
-        # The restored banks row bypasses the fresh-INSERT gate that normally
-        # creates per-bank vector indexes, so create them explicitly here while
-        # the bank is still empty (facts are imported below, so the build is
-        # instant). get_or_create_bank_profile would NOT do this: the row now
-        # exists, so it takes the SELECT branch and skips index creation —
-        # leaving the restored bank falling back to the global index +
-        # post-filter (slower, under-returning recall). See #2645.
-        internal_id = await conn.fetchval(f"SELECT internal_id FROM {fq_table('banks')} WHERE bank_id = $1", bank_id)
-        if internal_id is not None:
-            await bank_utils.create_bank_vector_indexes(conn, bank_id, str(internal_id), ops=ops)
-
     # Only now does the bank row — and with it the archive's own config — exist, so
     # this is where the config the documents are replayed with has to come from.
     # Until #3236 the import ran on a config resolved before the restore, which

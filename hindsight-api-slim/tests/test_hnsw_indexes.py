@@ -1,106 +1,54 @@
-"""
-Tests for per-bank vector index lifecycle and UNION ALL retrieval.
-
-Covers:
-- _bank_index_name deterministic naming
-- Per-bank vector indexes created on bank creation (retain_async / ensure_bank_exists)
-- Per-bank vector indexes dropped on bank deletion
-- retrieve_semantic_bm25_combined_sql groups results correctly by fact_type and source
-"""
+"""Tests for global fact-type vector indexes and UNION ALL retrieval."""
 
 import uuid
 from datetime import datetime, timezone
 
 import pytest
 
-from hindsight_api.engine.retain.bank_utils import _BANK_INDEX_FACT_TYPES, _bank_index_name
+_GLOBAL_INDEXES = {"idx_mu_emb_world", "idx_mu_emb_experience", "idx_mu_emb_observation"}
+
+pytestmark = pytest.mark.xdist_group("vector-index-health-pg0")
 
 # ---------------------------------------------------------------------------
 # Unit tests — no DB required
 # ---------------------------------------------------------------------------
 
 
-class TestBankIndexName:
-    def test_deterministic(self):
-        uid = "550e8400-e29b-41d4-a716-446655440000"
-        assert _bank_index_name("world", uid) == _bank_index_name("world", uid)
-
-    def test_strips_dashes(self):
-        uid = "550e8400-e29b-41d4-a716-446655440000"
-        name = _bank_index_name("world", uid)
-        # uid16 should be hex chars only
-        assert "-" not in name
-
-    def test_uses_first_16_hex_chars(self):
-        uid = "550e8400-e29b-41d4-a716-446655440000"
-        uid16 = uid.replace("-", "")[:16]  # "550e8400e29b41d4"
-        assert name_ends_with(name=_bank_index_name("world", uid), suffix=uid16)
-
-    def test_suffix_per_fact_type(self):
-        uid = "550e8400-e29b-41d4-a716-446655440000"
-        names = {ft: _bank_index_name(ft, uid) for ft in _BANK_INDEX_FACT_TYPES}
-        # All three names must be distinct
-        assert len(set(names.values())) == 3
-
-    def test_all_fact_types_covered(self):
-        assert set(_BANK_INDEX_FACT_TYPES) == {"world", "experience", "observation"}
-
-    def test_fits_pg_identifier_limit(self):
-        # PostgreSQL max identifier length is 63 chars
-        uid = "f" * 32  # simulated UUID without dashes
-        for ft in _BANK_INDEX_FACT_TYPES:
-            assert len(_bank_index_name(ft, uid)) <= 63
-
-
-def name_ends_with(name: str, suffix: str) -> bool:
-    return name.endswith(suffix)
-
-
-# ---------------------------------------------------------------------------
-# Integration tests — require DB (memory fixture)
-# ---------------------------------------------------------------------------
-
-
-async def _get_bank_vector_indexes(pool, bank_id: str) -> list[str]:
-    """Return index names for memory_units that match the per-bank pattern."""
+async def _get_global_vector_indexes(pool) -> list[str]:
+    """Return the canonical global fact-type vector indexes."""
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
             SELECT indexname
             FROM pg_indexes
             WHERE tablename = 'memory_units'
-              AND indexname LIKE 'idx_mu_emb_%'
-              AND indexdef LIKE $1
+              AND indexname = ANY($1::text[])
             ORDER BY indexname
             """,
-            f"%bank_id = '{bank_id}'%",
+            list(_GLOBAL_INDEXES),
         )
     return [row["indexname"] for row in rows]
 
 
 @pytest.mark.asyncio
-async def test_retain_creates_per_bank_vector_indexes(memory, request_context):
-    """retain_async on a new bank must create 3 per-(bank, fact_type) vector indexes."""
+async def test_retain_does_not_create_per_bank_vector_indexes(memory, request_context):
+    """Creating a bank leaves the three migration-owned global indexes unchanged."""
     bank_id = f"test_hnsw_create_{uuid.uuid4().hex[:8]}"
     try:
+        before = await _get_global_vector_indexes(memory._pool)
         await memory.retain_async(
             bank_id=bank_id,
             content="Alice is a software engineer.",
             request_context=request_context,
         )
-        indexes = await _get_bank_vector_indexes(memory._pool, bank_id)
-        assert len(indexes) == 3, f"Expected 3 per-bank vector indexes, got: {indexes}"
-        for ft_short in _BANK_INDEX_FACT_TYPES.values():
-            assert any(ft_short in idx for idx in indexes), (
-                f"Missing index for fact_type short '{ft_short}' in {indexes}"
-            )
+        assert await _get_global_vector_indexes(memory._pool) == before
     finally:
         await memory.delete_bank(bank_id, request_context=request_context)
 
 
 @pytest.mark.asyncio
-async def test_delete_bank_drops_vector_indexes(memory, request_context):
-    """delete_bank must drop all per-bank vector indexes."""
+async def test_delete_bank_keeps_global_vector_indexes(memory, request_context):
+    """Deleting a bank must not drop indexes shared by other banks."""
     bank_id = f"test_hnsw_drop_{uuid.uuid4().hex[:8]}"
 
     await memory.retain_async(
@@ -109,18 +57,16 @@ async def test_delete_bank_drops_vector_indexes(memory, request_context):
         request_context=request_context,
     )
     # Verify indexes exist before deletion
-    indexes_before = await _get_bank_vector_indexes(memory._pool, bank_id)
-    assert len(indexes_before) == 3
+    indexes_before = await _get_global_vector_indexes(memory._pool)
 
     await memory.delete_bank(bank_id, request_context=request_context)
 
-    indexes_after = await _get_bank_vector_indexes(memory._pool, bank_id)
-    assert indexes_after == [], f"Indexes should be dropped after bank deletion, got: {indexes_after}"
+    assert await _get_global_vector_indexes(memory._pool) == indexes_before
 
 
 @pytest.mark.asyncio
 async def test_retain_idempotent_bank_creation(memory, request_context):
-    """Retaining into the same bank twice must not error and still have exactly 3 indexes."""
+    """Retaining into the same bank twice does not create extra indexes."""
     bank_id = f"test_hnsw_idem_{uuid.uuid4().hex[:8]}"
     try:
         await memory.retain_async(
@@ -133,8 +79,7 @@ async def test_retain_idempotent_bank_creation(memory, request_context):
             content="Carol joined the company in 2022.",
             request_context=request_context,
         )
-        indexes = await _get_bank_vector_indexes(memory._pool, bank_id)
-        assert len(indexes) == 3
+        assert set(await _get_global_vector_indexes(memory._pool)) == _GLOBAL_INDEXES
     finally:
         await memory.delete_bank(bank_id, request_context=request_context)
 

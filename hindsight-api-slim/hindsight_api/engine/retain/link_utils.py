@@ -7,7 +7,12 @@ import re
 import time
 from datetime import UTC
 
-from ..._vector_index import ann_search_tuning_settings, configured_vector_extension
+from ..._vector_index import (
+    ann_search_tuning_settings,
+    configured_vector_extension,
+    iterative_scan_settings,
+    pgvector_extension_version,
+)
 from ..causal_links import (
     CANONICAL_CAUSAL_LINK_TYPES,
     CAUSAL_LINK_TYPES,
@@ -18,6 +23,7 @@ from ..causal_links import (
 from ..db.base import DatabaseConnection
 from ..db.ops import DataAccessOps
 from ..memory_engine import fq_table
+from ..response_models import VALID_RECALL_FACT_TYPES
 from .types import CausalRelation, EntityResolutionResult
 
 logger = logging.getLogger(__name__)
@@ -518,9 +524,9 @@ async def compute_semantic_links_ann(
     holding locks during expensive HNSW index probes. Uses a temp table +
     LATERAL join to batch all probes in a single query.
 
-    Queries are split by fact_type so PostgreSQL uses the per-bank partial
-    HNSW indexes (idx_mu_emb_worl_*, idx_mu_emb_expr_*). Without the
-    fact_type filter, the planner falls back to sequential scan (~50x slower).
+    Queries are split by fact_type so PostgreSQL can use the global fact-type
+    partial vector indexes. Without the fact_type filter, those indexes cannot
+    be used.
 
     Args:
         conn: Database connection (separate from write transaction, autocommit)
@@ -574,7 +580,11 @@ async def compute_semantic_links_ann(
         # are safe to apply at session/transaction scope for the configured
         # backend. VectorChord probe values are index-shaped, so vchordrq uses
         # index storage fallback parameters instead of a blanket SET LOCAL.
-        for guc, value in ann_search_tuning_settings(configured_vector_extension(), kind="low_latency"):
+        vector_extension = configured_vector_extension()
+        settings = ann_search_tuning_settings(vector_extension, kind="low_latency")
+        if vector_extension == "pgvector":
+            settings += iterative_scan_settings(vector_extension, await pgvector_extension_version(conn))
+        for guc, value in settings:
             await conn.execute(f"SET LOCAL {guc} = {value}")
 
         t_setup = time_mod.time()
@@ -590,6 +600,8 @@ async def compute_semantic_links_ann(
         # Run one ANN query per fact_type so each uses the right HNSW index.
         active_types = set(fact_types)
         for fact_type in active_types:
+            if fact_type not in VALID_RECALL_FACT_TYPES:
+                continue
             t_query = time_mod.time()
             seed_count = sum(1 for ft in fact_types if ft == fact_type)
             logger.debug(f"[ANN] Querying fact_type={fact_type}: {seed_count} seeds")
@@ -606,7 +618,7 @@ async def compute_semantic_links_ann(
                 WITH seeds AS MATERIALIZED (
                     SELECT unit_id, emb_text::vector AS emb
                     FROM _ann_seeds
-                    WHERE fact_type = $2
+                    WHERE fact_type = '{fact_type}'
                 )
                 SELECT s.unit_id       AS from_id,
                        n.id::text      AS to_id,
@@ -617,14 +629,13 @@ async def compute_semantic_links_ann(
                            1 - (mu.embedding <=> s.emb) AS similarity
                     FROM {fq_table("memory_units")} mu
                     WHERE mu.bank_id = $1
-                      AND mu.fact_type = $2
+                      AND mu.fact_type = '{fact_type}'
                       AND mu.embedding IS NOT NULL
                     ORDER BY mu.embedding <=> s.emb
-                    LIMIT $3
+                    LIMIT $2
                 ) n
                 """,
                 bank_id,
-                fact_type,
                 top_k,
             )
             logger.debug(f"[ANN] fact_type={fact_type}: {len(ft_rows)} rows in {time_mod.time() - t_query:.3f}s")

@@ -35,6 +35,7 @@ from ...config import DEFAULT_GRAPH_SEED_MIN_SIMILARITY, get_config
 from ..db.ops import LinkExpansionRows, UpdatedWindow
 from ..db_utils import acquire_with_retry
 from ..memory_engine import fq_table
+from ..response_models import VALID_RECALL_FACT_TYPES
 from .graph_retrieval import GraphRetriever
 from .tags import TagGroup, TagsMatch, filter_results_by_tag_groups, filter_results_by_tags
 from .types import GraphRetrievalTimings, RetrievalResult
@@ -60,8 +61,11 @@ async def _find_semantic_seeds(
     """Find semantic seeds via embedding search."""
     from .tags import build_tag_groups_where_clause, build_tags_where_clause_simple
 
-    tags_clause = build_tags_where_clause_simple(tags, 6, match=tags_match)
-    tag_groups_param_start = 6 + (1 if tags else 0)
+    if fact_type not in VALID_RECALL_FACT_TYPES:
+        return []
+
+    tags_clause = build_tags_where_clause_simple(tags, 5, match=tags_match)
+    tag_groups_param_start = 5 + (1 if tags else 0)
     groups_clause, groups_params, _ = build_tag_groups_where_clause(tag_groups, tag_groups_param_start)
 
     _next_idx = tag_groups_param_start + len(groups_params)
@@ -76,7 +80,7 @@ async def _find_semantic_seeds(
         created_range_clause += f" AND updated_at < ${_next_idx}"
         _next_idx += 1
 
-    params = [query_embedding_str, bank_id, fact_type, threshold, limit]
+    params = [query_embedding_str, bank_id, threshold, limit]
     if tags:
         params.append(tags)
     params.extend(groups_params)
@@ -90,13 +94,13 @@ async def _find_semantic_seeds(
         FROM {fq_table("memory_units")}
         WHERE bank_id = $2
           AND embedding IS NOT NULL
-          AND fact_type = $3
-          AND (1 - (embedding <=> $1::vector)) >= $4
+          AND fact_type = '{fact_type}'
+          AND (1 - (embedding <=> $1::vector)) >= $3
           {tags_clause}
           {groups_clause}
           {created_range_clause}
         ORDER BY embedding <=> $1::vector
-        LIMIT $5
+        LIMIT $4
         """,
         *params,
     )

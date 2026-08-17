@@ -38,7 +38,7 @@ from ._vector_index import (
     index_using_clause,
     minimum_rows_for_index,
     should_defer_index_creation,
-    uses_per_bank_vector_indexes,
+    uses_fact_type_partial_vector_indexes,
 )
 from .db_url import is_oracle_url, to_libpq_url
 from .utils import mask_network_location
@@ -146,8 +146,8 @@ def _bootstrap_vector_extension_for_migrations(conn: Connection, vector_extensio
     bootstrap_extension(conn, vector_extension)
 
 
-def _drop_per_bank_vector_indexes(conn: Connection, schema_name: str) -> None:
-    """Drop per-bank partial memory_units vector indexes after global ScaNN is ready."""
+def _drop_fact_type_vector_indexes(conn: Connection, schema_name: str) -> None:
+    """Drop fact-type partial indexes after the unfiltered ScaNN index is ready."""
     rows = conn.execute(
         text("""
             SELECT indexname
@@ -627,45 +627,95 @@ def ensure_vector_extension(
             # Check current index type by querying pg_indexes
             current_index_rows = conn.execute(
                 text("""
-                    SELECT indexdef, indexname
-                    FROM pg_indexes
-                    WHERE schemaname = :schema
-                      AND tablename = :table_name
-                      AND indexname LIKE :index_pattern
+                    SELECT pg_get_indexdef(i.indexrelid), c.relname,
+                           i.indisvalid, i.indisready
+                    FROM pg_class c
+                    JOIN pg_namespace n ON n.oid = c.relnamespace
+                    JOIN pg_index i ON i.indexrelid = c.oid
+                    JOIN pg_class t ON t.oid = i.indrelid
+                    WHERE n.nspname = :schema
+                      AND t.relname = :table_name
+                      AND (
+                          c.relname LIKE :index_pattern
+                          OR (:table_name = 'memory_units' AND c.relname LIKE :partial_pattern)
+                      )
                 """),
-                {"schema": schema_name, "table_name": table_name, "index_pattern": "%embedding%"},
+                {
+                    "schema": schema_name,
+                    "table_name": table_name,
+                    "index_pattern": "%embedding%",
+                    "partial_pattern": "idx_mu_emb_%",
+                },
             ).fetchall()
 
-            if table_name == "memory_units" and uses_per_bank_vector_indexes(target_ext):
-                # Per-bank backends never use a GLOBAL memory_units vector index.
-                # Every vector search is bank + fact_type scoped and served by the
-                # per-(bank, fact_type) partial indexes created at bank-creation time
-                # (bank_utils.create_bank_vector_indexes); the planner never picks a
-                # global index when bank_id is in the WHERE clause, which is exactly
-                # why migration d5e6f7a8b9c0 drops it for these backends.
-                #
-                # The reconcile is strictly hands-off here, in BOTH directions:
-                # never create the index (dead weight — an older version of this
-                # branch did, which is how legacy schemas ended up carrying it),
-                # and never drop or rebuild one that exists. Runtime DROP/CREATE
-                # INDEX takes an ACCESS EXCLUSIVE lock on memory_units at
-                # unpredictable times (startup, tenant provisioning); index DDL
-                # belongs in the versioned migration path. Leftover globals are
-                # removed by migration f2a6d8c4b1e9. This continue also keeps
-                # memory_units out of the type-mismatch reconcile below, which
-                # would otherwise recreate a global index with the new type on a
-                # backend switch.
-                if current_index_rows:
-                    stale_names = ", ".join(row[1] for row in current_index_rows)
-                    logger.info(
-                        f"Global vector index ({stale_names}) present on {schema_name}.memory_units "
-                        f"with per-bank backend ({target_ext}); left untouched — removed by "
-                        f"migration f2a6d8c4b1e9"
+            if table_name == "memory_units" and uses_fact_type_partial_vector_indexes(target_ext):
+                # PostgreSQL backends use exactly three global fact-type partial
+                # indexes. Their DDL stays in the migration path because building
+                # or replacing ANN indexes at startup can block live traffic.
+                expected = {
+                    "idx_mu_emb_world": "world",
+                    "idx_mu_emb_experience": "experience",
+                    "idx_mu_emb_observation": "observation",
+                }
+                definitions = {row[1]: row[0].lower() for row in current_index_rows}
+                actual = set(definitions)
+                wrong_type = {
+                    name for name in expected if name in definitions and target_index_type not in definitions[name]
+                }
+                wrong_predicate = {
+                    name
+                    for name, fact_type in expected.items()
+                    if name in definitions
+                    and (
+                        f"fact_type = '{fact_type}'" not in definitions[name]
+                        or "bank_id" in definitions[name]
+                        or " and " in definitions[name].split(" where ", 1)[-1]
+                    )
+                }
+                wrong_operator = {
+                    name
+                    for name in expected
+                    if name in definitions and "embedding vector_cosine_ops" not in definitions[name]
+                }
+                wrong_state = {row[1] for row in current_index_rows if not row[2] or not row[3]}
+                if (
+                    actual == set(expected)
+                    and not wrong_type
+                    and not wrong_predicate
+                    and not wrong_operator
+                    and not wrong_state
+                ):
+                    logger.debug(
+                        "Global fact-type partial vector indexes are present on %s.memory_units",
+                        schema_name,
                     )
                 else:
-                    logger.debug(
-                        f"Per-bank vector backend ({target_ext}); skipping global {index_name} creation on {table_name}"
+                    message = (
+                        f"expected={sorted(expected)} actual={sorted(actual)} "
+                        f"wrong_type={sorted(wrong_type)} wrong_predicate={sorted(wrong_predicate)} "
+                        f"wrong_operator={sorted(wrong_operator)} "
+                        f"wrong_state={sorted(wrong_state)} "
+                        f"target={target_index_type}"
                     )
+                    if row_count:
+                        raise RuntimeError(
+                            f"memory_units vector index layout is incompatible with {target_ext}: {message}. "
+                            "Run `hindsight-admin vector-indexes --rebuild` with the configured backend "
+                            "on an autocommit connection."
+                        )
+                    logger.info("Rebuilding empty memory_units vector index layout: %s", message)
+                    safe_schema = schema_name.replace('"', '""')
+                    for stale_index in actual:
+                        safe_index = stale_index.replace('"', '""')
+                        conn.execute(text(f'DROP INDEX IF EXISTS "{safe_schema}"."{safe_index}"'))
+                    for expected_index, fact_type in expected.items():
+                        conn.execute(
+                            text(
+                                f'CREATE INDEX IF NOT EXISTS "{expected_index}" ON "{safe_schema}".memory_units '
+                                f"{index_using_clause(target_ext)} WHERE fact_type = '{fact_type}'"
+                            )
+                        )
+                    conn.commit()
                 continue
 
             current_index_info = current_index_rows[0] if current_index_rows else None
@@ -675,6 +725,7 @@ def ensure_vector_extension(
                 continue
 
             indexdef = current_index_info[0].lower()
+            index_usable = bool(current_index_info[2] and current_index_info[3])
             if "scann" in indexdef:
                 current_index_type = "scann"
             elif "diskann" in indexdef:
@@ -688,7 +739,7 @@ def ensure_vector_extension(
                 continue
 
             # Check if index type matches target
-            if current_index_type != target_index_type:
+            if current_index_type != target_index_type or not index_usable:
                 logger.info(
                     f"Index type mismatch on {table_name}: current={current_index_type}, target={target_index_type}"
                 )
@@ -699,7 +750,7 @@ def ensure_vector_extension(
             else:
                 logger.debug(f"Index type OK for {table_name}: {current_index_type}")
                 if target_ext == "scann" and table_name == "memory_units":
-                    _drop_per_bank_vector_indexes(conn, schema_name)
+                    _drop_fact_type_vector_indexes(conn, schema_name)
                     conn.commit()
 
         # If no mismatches, we're done
@@ -778,7 +829,7 @@ def ensure_vector_extension(
                 """)
             )
             if target_ext == "scann" and table_name == "memory_units":
-                _drop_per_bank_vector_indexes(conn, schema_name)
+                _drop_fact_type_vector_indexes(conn, schema_name)
 
         conn.commit()
         logger.info(f"Successfully reconciled vector indexes for {target_ext}")

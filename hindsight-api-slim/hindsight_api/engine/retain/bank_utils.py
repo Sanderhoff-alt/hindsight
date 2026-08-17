@@ -11,85 +11,11 @@ from typing import TypedDict
 
 from pydantic import BaseModel, Field
 
-from ..._vector_index import index_using_clause, uses_per_bank_vector_indexes
-from ...config import get_config
 from ..db_utils import acquire_with_retry, retry_with_backoff
-from ..memory_engine import fq_table, get_current_schema
+from ..memory_engine import fq_table
 from ..response_models import DispositionTraits
 
 logger = logging.getLogger(__name__)
-
-# Fact types that get per-bank partial vector indexes, mapped to their 4-char index suffix.
-_BANK_INDEX_FACT_TYPES: dict[str, str] = {
-    "world": "worl",
-    "experience": "expr",
-    "observation": "obsv",
-}
-
-
-def _bank_index_name(ft: str, internal_id: str) -> str:
-    """Deterministic, schema-safe vector index name for a (bank, fact_type) pair.
-
-    Uses the first 16 hex chars of internal_id (8 bytes of entropy) — unique
-    enough in practice, fits comfortably within PostgreSQL's 63-char identifier limit.
-    """
-    uid = str(internal_id).replace("-", "")[:16]
-    return f"idx_mu_emb_{_BANK_INDEX_FACT_TYPES[ft]}_{uid}"
-
-
-def _vector_index_clause() -> str | None:
-    """Return the USING clause for per-bank vector indexes, if this backend uses them."""
-    ext = get_config().vector_extension
-    if not uses_per_bank_vector_indexes(ext):
-        return None
-    return index_using_clause(ext)
-
-
-async def create_bank_vector_indexes(conn, bank_id: str, internal_id: str, ops=None) -> None:
-    """Create per-(bank, fact_type) partial vector indexes for a newly created bank.
-
-    Respects the HINDSIGHT_API_VECTOR_EXTENSION config to use the appropriate
-    index type (HNSW for pgvector, DiskANN for pgvectorscale, vchordrq for vchord).
-
-    AlloyDB ScaNN uses global vector indexes with filtered vector search; it
-    cannot safely create per-bank indexes at bank-creation time because new
-    banks have no embedding rows.
-    bank_id is escaped for SQL literal safety (apostrophes doubled).
-
-    On Oracle 23ai, this is a no-op — Oracle uses a single global vector index
-    created during migrations. Partial indexes (WHERE clause) are not supported
-    for Oracle vector indexes.
-    """
-    index_clause = _vector_index_clause()
-    if index_clause is None:
-        logger.debug("Skipping per-bank vector indexes for configured backend")
-        return
-
-    await ops.create_bank_vector_indexes(
-        conn,
-        fq_table("memory_units"),
-        bank_id,
-        internal_id,
-        index_clause,
-        _BANK_INDEX_FACT_TYPES,
-    )
-
-
-async def drop_bank_vector_indexes(conn, internal_id: str, ops=None) -> None:
-    """Drop per-(bank, fact_type) partial vector indexes for a bank being deleted.
-
-    Called before the bank row is deleted so internal_id is still known.
-    Idempotent via DROP INDEX IF EXISTS.
-
-    On Oracle, this is a no-op (uses single global vector index).
-    """
-    await ops.drop_bank_vector_indexes(
-        conn,
-        get_current_schema(),
-        internal_id,
-        _BANK_INDEX_FACT_TYPES,
-    )
-
 
 DEFAULT_DISPOSITION = {
     "skepticism": 3,
@@ -190,33 +116,25 @@ async def get_or_create_bank_profile(pool, bank_id: str) -> BankProfileResult:
     ``get_or_create_bank_profile_on_conn`` instead.
     """
 
-    # A fresh bank builds its per-(bank, fact_type) partial vector indexes with
-    # a plain CREATE INDEX (it must — this runs inside the bank-create tx, and
-    # CONCURRENTLY cannot). That CREATE takes a ShareLock on the shared
-    # memory_units table, which can deadlock with concurrent writers. The build
-    # is idempotent (INSERT ... ON CONFLICT + CREATE INDEX IF NOT EXISTS), so a
-    # transient deadlock (40P01 / ORA-00060) is safe to retry as a whole tx.
     async def _create() -> BankProfileResult:
         async with acquire_with_retry(pool) as conn:
             async with conn.transaction():
-                return await get_or_create_bank_profile_on_conn(conn, bank_id, ops=pool.ops)
+                return await get_or_create_bank_profile_on_conn(conn, bank_id)
 
     return await retry_with_backoff(_create)
 
 
-async def get_or_create_bank_profile_on_conn(conn, bank_id: str, *, ops) -> BankProfileResult:
+async def get_or_create_bank_profile_on_conn(conn, bank_id: str) -> BankProfileResult:
     """
     Connection-bound variant of ``get_or_create_bank_profile``.
 
-    Runs the SELECT, the ``INSERT ... ON CONFLICT DO NOTHING`` and the per-bank
-    vector index creation on the caller-supplied ``conn``. When ``conn`` is
+    Runs the SELECT and ``INSERT ... ON CONFLICT DO NOTHING`` on the
+    caller-supplied ``conn``. When ``conn`` is
     inside an open transaction, the lazy bank-create therefore commits (or rolls
     back) atomically with whatever bank-scoped write the caller performs on the
     same connection — closing the window where a freshly-created bank could
     outlive a write that ultimately failed.
 
-    ``ops`` is the backend's dialect ops object (``backend.ops``), needed for
-    per-bank vector index DDL.
     """
     # Try to get existing bank
     row = await conn.fetchrow(
@@ -261,9 +179,6 @@ async def get_or_create_bank_profile_on_conn(conn, bank_id: str, *, ops) -> Bank
     )
 
     created = inserted is not None
-    if created:
-        # Fresh insert — create per-bank vector indexes (instant on empty bank)
-        await create_bank_vector_indexes(conn, bank_id, str(internal_id), ops=ops)
 
     return BankProfileResult(
         profile=BankProfile(name=bank_id, disposition=DispositionTraits(**DEFAULT_DISPOSITION), mission=""),

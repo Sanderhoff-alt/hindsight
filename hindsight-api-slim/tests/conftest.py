@@ -224,9 +224,9 @@ def pg0_db_url(db_url, tmp_path_factory, worker_id):
 
     run_migrations(url)
 
-    # Clean up stale test data from previous sessions. Per-bank vector indexes
-    # accumulate across runs (each test bank creates 3 HNSW indexes) and
-    # eventually exhaust pg0's shared memory / max_locks_per_transaction.
+    # Clean up stale test data from previous sessions. Legacy per-bank vector
+    # indexes accumulate across runs and can exhaust pg0's shared memory or
+    # max_locks_per_transaction. Keep the migration-owned global indexes.
     # Only one xdist worker needs to do this.
     cleanup_lock = root_tmp_dir / f"pg0_cleanup_{pg0_instance_name}.lock"
     cleanup_done = root_tmp_dir / f"pg0_cleanup_{pg0_instance_name}.done"
@@ -239,9 +239,9 @@ def pg0_db_url(db_url, tmp_path_factory, worker_id):
 
 
 def _cleanup_stale_test_data(db_url: str) -> None:
-    """Drop all per-bank vector indexes and test data from previous sessions.
+    """Drop legacy per-bank vector indexes and test data from old sessions.
 
-    pg0 persists between test runs, so per-bank HNSW indexes accumulate
+    pg0 persists between test runs, so legacy per-bank HNSW indexes accumulate
     (3 per bank × thousands of test banks = tens of thousands of indexes).
     This eventually causes 'out of shared memory' errors because PostgreSQL
     tracks all indexes in shared lock tables.
@@ -252,7 +252,13 @@ def _cleanup_stale_test_data(db_url: str) -> None:
         conn = await asyncpg.connect(db_url)
         try:
             idx_rows = await conn.fetch(
-                "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND indexname LIKE 'idx_mu_emb_%'"
+                """
+                SELECT indexname FROM pg_indexes
+                WHERE schemaname = 'public' AND indexname LIKE 'idx_mu_emb_%'
+                  AND indexname NOT IN ('idx_mu_emb_world',
+                                        'idx_mu_emb_experience',
+                                        'idx_mu_emb_observation')
+                """
             )
             if idx_rows:
                 for row in idx_rows:

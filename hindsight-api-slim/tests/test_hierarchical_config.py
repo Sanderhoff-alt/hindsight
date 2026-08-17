@@ -37,17 +37,11 @@ class MockTenantExtension(TenantExtension):
         return self.tenant_config
 
 
-class _FakeBankOps:
-    async def create_bank_vector_indexes(self, *args, **kwargs):
-        return None
-
-
 class FakeBankConfigBackend:
     """Minimal backend for ConfigResolver bank-config tests."""
 
     def __init__(self):
         self.config: dict[str, object] = {}
-        self.ops = _FakeBankOps()
 
     def acquire(self):
         return FakeBankConfigConnection(self)

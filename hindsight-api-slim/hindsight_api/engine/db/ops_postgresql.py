@@ -4,7 +4,6 @@ Uses unnest(), LATERAL, DISTINCT ON, and native array operations for
 efficient batch operations.
 """
 
-import asyncio
 from datetime import datetime
 
 from .base import DatabaseConnection
@@ -58,23 +57,6 @@ def pg_search_vector_expr(
 
 class PostgreSQLOps(DataAccessOps):
     """PostgreSQL-specific data access operations using unnest and LATERAL."""
-
-    def __init__(self) -> None:
-        # Per-table serialization of per-bank vector-index DDL within this
-        # process. Concurrent index DDL on one relation deadlocks by design:
-        # DROP INDEX CONCURRENTLY holds ShareUpdateExclusive while it waits out
-        # every transaction whose snapshot could still see the index — including
-        # other sessions' index DDL queued on that same lock — so many banks
-        # deleted at once form a wait cycle Postgres resolves by killing one.
-        # A session advisory lock would serialize this across processes too, but
-        # advisory locks are banned here (poolers hand sessions around; see the
-        # Database Locking standard). In-process the asyncio lock removes the
-        # cycle outright; across processes the callers' retry-with-backoff
-        # absorbs the (now much rarer) collisions.
-        self._index_ddl_locks: dict[str, asyncio.Lock] = {}
-
-    def _index_ddl_lock(self, table: str) -> asyncio.Lock:
-        return self._index_ddl_locks.setdefault(table, asyncio.Lock())
 
     @property
     def uses_observation_sources_table(self) -> bool:
@@ -1046,47 +1028,6 @@ class PostgreSQLOps(DataAccessOps):
             tag_col="tag",
             bank_prefix="",
         )
-
-    async def create_bank_vector_indexes(
-        self,
-        conn: DatabaseConnection,
-        table: str,
-        bank_id: str,
-        internal_id: str,
-        index_clause: str,
-        fact_types: dict[str, str],
-    ) -> None:
-        escaped = bank_id.replace("'", "''")
-        async with self._index_ddl_lock(table):
-            for ft, suffix in fact_types.items():
-                uid = str(internal_id).replace("-", "")[:16]
-                idx = f"idx_mu_emb_{suffix}_{uid}"
-                await conn.execute(
-                    f"CREATE INDEX IF NOT EXISTS {idx} "
-                    f"ON {table} {index_clause} "
-                    f"WHERE fact_type = '{ft}' AND bank_id = '{escaped}'"
-                )
-
-    async def drop_bank_vector_indexes(
-        self,
-        conn: DatabaseConnection,
-        schema: str,
-        internal_id: str,
-        fact_types: dict[str, str],
-    ) -> None:
-        # CONCURRENTLY so the drop takes ShareUpdateExclusive, not ACCESS
-        # EXCLUSIVE, on the shared memory_units table. A plain DROP INDEX blocks
-        # (and deadlocks with) every other bank's concurrent reads/writes on the
-        # table; CONCURRENTLY does not conflict with DML. The caller
-        # (delete_bank) runs this on an autocommit connection after its delete
-        # transaction has committed — CONCURRENTLY cannot run inside a tx.
-        # The lock key must match create_bank_vector_indexes', whose `table`
-        # is the fq name this reconstructs from `schema`.
-        async with self._index_ddl_lock(f"{schema}.memory_units"):
-            for ft, suffix in fact_types.items():
-                uid = str(internal_id).replace("-", "")[:16]
-                idx = f"idx_mu_emb_{suffix}_{uid}"
-                await conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {schema}.{idx}")
 
     def get_entity_resolution_strategy(self) -> str:
         return "trigram"

@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 from hindsight_api._vector_index import (
     SCANN_MIN_ROWS_FOR_AUTO_INDEX,
@@ -7,12 +8,13 @@ from hindsight_api._vector_index import (
     configured_vector_extension,
     index_type_keyword,
     index_using_clause,
+    iterative_scan_settings,
+    pgvector_extension_version,
     pg_extension_name,
     should_defer_index_creation,
-    uses_per_bank_vector_indexes,
+    uses_fact_type_partial_vector_indexes,
     validate_extension,
 )
-from hindsight_api.engine.retain import bank_utils
 from hindsight_api.migrations import _bootstrap_vector_extension_for_migrations
 
 
@@ -116,6 +118,32 @@ def test_ann_search_tuning_settings_returns_empty_for_backends_without_knob():
         assert ann_search_tuning_settings(ext, kind="high_recall") == ()
 
 
+def test_iterative_scan_settings_requires_pgvector_08():
+    expected = (("hnsw.iterative_scan", "relaxed_order"), ("hnsw.max_scan_tuples", "20000"))
+    assert iterative_scan_settings("pgvector", "0.8.0") == expected
+    assert iterative_scan_settings("pgvector", "0.8.4") == expected
+    assert iterative_scan_settings("pgvector", "0.7.4") == ()
+    assert iterative_scan_settings("pgvector", None) == ()
+    assert iterative_scan_settings("pgvector", "unknown") == ()
+    assert iterative_scan_settings("pgvectorscale", "0.8.0") == ()
+
+
+def test_pgvector_extension_version_is_cached(monkeypatch):
+    import asyncio
+    import hindsight_api._vector_index as vector_index
+
+    conn = type("Conn", (), {"fetchrow": AsyncMock(return_value={"extversion": "0.8.4"})})()
+    monkeypatch.setattr(vector_index, "_PGVECTOR_EXTVERSION", None)
+    monkeypatch.setattr(vector_index, "_PGVECTOR_VERSION_QUERIED", False)
+
+    async def check():
+        assert await pgvector_extension_version(conn) == "0.8.4"
+        assert await pgvector_extension_version(conn) == "0.8.4"
+
+    asyncio.run(check())
+    conn.fetchrow.assert_awaited_once()
+
+
 def test_configured_vector_extension_defaults_to_pgvector(monkeypatch):
     monkeypatch.delenv("HINDSIGHT_API_VECTOR_EXTENSION", raising=False)
     assert configured_vector_extension() == "pgvector"
@@ -134,11 +162,11 @@ def test_configured_vector_extension_rejects_unknown_value(monkeypatch):
         configured_vector_extension()
 
 
-def test_scann_does_not_use_per_bank_partial_indexes():
-    assert not uses_per_bank_vector_indexes("scann")
-    assert uses_per_bank_vector_indexes("pgvector")
-    assert uses_per_bank_vector_indexes("pgvectorscale")
-    assert uses_per_bank_vector_indexes("vchord")
+def test_fact_type_partial_index_backends():
+    assert not uses_fact_type_partial_vector_indexes("scann")
+    assert uses_fact_type_partial_vector_indexes("pgvector")
+    assert uses_fact_type_partial_vector_indexes("pgvectorscale")
+    assert uses_fact_type_partial_vector_indexes("vchord")
 
 
 def test_alembic_vector_migrations_freeze_vector_sql_locally():
@@ -159,24 +187,3 @@ def test_alembic_vector_migrations_freeze_vector_sql_locally():
     for migration in frozen_migrations:
         text = (migration_dir / migration).read_text()
         assert "hindsight_api._vector_index" not in text
-
-
-class RecordingOps:
-    def __init__(self):
-        self.called = False
-
-    async def create_bank_vector_indexes(self, *args, **kwargs):
-        self.called = True
-
-
-class ScannConfig:
-    vector_extension = "scann"
-
-
-async def test_create_bank_vector_indexes_skips_scann(monkeypatch):
-    monkeypatch.setattr(bank_utils, "get_config", lambda: ScannConfig())
-    ops = RecordingOps()
-
-    await bank_utils.create_bank_vector_indexes(None, "bank", "00000000-0000-0000-0000-000000000000", ops=ops)
-
-    assert not ops.called

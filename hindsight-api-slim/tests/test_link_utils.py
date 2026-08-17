@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import numpy as np
 import pytest
 
+import hindsight_api._vector_index as vector_index
 from hindsight_api.config import DEFAULT_SEMANTIC_LINK_MIN_SIMILARITY, clear_config_cache
 from hindsight_api.engine.retain.link_utils import (
     _NIL_ENTITY_UUID,
@@ -16,6 +17,12 @@ from hindsight_api.engine.retain.link_utils import (
     compute_semantic_links_ann,
     compute_semantic_links_within_batch,
 )
+
+
+@pytest.fixture(autouse=True)
+def reset_pgvector_version_cache(monkeypatch):
+    monkeypatch.setattr(vector_index, "_PGVECTOR_EXTVERSION", None)
+    monkeypatch.setattr(vector_index, "_PGVECTOR_VERSION_QUERIED", False)
 
 
 class TestNormalizeDatetime:
@@ -326,6 +333,7 @@ class TestComputeSemanticLinksAnnPgBouncerSafety:
         conn.execute = AsyncMock()
         conn.copy_records_to_table = AsyncMock()
         conn.fetch = AsyncMock(return_value=[])
+        conn.fetchrow = AsyncMock(return_value=None)
         return conn
 
     @pytest.mark.asyncio
@@ -361,6 +369,23 @@ class TestComputeSemanticLinksAnnPgBouncerSafety:
         txn_cm = mock_conn.transaction.return_value
         txn_cm.__aenter__.assert_awaited_once()
         txn_cm.__aexit__.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_inlines_fact_type_for_partial_index_planning(self, mock_conn):
+        emb = [0.1] * 384
+        await compute_semantic_links_ann(
+            conn=mock_conn,
+            bank_id="bank-1",
+            unit_ids=["u1"],
+            embeddings=[emb],
+            fact_types=["world"],
+            threshold=DEFAULT_SEMANTIC_LINK_MIN_SIMILARITY,
+        )
+
+        query = mock_conn.fetch.call_args.args[0]
+        assert "fact_type = 'world'" in query
+        assert "fact_type = $2" not in query
+        assert mock_conn.fetch.call_args.args[1:] == ("bank-1", 50)
 
     @pytest.mark.asyncio
     async def test_temp_table_uses_on_commit_drop(self, mock_conn):

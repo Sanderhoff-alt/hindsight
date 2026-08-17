@@ -479,40 +479,6 @@ class DataAccessOps(ABC):
         """
         ...
 
-    # -- Bank index management -------------------------------------------
-
-    @abstractmethod
-    async def create_bank_vector_indexes(
-        self,
-        conn: DatabaseConnection,
-        table: str,
-        bank_id: str,
-        internal_id: str,
-        index_clause: str,
-        fact_types: dict[str, str],
-    ) -> None:
-        """Create per-bank partial vector indexes.
-
-        PG creates per-(bank, fact_type) partial indexes.
-        Non-PG is a no-op (uses global index).
-        """
-        ...
-
-    @abstractmethod
-    async def drop_bank_vector_indexes(
-        self,
-        conn: DatabaseConnection,
-        schema: str,
-        internal_id: str,
-        fact_types: dict[str, str],
-    ) -> None:
-        """Drop per-bank partial vector indexes.
-
-        PG drops per-(bank, fact_type) indexes.
-        Non-PG is a no-op.
-        """
-        ...
-
     # -- Entity resolution strategy routing ------------------------------
 
     @abstractmethod

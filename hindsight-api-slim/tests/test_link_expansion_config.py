@@ -2,6 +2,7 @@
 
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -9,6 +10,23 @@ from hindsight_api.engine.db.ops import LinkExpansionRows
 from hindsight_api.engine.search import link_expansion_retrieval
 from hindsight_api.engine.search.link_expansion_retrieval import LinkExpansionRetriever
 from hindsight_api.engine.search.types import RetrievalResult
+
+
+@pytest.mark.asyncio
+async def test_semantic_seed_query_inlines_fact_type_for_partial_index():
+    conn = SimpleNamespace(fetch=AsyncMock(return_value=[]))
+
+    await link_expansion_retrieval._find_semantic_seeds(
+        conn,
+        "[0.1,0.2]",
+        "bank",
+        "world",
+    )
+
+    query = conn.fetch.call_args.args[0]
+    assert "fact_type = 'world'" in query
+    assert "fact_type = $3" not in query
+    assert conn.fetch.call_args.args[1:5] == ("[0.1,0.2]", "bank", 0.3, 20)
 
 
 @pytest.mark.asyncio

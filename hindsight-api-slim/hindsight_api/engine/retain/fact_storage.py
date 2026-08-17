@@ -12,7 +12,7 @@ from typing import Any
 
 from ...config import _get_raw_config
 from ..memory_engine import fq_table
-from .bank_utils import DEFAULT_DISPOSITION, create_bank_vector_indexes
+from .bank_utils import DEFAULT_DISPOSITION
 from .fact_extraction import _sanitize_text
 from .types import ProcessedFact
 
@@ -121,7 +121,7 @@ async def index_facts(
     await get_memories().index_facts(bank_id, unit_ids, facts, document_id, unit_entity_ids)
 
 
-async def ensure_bank_exists(conn, bank_id: str, ops=None) -> None:
+async def ensure_bank_exists(conn, bank_id: str) -> None:
     """
     Ensure bank exists in the database.
 
@@ -131,10 +131,8 @@ async def ensure_bank_exists(conn, bank_id: str, ops=None) -> None:
         conn: Database connection
         bank_id: Bank identifier
     """
-    # Generate internal_id here so we control the value and can use it
-    # immediately for HNSW index creation without a RETURNING round-trip.
     internal_id = uuid.uuid4()
-    inserted = await conn.fetchval(
+    await conn.fetchval(
         f"""
         INSERT INTO {fq_table("banks")} (bank_id, name, disposition, mission, internal_id)
         VALUES ($1, $2, $3::jsonb, $4, $5)
@@ -147,9 +145,6 @@ async def ensure_bank_exists(conn, bank_id: str, ops=None) -> None:
         "",
         internal_id,
     )
-    if inserted:
-        # Fresh insert — create per-bank vector indexes
-        await create_bank_vector_indexes(conn, bank_id, str(internal_id), ops=ops)
 
 
 async def delete_stale_observations_for_memories(

@@ -31,7 +31,12 @@ import asyncpg
 import httpx
 from pydantic import ValidationError
 
-from .._vector_index import ann_search_tuning_settings, configured_vector_extension
+from .._vector_index import (
+    ann_search_tuning_settings,
+    configured_vector_extension,
+    iterative_scan_settings,
+    pgvector_extension_version,
+)
 from ..cancellation import OperationCancelledError
 from ..config import (
     DEFAULT_RECALL_CHUNKS_MAX_TOKENS,
@@ -1060,7 +1065,7 @@ def _recall_scoring_now(question_date: datetime | None) -> datetime:
 # Logger for memory system
 logger = logging.getLogger(__name__)
 
-from .db_utils import acquire_with_retry, retry_with_backoff
+from .db_utils import acquire_with_retry
 
 
 def _get_tiktoken_encoding():
@@ -3800,7 +3805,11 @@ class MemoryEngine(MemoryEngineInterface):
             # the connection lifetime. The dispatcher returns only safe, portable
             # knobs for the configured extension; VectorChord probe tuning is
             # index-shaped and should be stored on vchordrq indexes instead.
-            settings.extend(ann_search_tuning_settings(configured_vector_extension(), kind="high_recall"))
+            vector_extension = configured_vector_extension()
+            settings.extend(ann_search_tuning_settings(vector_extension, kind="high_recall"))
+            if vector_extension == "pgvector":
+                extversion = await pgvector_extension_version(conn)
+                settings.extend(iterative_scan_settings(vector_extension, extversion))
 
             # Server-side safety net for runaway queries. Migrations use a
             # separate SQLAlchemy/psycopg2 engine, so long-running DDL is
@@ -5186,7 +5195,7 @@ class MemoryEngine(MemoryEngineInterface):
 
         await self._authenticate_tenant(request_context)
         await self._get_backend()
-        # Ensure the bank (and its per-bank vector indexes) exist before inserts.
+        # Ensure the bank exists before inserts; vector indexes are migration-owned globals.
         # Import has no single write transaction to join — the archive is written
         # by a worker later — so the bank is created on its own connection.
         await self._ensure_bank_exists(bank_id, request_context)
@@ -7892,7 +7901,6 @@ class MemoryEngine(MemoryEngineInterface):
         backend = await self._get_backend()
         invalidated_obs = 0
         result: dict[str, int] = {}
-        bank_internal_id: str | None = None
         async with acquire_with_retry(backend) as conn:
             # Ensure connection is not in read-only mode (can happen with connection poolers)
             await conn.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE")
@@ -8026,35 +8034,11 @@ class MemoryEngine(MemoryEngineInterface):
                         }
 
                         if delete_bank_profile:
-                            # Delete the bank profile and retrieve internal_id for HNSW index cleanup
-                            internal_id = await conn.fetchval(
-                                f"DELETE FROM {fq_table('banks')} WHERE bank_id = $1 RETURNING internal_id", bank_id
-                            )
-                            if internal_id:
-                                bank_internal_id = str(internal_id)
+                            await conn.execute(f"DELETE FROM {fq_table('banks')} WHERE bank_id = $1", bank_id)
                             result["bank_deleted"] = True
 
                 except Exception as e:
                     raise Exception(f"Failed to delete agent data: {str(e)}")
-
-            # Drop per-bank vector indexes AFTER the transaction commits: the
-            # drop runs CONCURRENTLY (see ops.drop_bank_vector_indexes), which
-            # cannot run inside a transaction block. Same-process drops are
-            # serialized by the ops-level DDL lock; retry_with_backoff absorbs
-            # the residual cross-process deadlock a concurrent index build/drop
-            # on the shared memory_units table can still trigger (sqlstate
-            # 40P01 / ORA-00060) so a delete is never lost to a transient lock
-            # cycle. Sized well above the defaults: a many-process delete storm
-            # (CI teardown ran 8 workers' drops at once) drains at roughly one
-            # deadlock victim per deadlock_timeout (1s), so the default ~2.4s
-            # of backoff lost every retry; ~30s of jittered backoff outlasts
-            # any realistic pile-up.
-            if bank_internal_id:
-                await retry_with_backoff(
-                    lambda: bank_utils.drop_bank_vector_indexes(conn, bank_internal_id, ops=self._backend.ops),
-                    max_retries=7,
-                    max_delay=10.0,
-                )
 
         # A store that keeps memories outside SQL leaves memory_units empty, so every DELETE
         # above was a no-op on its data — it must be told to drop the bank's memories too, or
@@ -10515,8 +10499,7 @@ class MemoryEngine(MemoryEngineInterface):
 
         Transactionality:
           * Pass ``conn`` (a connection with an open transaction) to run the
-            bank ``INSERT`` and its per-bank vector index creation on the
-            caller's connection. The bank row then commits — or rolls back —
+            bank ``INSERT`` on the caller's connection. The bank row then commits — or rolls back —
             atomically with the caller's write on that same transaction.
           * Omit ``conn`` to ensure the bank on a dedicated connection (used by
             paths that have no single write transaction to join, e.g. retain and
@@ -10555,7 +10538,7 @@ class MemoryEngine(MemoryEngineInterface):
                 await self._validate_operation(self._operation_validator.validate_create_bank(ctx))
 
         if conn is not None:
-            result = await bank_utils.get_or_create_bank_profile_on_conn(conn, bank_id, ops=backend.ops)
+            result = await bank_utils.get_or_create_bank_profile_on_conn(conn, bank_id)
             return result.created
 
         result = await bank_utils.get_or_create_bank_profile(backend, bank_id)

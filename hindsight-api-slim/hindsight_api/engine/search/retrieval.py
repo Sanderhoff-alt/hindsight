@@ -143,14 +143,17 @@ async def retrieve_semantic_bm25_combined_sql(
     of forcing a full sequential scan (which the previous window-function approach
     caused by using PARTITION BY inside ROW_NUMBER()).
 
-    Requires partial HNSW indexes per fact_type (idx_mu_emb_world,
-    idx_mu_emb_observation, idx_mu_emb_experience), created automatically by
-    Alembic migration a3b4c5d6e7f8_add_partial_hnsw_indexes.py.
+    Requires the global fact-type partial indexes (idx_mu_emb_world,
+    idx_mu_emb_observation, idx_mu_emb_experience), created by the Alembic
+    migration.
 
     HNSW is approximate — semantic arms over-fetch by 5x (min 100) and trim to
     limit in Python to compensate.  ef_search=200 is set globally on pool
     connections at init time (see memory_engine.py) to improve recall on sparse
-    graphs.
+    graphs. On pgvector 0.8+, capability detection also enables iterative HNSW
+    scans; older pgvector versions rely on the explicit over-fetch and fact_type
+    partial predicate alone. This layout does not rely on the old unfiltered
+    global-index plus post-filter fallback.
 
     fact_type values are inlined as literals (safe: they come from a controlled
     internal enum, never from user input).
@@ -531,7 +534,7 @@ async def retrieve_temporal_combined_sql(
     #
     # For each fact_type, ANN-rank the units whose time overlaps the window
     # (ORDER BY embedding <=> query) and keep a pool of the most relevant
-    # (_TEMPORAL_POOL_SIZE). The planner serves this from the per-(bank, fact_type) vector
+    # (_TEMPORAL_POOL_SIZE). The planner serves this from the global fact-type partial
     # index when the window is broad — the dense-metadata case, where the window matches
     # most rows — and from the partial date indexes plus an exact sort when the window is
     # narrow. Either way the work is bounded; neither path is a scan-and-sort of the whole
@@ -550,7 +553,7 @@ async def retrieve_temporal_combined_sql(
         return {}
 
     # One similarity-ranked, window-filtered arm per fact_type, UNION ALL'd — each arm has its
-    # own ORDER BY ... LIMIT so the per-(bank, fact_type) vector index can serve it. fact_type
+    # own ORDER BY ... LIMIT so the matching fact-type partial index can serve it. fact_type
     # is inlined as a literal (controlled internal enum, never user input), matching
     # retrieve_semantic_bm25_combined_sql; this keeps the query free of `unnest`/LATERAL, which the
     # Oracle backend cannot translate.
