@@ -5891,6 +5891,7 @@ components:
             tags:
             - tags
             - tags
+          timezone: UTC
           exclude_mental_models: false
           mode: full
           refresh_after_consolidation: false
@@ -8126,6 +8127,7 @@ components:
               tags:
               - tags
               - tags
+            timezone: UTC
             exclude_mental_models: false
             mode: full
             refresh_after_consolidation: false
@@ -8168,6 +8170,7 @@ components:
               tags:
               - tags
               - tags
+            timezone: UTC
             exclude_mental_models: false
             mode: full
             refresh_after_consolidation: false
@@ -8373,6 +8376,7 @@ components:
             tags:
             - tags
             - tags
+          timezone: UTC
           exclude_mental_models: false
           mode: full
           refresh_after_consolidation: false
@@ -8506,6 +8510,7 @@ components:
           tags:
           - tags
           - tags
+        timezone: UTC
         exclude_mental_models: false
         mode: full
         refresh_after_consolidation: false
@@ -8543,6 +8548,12 @@ components:
           type: boolean
         refresh_cron:
           nullable: true
+          type: string
+        timezone:
+          default: UTC
+          description: "IANA timezone used to evaluate refresh_cron (for example,\
+            \ 'Asia/Shanghai'). Defaults to UTC for backward compatibility."
+          title: Timezone
           type: string
         fact_types:
           items:
@@ -8618,6 +8629,7 @@ components:
           tags:
           - tags
           - tags
+        timezone: UTC
         exclude_mental_models: false
         mode: full
         refresh_after_consolidation: false
@@ -8655,6 +8667,12 @@ components:
           type: boolean
         refresh_cron:
           nullable: true
+          type: string
+        timezone:
+          default: UTC
+          description: "IANA timezone used to evaluate refresh_cron (for example,\
+            \ 'Asia/Shanghai'). Defaults to UTC for backward compatibility."
+          title: Timezone
           type: string
         fact_types:
           items:
@@ -9969,6 +9987,7 @@ components:
             tags:
             - tags
             - tags
+          timezone: UTC
           exclude_mental_models: false
           mode: full
           refresh_after_consolidation: false

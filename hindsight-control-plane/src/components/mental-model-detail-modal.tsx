@@ -1202,7 +1202,9 @@ function ConfigurationTab({ mentalModel }: { mentalModel: MentalModel }) {
             )
           }
         />
-        {trigger.refresh_cron && <CronSchedulePreview cron={trigger.refresh_cron} />}
+        {trigger.refresh_cron && (
+          <CronSchedulePreview cron={trigger.refresh_cron} timezone={trigger.timezone || "UTC"} />
+        )}
         <Metadata
           label={t("labelFactTypes")}
           value={

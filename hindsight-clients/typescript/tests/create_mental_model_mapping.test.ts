@@ -14,6 +14,7 @@ import * as sdk from "../generated/sdk.gen";
 jest.mock("../generated/sdk.gen");
 
 const mockedCreate = sdk.createMentalModel as jest.MockedFunction<typeof sdk.createMentalModel>;
+const mockedUpdate = sdk.updateMentalModel as jest.MockedFunction<typeof sdk.updateMentalModel>;
 
 function lastBody(): any {
   return mockedCreate.mock.calls[0][0].body;
@@ -25,6 +26,7 @@ describe("createMentalModel trigger mapping", () => {
   beforeEach(() => {
     client = new HindsightClient({ baseUrl: "http://localhost:8888" });
     mockedCreate.mockReset();
+    mockedUpdate.mockReset();
     mockedCreate.mockResolvedValue({
       data: { mental_model_id: "mm-1", operation_id: "op-1" },
     } as any);
@@ -56,6 +58,27 @@ describe("createMentalModel trigger mapping", () => {
     });
 
     expect(lastBody().trigger.refresh_after_consolidation).toBe(true);
+  });
+
+  test("maps refreshCron and timezone", async () => {
+    await client.createMentalModel("bank", "Scheduled", "q", {
+      trigger: { refreshCron: "0 21 * * *", timezone: "Asia/Shanghai" },
+    });
+
+    expect(lastBody().trigger.refresh_cron).toBe("0 21 * * *");
+    expect(lastBody().trigger.timezone).toBe("Asia/Shanghai");
+  });
+
+  test("maps refreshCron and timezone when updating", async () => {
+    mockedUpdate.mockResolvedValue({ data: { mental_model_id: "mm-1" } } as any);
+
+    await client.updateMentalModel("bank", "mm-1", {
+      trigger: { refreshCron: "0 21 * * *", timezone: "Asia/Shanghai" },
+    });
+
+    const body = mockedUpdate.mock.calls[0][0].body as any;
+    expect(body.trigger.refresh_cron).toBe("0 21 * * *");
+    expect(body.trigger.timezone).toBe("Asia/Shanghai");
   });
 
   test("omitting trigger sends no trigger (preserves the all_strict default)", async () => {

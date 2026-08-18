@@ -61,6 +61,7 @@ import time
 from collections.abc import Coroutine
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
 
 from ..config import HindsightConfig, get_config
 from ..models import RequestContext
@@ -71,6 +72,22 @@ if TYPE_CHECKING:
     from .memory_engine import MemoryEngine
 
 logger = logging.getLogger(__name__)
+
+
+def _scheduled_cron_is_due(
+    cron: str,
+    timezone_name: str,
+    last_refreshed_at: datetime | None,
+    *,
+    now_utc: datetime | None = None,
+) -> bool:
+    """Return whether the latest cron occurrence is newer than last refresh."""
+    from croniter import croniter
+
+    now = (now_utc or datetime.now(timezone.utc)).astimezone(ZoneInfo(timezone_name))
+    previous_fire = croniter(cron, now).get_prev(datetime)
+    return last_refreshed_at is None or previous_fire > last_refreshed_at
+
 
 # Short tick so jobs with different cadences share one loop without per-job tasks.
 _TICK_SECONDS = 60
@@ -553,7 +570,7 @@ class MaintenanceLoop:
         try:
             async with acquire_with_retry(engine._backend, max_retries=1) as conn:
                 rows = await conn.fetch(
-                    "SELECT schema_name, bank_id, mental_model_id, refresh_cron, last_refreshed_at "
+                    "SELECT schema_name, bank_id, mental_model_id, refresh_cron, timezone, last_refreshed_at "
                     f"FROM {fq_routine('mental_models_with_cron')}()"
                 )
         except Exception as e:
@@ -562,22 +579,21 @@ class MaintenanceLoop:
         if not rows:
             return
 
-        from croniter import croniter
-
-        now = datetime.now(timezone.utc)
         due = []
         for row in rows:
             cron = row["refresh_cron"]
+            timezone_name = row["timezone"] or "UTC"
             last = row["last_refreshed_at"]
             try:
-                prev_fire = croniter(cron, now).get_prev(datetime)
+                is_due = _scheduled_cron_is_due(cron, timezone_name, last)
+            # KeyError covers both croniter and zoneinfo lookup failures.
             except (ValueError, KeyError) as e:
                 logger.warning(
                     f"Scheduled mental model refresh: skipping invalid cron {cron!r} for "
-                    f"{row['schema_name']}/{row['mental_model_id']}: {e}"
+                    f"{row['schema_name']}/{row['mental_model_id']} (timezone={timezone_name!r}): {e}"
                 )
                 continue
-            if last is None or prev_fire > last:
+            if is_due:
                 due.append(row)
         if not due:
             return

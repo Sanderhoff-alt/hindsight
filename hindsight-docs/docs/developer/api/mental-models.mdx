@@ -120,7 +120,8 @@ Mental models can be configured to **automatically refresh** when observations a
 |---------|------|---------|-------------|
 | `mode` | `"full"` \| `"delta"` | `"full"` | Refresh strategy. See [Refresh Mode](#refresh-mode) below. |
 | `refresh_after_consolidation` | bool | false | Automatically refresh after observations consolidation |
-| `refresh_cron` | string \| null | null | UTC 5-field cron expression for scheduled refreshes, such as `"0 3 * * *"` for daily at 03:00 UTC |
+| `refresh_cron` | string \| null | null | 5-field cron expression evaluated in the trigger's timezone, such as `"0 3 * * *"` for a daily 03:00 schedule |
+| `timezone` | string \| null | `"UTC"` | Optional IANA timezone used to evaluate `refresh_cron`, such as `"Asia/Shanghai"`. Existing triggers without this field use UTC. |
 | `tags_match` | string \| null | null | How the model's `tags` filter source memories during refresh: `any`, `all`, `any_strict`, `all_strict`, or `exact`. When `null`, a **tagged** model defaults to `all_strict` (a memory must carry every one of the model's tags). Set `"any"` to match memories carrying *any* of the tags — see [Tags and Visibility](#tags-and-visibility). |
 | `tag_groups` | list \| null | null | Advanced boolean tag expressions that override flat `tags`/`tags_match` entirely. See the [Recall tags reference](./recall#tags). |
 | `fact_types` | list \| null | null | Restrict which fact types the refresh reads: any of `world`, `experience`, `observation`. `null` means all three. Must not be an empty list. |
@@ -134,7 +135,7 @@ Mental models can be configured to **automatically refresh** when observations a
 
 When `refresh_after_consolidation` is enabled, the mental model will be re-generated every time the bank's observations are consolidated — ensuring it always reflects the latest synthesized knowledge.
 
-When `refresh_cron` is set, Hindsight checks the schedule on the server's mental-model refresh tick and refreshes the model only if memories in its scope have changed since the last refresh. `refresh_cron` and `refresh_after_consolidation` are mutually exclusive, so a model refreshes either after consolidation or on a fixed UTC schedule, not both.
+When `refresh_cron` is set, Hindsight checks the schedule on the server's mental-model refresh tick and refreshes the model only if memories in its scope have changed since the last refresh. `refresh_cron` and `refresh_after_consolidation` are mutually exclusive, so a model refreshes either after consolidation or on a fixed timezone-aware schedule, not both. The scheduler evaluates the cron expression in `timezone`, including daylight-saving transitions; omitted timezones default to UTC.
 
 ### Structured Output
 

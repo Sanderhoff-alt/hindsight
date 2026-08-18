@@ -14,6 +14,7 @@ from collections.abc import Awaitable
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Literal, TypeVar
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.gzip import GZipMiddleware
@@ -2163,12 +2164,19 @@ class MentalModelTrigger(BaseModel):
     refresh_cron: str | None = Field(
         default=None,
         description=(
-            "Cron expression (UTC, standard 5-field syntax, e.g. '0 3 * * *' for daily at 03:00 UTC) "
+            "Cron expression (standard 5-field syntax, evaluated in timezone) "
             "for refreshing this mental model on a fixed schedule. Mutually exclusive with "
             "refresh_after_consolidation — a model refreshes either after consolidation or on a cron "
             "schedule, not both. A scheduled refresh only runs when the model is stale (new memories in "
             "its scope since the last refresh); if nothing changed, the tick is skipped to avoid a "
             "wasted LLM call. null = no schedule."
+        ),
+    )
+    timezone: str = Field(
+        default="UTC",
+        description=(
+            "IANA timezone used to evaluate refresh_cron (for example, 'Asia/Shanghai'). "
+            "Defaults to UTC for backward compatibility."
         ),
     )
     fact_types: list[Literal["world", "experience", "observation"]] | None = Field(
@@ -2268,6 +2276,22 @@ class MentalModelTrigger(BaseModel):
 
         if not croniter.is_valid(v):
             raise ValueError(f"refresh_cron is not a valid cron expression: {v!r}")
+        return v
+
+    @field_validator("timezone", mode="before")
+    @classmethod
+    def validate_timezone(cls, v: object) -> str:
+        if v is None:
+            return "UTC"
+        if not isinstance(v, str):
+            raise ValueError(f"timezone must be a string, got {type(v).__name__}")
+        if not v.strip():
+            return "UTC"
+        v = v.strip()
+        try:
+            ZoneInfo(v)
+        except (ZoneInfoNotFoundError, ValueError) as e:
+            raise ValueError(f"timezone must be a valid IANA timezone name: {v!r}") from e
         return v
 
     @model_validator(mode="after")

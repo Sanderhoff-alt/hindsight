@@ -878,6 +878,8 @@ export class HindsightClient {
       maxTokens?: number;
       trigger?: {
         refreshAfterConsolidation?: boolean;
+        refreshCron?: string | null;
+        timezone?: string;
         /** How this model's tags filter source memories on refresh. If omitted, a tagged model defaults to 'all_strict' (a memory must carry every one of the model's tags), which silently drops memories that only carry a subset. Set 'any' to match memories carrying any of the tags — the same default recall/reflect use. */
         tagsMatch?: "any" | "all" | "any_strict" | "all_strict" | "exact";
         /** Compound tag filter using boolean groups; overrides the model's flat tags/tagsMatch during refresh. */
@@ -898,6 +900,8 @@ export class HindsightClient {
         trigger: options?.trigger
           ? {
               refresh_after_consolidation: options.trigger.refreshAfterConsolidation,
+              refresh_cron: options.trigger.refreshCron,
+              timezone: options.trigger.timezone,
               tags_match: options.trigger.tagsMatch,
               tag_groups: options.trigger.tagGroups,
             }
@@ -1031,7 +1035,11 @@ export class HindsightClient {
       sourceQuery?: string;
       tags?: string[];
       maxTokens?: number;
-      trigger?: { refreshAfterConsolidation?: boolean };
+      trigger?: {
+        refreshAfterConsolidation?: boolean;
+        refreshCron?: string | null;
+        timezone?: string;
+      };
       signal?: AbortSignal;
     }
   ): Promise<MentalModelResponse> {
@@ -1044,7 +1052,11 @@ export class HindsightClient {
         tags: options.tags,
         max_tokens: options.maxTokens,
         trigger: options.trigger
-          ? { refresh_after_consolidation: options.trigger.refreshAfterConsolidation }
+          ? {
+              refresh_after_consolidation: options.trigger.refreshAfterConsolidation,
+              refresh_cron: options.trigger.refreshCron,
+              timezone: options.trigger.timezone,
+            }
           : undefined,
       },
       signal: options.signal,
@@ -1145,6 +1157,7 @@ export class HindsightClient {
         mode?: "full" | "delta";
         refreshAfterConsolidation?: boolean;
         refreshCron?: string | null;
+        timezone?: string;
         factTypes?: Array<"world" | "experience" | "observation">;
         excludeMentalModels?: boolean;
         excludeMentalModelIds?: string[];
@@ -1171,6 +1184,7 @@ export class HindsightClient {
               mode: options.trigger.mode,
               refresh_after_consolidation: options.trigger.refreshAfterConsolidation,
               refresh_cron: options.trigger.refreshCron,
+              timezone: options.trigger.timezone,
               fact_types: options.trigger.factTypes,
               exclude_mental_models: options.trigger.excludeMentalModels,
               exclude_mental_model_ids: options.trigger.excludeMentalModelIds,

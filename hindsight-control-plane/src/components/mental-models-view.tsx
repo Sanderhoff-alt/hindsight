@@ -67,8 +67,9 @@ import {
 import { MentalModelDetailModal } from "./mental-model-detail-modal";
 import { ResponseSchemaField } from "./response-schema-field";
 import { TagFilterInput } from "./tag-filter-input";
-import { CronSchedulePreview } from "./cron-schedule-preview";
 import { NextRefresh } from "./next-refresh";
+import { ScheduledRefreshFields } from "./scheduled-refresh-fields";
+import { getBrowserTimezone } from "@/lib/timezones";
 import { TagChip } from "@/components/ui/facet-chip";
 
 interface ReflectResponseBasedOnFact {
@@ -76,6 +77,14 @@ interface ReflectResponseBasedOnFact {
   text: string;
   type: string;
   context?: string;
+}
+
+function scheduledTimezone(refreshTrigger: "manual" | "auto" | "scheduled", timezone: string) {
+  return refreshTrigger === "scheduled" ? timezone.trim() || "UTC" : undefined;
+}
+
+function scheduledCron(refreshTrigger: "manual" | "auto" | "scheduled", cron: string) {
+  return refreshTrigger === "scheduled" ? cron.trim() || undefined : undefined;
 }
 
 interface ReflectResponse {
@@ -95,6 +104,7 @@ interface MentalModel {
     mode?: "full" | "delta";
     refresh_after_consolidation: boolean;
     refresh_cron?: string | null;
+    timezone?: string | null;
     fact_types?: Array<"world" | "experience" | "observation">;
     exclude_mental_models?: boolean;
     exclude_mental_model_ids?: string[];
@@ -694,6 +704,7 @@ function CreateMentalModelDialog({
     refreshTrigger: "manual" as "manual" | "auto" | "scheduled",
     mode: "full" as "full" | "delta",
     refreshCron: "",
+    timezone: "UTC",
     factTypes: [] as Array<"world" | "experience" | "observation">,
     excludeMentalModels: false,
     excludeMentalModelIds: "",
@@ -706,6 +717,12 @@ function CreateMentalModelDialog({
     responseSchema: "",
     keepTrace: false,
   });
+
+  useEffect(() => {
+    if (open) {
+      setForm((current) => ({ ...current, timezone: getBrowserTimezone() }));
+    }
+  }, [open]);
 
   const handleCreate = async () => {
     if (!currentBank || !form.name.trim() || !form.sourceQuery.trim()) return;
@@ -759,8 +776,8 @@ function CreateMentalModelDialog({
         trigger: {
           mode: form.mode,
           refresh_after_consolidation: form.refreshTrigger === "auto",
-          refresh_cron:
-            form.refreshTrigger === "scheduled" ? form.refreshCron.trim() || undefined : undefined,
+          refresh_cron: scheduledCron(form.refreshTrigger, form.refreshCron),
+          timezone: scheduledTimezone(form.refreshTrigger, form.timezone),
           fact_types: form.factTypes.length > 0 ? form.factTypes : undefined,
           exclude_mental_models: form.excludeMentalModels || undefined,
           exclude_mental_model_ids: excludeIds.length > 0 ? excludeIds : undefined,
@@ -783,6 +800,7 @@ function CreateMentalModelDialog({
         refreshTrigger: "manual",
         mode: "full",
         refreshCron: "",
+        timezone: "UTC",
         factTypes: [],
         excludeMentalModels: false,
         excludeMentalModelIds: "",
@@ -816,6 +834,7 @@ function CreateMentalModelDialog({
             refreshTrigger: "manual",
             mode: "full",
             refreshCron: "",
+            timezone: "UTC",
             factTypes: [],
             excludeMentalModels: false,
             excludeMentalModelIds: "",
@@ -934,20 +953,12 @@ function CreateMentalModelDialog({
                   </p>
                 </div>
                 {form.refreshTrigger === "scheduled" && (
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-foreground">
-                      {t("optionsRefreshCronLabel")}
-                    </label>
-                    <Input
-                      value={form.refreshCron}
-                      onChange={(e) => setForm({ ...form, refreshCron: e.target.value })}
-                      placeholder={t("optionsRefreshCronPlaceholder")}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      {t("optionsRefreshCronDescription")}
-                    </p>
-                    <CronSchedulePreview cron={form.refreshCron} />
-                  </div>
+                  <ScheduledRefreshFields
+                    cron={form.refreshCron}
+                    timezone={form.timezone}
+                    onCronChange={(refreshCron) => setForm({ ...form, refreshCron })}
+                    onTimezoneChange={(timezone) => setForm({ ...form, timezone })}
+                  />
                 )}
                 <div className="space-y-2">
                   <label className="text-sm font-medium text-foreground">
@@ -1204,6 +1215,7 @@ function UpdateMentalModelDialog({
         : "manual") as "manual" | "auto" | "scheduled",
     mode: (mentalModel.trigger?.mode || "full") as "full" | "delta",
     refreshCron: mentalModel.trigger?.refresh_cron || "",
+    timezone: mentalModel.trigger?.timezone || "UTC",
     factTypes:
       (mentalModel.trigger?.fact_types as
         | Array<"world" | "experience" | "observation">
@@ -1291,8 +1303,8 @@ function UpdateMentalModelDialog({
         trigger: {
           mode: form.mode,
           refresh_after_consolidation: form.refreshTrigger === "auto",
-          refresh_cron:
-            form.refreshTrigger === "scheduled" ? form.refreshCron.trim() || undefined : undefined,
+          refresh_cron: scheduledCron(form.refreshTrigger, form.refreshCron),
+          timezone: scheduledTimezone(form.refreshTrigger, form.timezone),
           fact_types: form.factTypes.length > 0 ? form.factTypes : undefined,
           exclude_mental_models: form.excludeMentalModels || undefined,
           exclude_mental_model_ids: excludeIds.length > 0 ? excludeIds : undefined,
@@ -1416,20 +1428,12 @@ function UpdateMentalModelDialog({
                   </p>
                 </div>
                 {form.refreshTrigger === "scheduled" && (
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-foreground">
-                      {t("optionsRefreshCronLabel")}
-                    </label>
-                    <Input
-                      value={form.refreshCron}
-                      onChange={(e) => setForm({ ...form, refreshCron: e.target.value })}
-                      placeholder={t("optionsRefreshCronPlaceholder")}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      {t("optionsRefreshCronDescription")}
-                    </p>
-                    <CronSchedulePreview cron={form.refreshCron} />
-                  </div>
+                  <ScheduledRefreshFields
+                    cron={form.refreshCron}
+                    timezone={form.timezone}
+                    onCronChange={(refreshCron) => setForm({ ...form, refreshCron })}
+                    onTimezoneChange={(timezone) => setForm({ ...form, timezone })}
+                  />
                 )}
                 <div className="space-y-2">
                   <label className="text-sm font-medium text-foreground">

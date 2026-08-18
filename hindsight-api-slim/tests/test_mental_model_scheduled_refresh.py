@@ -10,11 +10,12 @@ monkeypatched.
 import asyncio
 import json
 import uuid
+from datetime import datetime, timezone
 
 import pytest
 
 from hindsight_api.api.http import MentalModelTrigger
-from hindsight_api.engine.maintenance import MaintenanceLoop
+from hindsight_api.engine.maintenance import MaintenanceLoop, _scheduled_cron_is_due
 from hindsight_api.engine.memory_engine import MemoryEngine
 
 
@@ -26,6 +27,26 @@ def test_refresh_cron_and_auto_refresh_are_mutually_exclusive():
     # Both together is rejected.
     with pytest.raises(ValueError, match="mutually exclusive"):
         MentalModelTrigger(refresh_after_consolidation=True, refresh_cron="0 3 * * *")
+
+
+def test_refresh_cron_timezone_defaults_to_utc_and_validates_iana_names():
+    assert MentalModelTrigger(refresh_cron="0 3 * * *").timezone == "UTC"
+    assert MentalModelTrigger(refresh_cron="0 3 * * *", timezone=None).timezone == "UTC"
+    assert MentalModelTrigger(refresh_cron="0 21 * * *", timezone="Asia/Shanghai").timezone == "Asia/Shanghai"
+    with pytest.raises(ValueError, match="valid IANA timezone"):
+        MentalModelTrigger(refresh_cron="0 3 * * *", timezone="not/a-timezone")
+    with pytest.raises(ValueError, match="timezone must be a string"):
+        MentalModelTrigger(refresh_cron="0 3 * * *", timezone=123)
+
+
+def test_scheduled_cron_due_uses_trigger_timezone():
+    now_utc = datetime(2026, 1, 1, 12, 30, tzinfo=timezone.utc)
+    assert not _scheduled_cron_is_due(
+        "0 21 * * *", "Asia/Shanghai", datetime(2026, 1, 1, 13, 0, tzinfo=timezone.utc), now_utc=now_utc
+    )
+    assert _scheduled_cron_is_due(
+        "0 20 * * *", "Asia/Shanghai", datetime(2026, 1, 1, 11, 59, tzinfo=timezone.utc), now_utc=now_utc
+    )
 
 
 async def _make_bank(memory: MemoryEngine, request_context) -> str:
@@ -41,6 +62,7 @@ async def _insert_mm(
     refresh_cron: str | None,
     last_refreshed_offset: str,
     tags: list[str] | None = None,
+    timezone_name: str | None = None,
 ) -> str:
     """Insert a pinned mental model. ``last_refreshed_offset`` is an interval
     string applied as ``now() - INTERVAL <offset>`` (e.g. '1 day', '0 seconds')."""
@@ -48,6 +70,8 @@ async def _insert_mm(
     trigger = {"refresh_after_consolidation": False}
     if refresh_cron is not None:
         trigger["refresh_cron"] = refresh_cron
+    if timezone_name is not None:
+        trigger["timezone"] = timezone_name
     await conn.execute(
         f"""
         INSERT INTO mental_models
@@ -147,11 +171,16 @@ async def test_refresh_cron_round_trips_through_create_and_get(memory: MemoryEng
         name="scheduled model",
         source_query="what changed",
         content="body",
-        trigger={"refresh_after_consolidation": False, "refresh_cron": "0 3 * * *"},
+        trigger={
+            "refresh_after_consolidation": False,
+            "refresh_cron": "0 21 * * *",
+            "timezone": "Asia/Shanghai",
+        },
         request_context=request_context,
     )
     fetched = await memory.get_mental_model(bank, created["id"], request_context=request_context)
-    assert fetched["trigger"]["refresh_cron"] == "0 3 * * *"
+    assert fetched["trigger"]["refresh_cron"] == "0 21 * * *"
+    assert fetched["trigger"]["timezone"] == "Asia/Shanghai"
 
 
 @pytest.mark.asyncio
@@ -160,7 +189,13 @@ async def test_routine_returns_cron_models_excludes_plain_and_in_flight(memory: 
     cron-less models and models with an in-flight refresh operation."""
     bank = await _make_bank(memory, request_context)
     async with memory._pool.acquire() as conn:
-        cron_mm = await _insert_mm(conn, bank, refresh_cron="*/5 * * * *", last_refreshed_offset="1 day")
+        cron_mm = await _insert_mm(
+            conn,
+            bank,
+            refresh_cron="*/5 * * * *",
+            last_refreshed_offset="1 day",
+            timezone_name="Asia/Shanghai",
+        )
         plain_mm = await _insert_mm(conn, bank, refresh_cron=None, last_refreshed_offset="1 day")
         in_flight_mm = await _insert_mm(conn, bank, refresh_cron="*/5 * * * *", last_refreshed_offset="1 day")
         await conn.execute(
@@ -173,7 +208,7 @@ async def test_routine_returns_cron_models_excludes_plain_and_in_flight(memory: 
             json.dumps({"mental_model_id": in_flight_mm}),
         )
         rows = await conn.fetch(
-            "SELECT mental_model_id FROM public.mental_models_with_cron() WHERE bank_id = $1",
+            "SELECT mental_model_id, timezone FROM public.mental_models_with_cron() WHERE bank_id = $1",
             bank,
         )
 
@@ -181,6 +216,7 @@ async def test_routine_returns_cron_models_excludes_plain_and_in_flight(memory: 
     assert cron_mm in returned
     assert plain_mm not in returned  # no cron -> not a candidate
     assert in_flight_mm not in returned  # already being refreshed -> excluded
+    assert next(r["timezone"] for r in rows if r["mental_model_id"] == cron_mm) == "Asia/Shanghai"
 
 
 @pytest.mark.asyncio

@@ -7,11 +7,12 @@ import { formatRelativeTime } from "@/lib/relative-time";
 type TriggerLike = {
   refresh_after_consolidation?: boolean;
   refresh_cron?: string | null;
+  timezone?: string | null;
 };
 
 /**
  * Inline "next refresh" value derived from a mental model's trigger:
- * - cron schedule -> relative time of the next UTC run (absolute UTC on hover)
+ * - cron schedule -> relative time of the next run (absolute scheduled time on hover)
  * - after consolidation -> "after consolidation"
  * - otherwise (manual) -> "on demand"
  *
@@ -28,10 +29,11 @@ export function NextRefresh({
   const cron = trigger?.refresh_cron?.trim();
 
   if (cron) {
-    const next = nextCronRun(cron);
+    const timezone = trigger?.timezone || "UTC";
+    const next = nextCronRun(cron, timezone);
     if (!next) return <span className={className}>{t("nextRefreshInvalid")}</span>;
-    const utc = next.toLocaleString("en-GB", {
-      timeZone: "UTC",
+    const scheduledTime = next.toLocaleString("en-GB", {
+      timeZone: timezone,
       day: "2-digit",
       month: "short",
       year: "numeric",
@@ -40,7 +42,7 @@ export function NextRefresh({
       hour12: false,
     });
     return (
-      <span className={className} title={`${utc} UTC`}>
+      <span className={className} title={`${scheduledTime} ${timezone}`}>
         {formatRelativeTime(next.toISOString())}
       </span>
     );

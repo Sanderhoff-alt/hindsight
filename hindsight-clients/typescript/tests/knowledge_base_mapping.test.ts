@@ -59,6 +59,8 @@ describe("createKnowledgePage mapping", () => {
       trigger: {
         mode: "delta",
         refreshAfterConsolidation: true,
+        refreshCron: "0 21 * * *",
+        timezone: "Asia/Shanghai",
         factTypes: ["observation"],
         excludeMentalModels: true,
         excludeMentalModelIds: ["mm-9"],
@@ -72,6 +74,8 @@ describe("createKnowledgePage mapping", () => {
     const trigger = (mockedCreatePage.mock.calls[0][0].body as any).trigger;
     expect(trigger.mode).toBe("delta");
     expect(trigger.refresh_after_consolidation).toBe(true);
+    expect(trigger.refresh_cron).toBe("0 21 * * *");
+    expect(trigger.timezone).toBe("Asia/Shanghai");
     expect(trigger.fact_types).toEqual(["observation"]);
     expect(trigger.exclude_mental_models).toBe(true);
     expect(trigger.exclude_mental_model_ids).toEqual(["mm-9"]);

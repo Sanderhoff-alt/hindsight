@@ -24,6 +24,8 @@ type MentalModelTriggerInput struct {
 	// If true, refresh this mental model after observations consolidation (real-time mode)
 	RefreshAfterConsolidation *bool `json:"refresh_after_consolidation,omitempty"`
 	RefreshCron NullableString `json:"refresh_cron,omitempty"`
+	// IANA timezone used to evaluate refresh_cron (for example, 'Asia/Shanghai'). Defaults to UTC for backward compatibility.
+	Timezone *string `json:"timezone,omitempty"`
 	FactTypes []string `json:"fact_types,omitempty"`
 	// If true, exclude all mental models from the reflect loop (skip search_mental_models tool).
 	ExcludeMentalModels *bool `json:"exclude_mental_models,omitempty"`
@@ -48,6 +50,8 @@ func NewMentalModelTriggerInput() *MentalModelTriggerInput {
 	this.Mode = &mode
 	var refreshAfterConsolidation bool = false
 	this.RefreshAfterConsolidation = &refreshAfterConsolidation
+	var timezone string = "UTC"
+	this.Timezone = &timezone
 	var excludeMentalModels bool = false
 	this.ExcludeMentalModels = &excludeMentalModels
 	var keepTrace bool = false
@@ -64,6 +68,8 @@ func NewMentalModelTriggerInputWithDefaults() *MentalModelTriggerInput {
 	this.Mode = &mode
 	var refreshAfterConsolidation bool = false
 	this.RefreshAfterConsolidation = &refreshAfterConsolidation
+	var timezone string = "UTC"
+	this.Timezone = &timezone
 	var excludeMentalModels bool = false
 	this.ExcludeMentalModels = &excludeMentalModels
 	var keepTrace bool = false
@@ -175,6 +181,38 @@ func (o *MentalModelTriggerInput) SetRefreshCronNil() {
 // UnsetRefreshCron ensures that no value is present for RefreshCron, not even an explicit nil
 func (o *MentalModelTriggerInput) UnsetRefreshCron() {
 	o.RefreshCron.Unset()
+}
+
+// GetTimezone returns the Timezone field value if set, zero value otherwise.
+func (o *MentalModelTriggerInput) GetTimezone() string {
+	if o == nil || IsNil(o.Timezone) {
+		var ret string
+		return ret
+	}
+	return *o.Timezone
+}
+
+// GetTimezoneOk returns a tuple with the Timezone field value if set, nil otherwise
+// and a boolean to check if the value has been set.
+func (o *MentalModelTriggerInput) GetTimezoneOk() (*string, bool) {
+	if o == nil || IsNil(o.Timezone) {
+		return nil, false
+	}
+	return o.Timezone, true
+}
+
+// HasTimezone returns a boolean if a field has been set.
+func (o *MentalModelTriggerInput) HasTimezone() bool {
+	if o != nil && !IsNil(o.Timezone) {
+		return true
+	}
+
+	return false
+}
+
+// SetTimezone gets a reference to the given string and assigns it to the Timezone field.
+func (o *MentalModelTriggerInput) SetTimezone(v string) {
+	o.Timezone = &v
 }
 
 // GetFactTypes returns the FactTypes field value if set, zero value otherwise (both if not set or set to explicit null).
@@ -559,6 +597,9 @@ func (o MentalModelTriggerInput) ToMap() (map[string]interface{}, error) {
 	}
 	if o.RefreshCron.IsSet() {
 		toSerialize["refresh_cron"] = o.RefreshCron.Get()
+	}
+	if !IsNil(o.Timezone) {
+		toSerialize["timezone"] = o.Timezone
 	}
 	if o.FactTypes != nil {
 		toSerialize["fact_types"] = o.FactTypes
