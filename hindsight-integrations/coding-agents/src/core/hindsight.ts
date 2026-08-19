@@ -13,6 +13,7 @@ import {
   pagesFor,
   type PageTrigger,
 } from "./missions";
+import { randomUUID } from "node:crypto";
 import { pool, semverGte, sleep } from "./util";
 import type { RetainStamp } from "./retain-stamp";
 
@@ -83,6 +84,10 @@ export interface RetainOpts {
  *  Below it the field is silently ignored — unknown request fields are not rejected — so an append
  *  could be applied twice without us ever knowing. Hence: no idempotency, no append. */
 export const MIN_IDEMPOTENT_RETAIN_VERSION = "0.8.6";
+
+/** First server release that honours a caller-supplied knowledge-page id. Older Pydantic
+ *  request models silently discard the field, so capability must be established before write. */
+export const MIN_CLIENT_ASSIGNED_PAGE_ID_VERSION = "0.9.2";
 
 /**
  * Raised when the API rate-limits a request (HTTP 429), carrying how long it asked us to wait.
@@ -156,6 +161,8 @@ export class HindsightClient {
   knowledgePagesSupported: boolean | undefined;
   /** Tri-state capability probe: unknown until the first append-mode retain, then cached. */
   private idempotentRetain: boolean | undefined;
+  /** Tri-state capability probe: unknown until the first initiative page create, then cached. */
+  private clientAssignedPageIds: boolean | undefined;
   private readonly log: (msg: string) => void;
   readonly maxParallelRetains: number;
   readonly observationScopes: ObservationScopes;
@@ -306,6 +313,28 @@ export class HindsightClient {
       if (!r.ok) return false;
       const j = (await r.json()) as { api_version?: string };
       return semverGte(j.api_version, MIN_IDEMPOTENT_RETAIN_VERSION);
+    } catch {
+      return false;
+    }
+  }
+
+  /** Whether the server honours `page_id` when creating a knowledge page. */
+  async supportsClientAssignedPageIds(): Promise<boolean> {
+    if (this.clientAssignedPageIds === undefined) {
+      this.clientAssignedPageIds = await this.probeClientAssignedPageIds();
+      this.log(
+        `server client-assigned page ids: ${this.clientAssignedPageIds ? "supported" : "unavailable"}`
+      );
+    }
+    return this.clientAssignedPageIds;
+  }
+
+  private async probeClientAssignedPageIds(): Promise<boolean> {
+    try {
+      const r = await this.req("GET", `${this.apiUrl}/version`);
+      if (!r.ok) return false;
+      const j = (await r.json()) as { api_version?: string };
+      return semverGte(j.api_version, MIN_CLIENT_ASSIGNED_PAGE_ID_VERSION);
     } catch {
       return false;
     }
@@ -663,27 +692,46 @@ export class HindsightClient {
      *  carry its own hardcoded copy of this trigger. */
     pageTrigger?: PageTrigger;
   }): Promise<{ page_id: string }> {
-    // `/knowledge-base/pages` mints its OWN page id (kp-…); we can't set it. So for a new initiative
-    // we create the page first and adopt the server-assigned id — that id is what the return value
-    // and the marker's `relatedPageId` tag must use, or `read_knowledge_page(id)` 404s and the
-    // `[[page:<id>]]` link points at nothing.
     let pageId = args.relatesToPageId;
     if (!pageId) {
+      const clientAssignedPageId = await this.supportsClientAssignedPageIds();
+      const requestedPageId = clientAssignedPageId
+        ? `kp-${randomUUID().replaceAll("-", "")}`
+        : undefined;
       const folderId = await this.ensureFolder("Initiatives");
       const r = await this.req("POST", this.bankUrl("/knowledge-base/pages"), {
+        ...(requestedPageId ? { page_id: requestedPageId } : {}),
         name: args.title,
         source_query: `Summarize the "${args.title}" initiative: what is being built or changed and why, and its current state — drawn from the project's memory.`,
         parent_id: folderId,
-        tags: ["knowledge:feature-work"],
+        tags: requestedPageId
+          ? ["knowledge:feature-work", `relatedPageId:${requestedPageId}`]
+          : ["knowledge:feature-work"],
         trigger: args.pageTrigger ?? buildPageTrigger(),
       });
+      let responsePageId: string | undefined;
       try {
         const j = (await r.json()) as { page_id?: string; id?: string };
-        pageId = j.page_id ?? j.id;
+        responsePageId = j.page_id ?? j.id;
       } catch {
-        /* fall through to the slug fallback below */
+        throw new Error("knowledge page creation returned an invalid response");
       }
-      pageId ||= `initiative-${this.slugify(args.title)}`; // last resort if the response lacked an id
+      if (!responsePageId) {
+        throw new Error("knowledge page creation response did not include a page id");
+      }
+      if (requestedPageId && responsePageId !== requestedPageId) {
+        throw new Error(
+          "knowledge page id mismatch; the server does not support client-assigned page ids"
+        );
+      }
+      pageId = responsePageId;
+      if (!requestedPageId) {
+        await this.req(
+          "PATCH",
+          this.bankUrl(`/knowledge-base/nodes/${encodeURIComponent(pageId)}`),
+          { tags: ["knowledge:feature-work", `relatedPageId:${pageId}`] }
+        );
+      }
     }
     const verb = args.relatesToPageId ? "Enhancement to an existing initiative" : "New initiative";
     const content = `${verb}: ${args.title}. ${args.summary}`;

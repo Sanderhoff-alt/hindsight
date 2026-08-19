@@ -411,51 +411,52 @@ describe("HindsightClient.ensureFolder", () => {
 describe("HindsightClient.captureInitiative", () => {
   it("new initiative: POSTs a per-initiative page + a marker retain sharing the same relatedPageId", async () => {
     const calls: any[] = [];
-    stubFetchRouted(calls, [
-      { match: (m, u) => m === "GET" && u.endsWith("/knowledge-base/tree"), json: { roots: [] } },
-      {
-        match: (m, u) => m === "POST" && u.endsWith("/knowledge-base/folders"),
-        json: { id: "folder-abc" },
-      },
-      {
-        match: (m, u) => m === "POST" && u.endsWith("/knowledge-base/pages"),
-        json: { page_id: "pg" },
-      },
-      {
-        match: (m, u) => m === "POST" && u.endsWith("/memories"),
-        json: { operation_id: "op-1" },
-      },
-    ]);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: any) => {
+        const body = init?.body ? JSON.parse(init.body) : undefined;
+        calls.push({ url, method: init?.method, body });
+        if (init?.method === "GET" && url.endsWith("/version"))
+          return { ok: true, status: 200, json: async () => ({ api_version: "0.9.2" }) } as any;
+        if (init?.method === "GET" && url.endsWith("/knowledge-base/tree"))
+          return { ok: true, status: 200, json: async () => ({ roots: [] }) } as any;
+        if (init?.method === "POST" && url.endsWith("/knowledge-base/folders"))
+          return { ok: true, status: 200, json: async () => ({ id: "folder-abc" }) } as any;
+        if (init?.method === "POST" && url.endsWith("/knowledge-base/pages"))
+          return { ok: true, status: 200, json: async () => ({ page_id: body.page_id }) } as any;
+        return { ok: true, status: 200, json: async () => ({ operation_id: "op-1" }) } as any;
+      }) as any
+    );
     const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
     const result = await c.captureInitiative({
       title: "Retry backoff for the uploader",
       summary: "Add exponential backoff so transient upload failures retry.",
     });
 
-    // The returned id is the SERVER-ASSIGNED page id ("pg" from the mock), NOT the derived slug —
-    // the /knowledge-base/pages endpoint mints its own id.
-    expect(result).toEqual({ page_id: "pg" });
-
-    // Page POST: name = title, nested under the Initiatives folder. The page itself carries NO
-    // tags field at all (no tag taxonomy to maintain).
+    // Page POST: the client supplies the id and binds the page to its own scope atomically.
     const pagePost = calls.find(
       (k) => k.method === "POST" && k.url.endsWith("/knowledge-base/pages")
     );
     expect(pagePost).toBeDefined();
     expect(pagePost.body.name).toBe("Retry backoff for the uploader");
     expect(pagePost.body.parent_id).toBe("folder-abc");
-    expect(pagePost.body.tags).toEqual(["knowledge:feature-work"]);
+    expect(pagePost.body.page_id).toMatch(/^kp-[0-9a-f]{32}$/);
+    expect(pagePost.body.tags).toEqual([
+      "knowledge:feature-work",
+      `relatedPageId:${pagePost.body.page_id}`,
+    ]);
+    // The client-generated id is echoed by the server and becomes the page/marker binding key.
+    expect(result).toEqual({ page_id: pagePost.body.page_id });
 
-    // Marker retain POST to /memories: the ONLY tag is relatedPageId, pointing at the REAL
-    // server-assigned page id ("pg").
+    // Marker retain POST to /memories points at the same client/server page id.
     const memPost = calls.find((k) => k.method === "POST" && k.url.endsWith("/memories"));
     expect(memPost).toBeDefined();
     const item = memPost.body.items[0];
-    expect(item.tags).toEqual(["knowledge:feature-work", "relatedPageId:pg"]);
+    expect(item.tags).toEqual(["knowledge:feature-work", `relatedPageId:${result.page_id}`]);
     expect(item.strategy).toBe("document");
     expect(memPost.body.async).toBe(true);
     // Unique per-marker document id (NOT the page id) so repeated captures accrue.
-    expect(item.document_id).not.toBe("pg");
+    expect(item.document_id).not.toBe(result.page_id);
     expect(item.document_id).toContain("initiative-marker-retry-backoff-for-the-uploader-");
 
     // The returned page id and the marker tag's id must be identical (the real page node id).
@@ -463,6 +464,46 @@ describe("HindsightClient.captureInitiative", () => {
       .find((t: string) => t.startsWith("relatedPageId:"))
       .slice("relatedPageId:".length);
     expect(tagId).toBe(result.page_id);
+  });
+
+  it("old server: adopts the returned page id and repairs its scope without sending page_id", async () => {
+    const calls: any[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: any) => {
+        const body = init?.body ? JSON.parse(init.body) : undefined;
+        calls.push({ url, method: init?.method, body });
+        if (init?.method === "GET" && url.endsWith("/version"))
+          return { ok: true, status: 200, json: async () => ({ api_version: "0.9.1" }) } as any;
+        if (init?.method === "GET" && url.endsWith("/knowledge-base/tree"))
+          return { ok: true, status: 200, json: async () => ({ roots: [] }) } as any;
+        if (init?.method === "POST" && url.endsWith("/knowledge-base/folders"))
+          return { ok: true, status: 200, json: async () => ({ id: "folder-abc" }) } as any;
+        if (init?.method === "POST" && url.endsWith("/knowledge-base/pages"))
+          return { ok: true, status: 200, json: async () => ({ page_id: "kp-server" }) } as any;
+        return { ok: true, status: 200, json: async () => ({ operation_id: "op-1" }) } as any;
+      }) as any
+    );
+
+    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    const result = await c.captureInitiative({
+      title: "Legacy-compatible initiative",
+      summary: "Use the server-assigned page id on old deployments.",
+    });
+
+    const pagePost = calls.find(
+      (call) => call.method === "POST" && call.url.endsWith("/knowledge-base/pages")
+    );
+    expect(pagePost.body).not.toHaveProperty("page_id");
+    expect(pagePost.body.tags).toEqual(["knowledge:feature-work"]);
+    expect(result).toEqual({ page_id: "kp-server" });
+
+    const pagePatch = calls.find(
+      (call) => call.method === "PATCH" && call.url.endsWith("/knowledge-base/nodes/kp-server")
+    );
+    expect(pagePatch.body.tags).toEqual(["knowledge:feature-work", "relatedPageId:kp-server"]);
+    const marker = calls.find((call) => call.url.endsWith("/memories")).body.items[0];
+    expect(marker.tags).toEqual(["knowledge:feature-work", "relatedPageId:kp-server"]);
   });
 
   it("enhancement (relatesToPageId): NO page POST; marker tagged the existing page id", async () => {
