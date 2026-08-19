@@ -3199,7 +3199,11 @@ class MemoryEngine(MemoryEngineInterface):
         try:
             from datetime import datetime, timezone
 
-            from ..webhooks.models import ConsolidationEventData, WebhookEvent, WebhookEventType
+            from ..webhooks.models import (
+                ConsolidationCompletedWebhookEvent,
+                ConsolidationEventData,
+                WebhookEventType,
+            )
 
             data = ConsolidationEventData(
                 observations_created=result.get("observations_created") if result else None,
@@ -3207,7 +3211,7 @@ class MemoryEngine(MemoryEngineInterface):
                 observations_deleted=result.get("observations_deleted") if result else None,
                 error_message=error_message,
             )
-            event = WebhookEvent(
+            event = ConsolidationCompletedWebhookEvent(
                 event=WebhookEventType.CONSOLIDATION_COMPLETED,
                 bank_id=bank_id,
                 operation_id=operation_id,
@@ -3237,7 +3241,7 @@ class MemoryEngine(MemoryEngineInterface):
             return None
 
         # Imported lazily: retain.fact_storage imports fq_table from this module.
-        from ..webhooks.models import RetainEventData, WebhookEvent, WebhookEventType
+        from ..webhooks.models import RetainCompletedWebhookEvent, RetainEventData, WebhookEventType
         from .retain import fact_storage
 
         now = datetime.now(UTC)
@@ -3273,7 +3277,7 @@ class MemoryEngine(MemoryEngineInterface):
                             )
                         }
                     )
-                event = WebhookEvent(
+                event = RetainCompletedWebhookEvent(
                     event=WebhookEventType.RETAIN_COMPLETED,
                     bank_id=bank_id,
                     operation_id=op_id,
@@ -3738,7 +3742,11 @@ class MemoryEngine(MemoryEngineInterface):
         poller's completion backstop (PR #2608): whichever path runs second sees an
         already-terminal row, updates nothing, and does not re-run parent aggregation.
         """
-        from ..webhooks.models import ConsolidationEventData, WebhookEvent, WebhookEventType
+        from ..webhooks.models import (
+            ConsolidationCompletedWebhookEvent,
+            ConsolidationEventData,
+            WebhookEventType,
+        )
 
         try:
             backend = await self._get_backend()
@@ -3767,7 +3775,7 @@ class MemoryEngine(MemoryEngineInterface):
                             observations_deleted=result.get("observations_deleted") if result else None,
                             error_message=error_message,
                         )
-                        event = WebhookEvent(
+                        event = ConsolidationCompletedWebhookEvent(
                             event=WebhookEventType.CONSOLIDATION_COMPLETED,
                             bank_id=bank_id,
                             operation_id=operation_id,

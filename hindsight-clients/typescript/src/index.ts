@@ -1561,3 +1561,4 @@ export type {
 export * as sdk from "../generated/sdk.gen";
 export { createClient, createConfig } from "../generated/client";
 export type { Client } from "../generated/client";
+export * from "./webhooks";
