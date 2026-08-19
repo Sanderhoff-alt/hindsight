@@ -5926,6 +5926,7 @@ components:
       description: Create a page (a mental model + tree node) under an optional parent
         folder.
       example:
+        page_id: page_id
         source_query: source_query
         max_tokens: 0
         parent_id: parent_id
@@ -5966,6 +5967,10 @@ components:
           type: string
         source_query:
           title: Source Query
+          type: string
+        page_id:
+          nullable: true
+          pattern: "^kp-[0-9a-f]{32}$"
           type: string
         parent_id:
           nullable: true

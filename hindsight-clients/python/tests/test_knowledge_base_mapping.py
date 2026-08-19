@@ -30,6 +30,7 @@ def test_create_page_maps_every_option(monkeypatch):
         "bank-1",
         name="Deploying the API",
         source_query="How is the API deployed?",
+        page_id="kp-0123456789abcdef0123456789abcdef",
         parent_id="kf-1",
         tags=["ops", "type:runbook"],
         max_tokens=8192,
@@ -39,6 +40,7 @@ def test_create_page_maps_every_option(monkeypatch):
     assert bank_id == "bank-1"
     assert request.name == "Deploying the API"
     assert request.source_query == "How is the API deployed?"
+    assert request.page_id == "kp-0123456789abcdef0123456789abcdef"
     assert request.parent_id == "kf-1"
     assert request.tags == ["ops", "type:runbook"]
     assert request.max_tokens == 8192

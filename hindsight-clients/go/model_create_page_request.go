@@ -23,6 +23,7 @@ var _ MappedNullable = &CreatePageRequest{}
 type CreatePageRequest struct {
 	Name string `json:"name"`
 	SourceQuery string `json:"source_query"`
+	PageId NullableString `json:"page_id,omitempty" validate:"regexp=^kp-[0-9a-f]{32}$"`
 	ParentId NullableString `json:"parent_id,omitempty"`
 	Tags []string `json:"tags,omitempty"`
 	MaxTokens NullableInt32 `json:"max_tokens,omitempty"`
@@ -96,6 +97,48 @@ func (o *CreatePageRequest) GetSourceQueryOk() (*string, bool) {
 // SetSourceQuery sets field value
 func (o *CreatePageRequest) SetSourceQuery(v string) {
 	o.SourceQuery = v
+}
+
+// GetPageId returns the PageId field value if set, zero value otherwise (both if not set or set to explicit null).
+func (o *CreatePageRequest) GetPageId() string {
+	if o == nil || IsNil(o.PageId.Get()) {
+		var ret string
+		return ret
+	}
+	return *o.PageId.Get()
+}
+
+// GetPageIdOk returns a tuple with the PageId field value if set, nil otherwise
+// and a boolean to check if the value has been set.
+// NOTE: If the value is an explicit nil, `nil, true` will be returned
+func (o *CreatePageRequest) GetPageIdOk() (*string, bool) {
+	if o == nil {
+		return nil, false
+	}
+	return o.PageId.Get(), o.PageId.IsSet()
+}
+
+// HasPageId returns a boolean if a field has been set.
+func (o *CreatePageRequest) HasPageId() bool {
+	if o != nil && o.PageId.IsSet() {
+		return true
+	}
+
+	return false
+}
+
+// SetPageId gets a reference to the given NullableString and assigns it to the PageId field.
+func (o *CreatePageRequest) SetPageId(v string) {
+	o.PageId.Set(&v)
+}
+// SetPageIdNil sets the value for PageId to be an explicit nil
+func (o *CreatePageRequest) SetPageIdNil() {
+	o.PageId.Set(nil)
+}
+
+// UnsetPageId ensures that no value is present for PageId, not even an explicit nil
+func (o *CreatePageRequest) UnsetPageId() {
+	o.PageId.Unset()
 }
 
 // GetParentId returns the ParentId field value if set, zero value otherwise (both if not set or set to explicit null).
@@ -269,6 +312,9 @@ func (o CreatePageRequest) ToMap() (map[string]interface{}, error) {
 	toSerialize := map[string]interface{}{}
 	toSerialize["name"] = o.Name
 	toSerialize["source_query"] = o.SourceQuery
+	if o.PageId.IsSet() {
+		toSerialize["page_id"] = o.PageId.Get()
+	}
 	if o.ParentId.IsSet() {
 		toSerialize["parent_id"] = o.ParentId.Get()
 	}

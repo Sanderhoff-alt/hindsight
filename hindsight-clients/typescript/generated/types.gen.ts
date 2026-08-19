@@ -1384,6 +1384,12 @@ export type CreatePageRequest = {
    */
   source_query: string;
   /**
+   * Page Id
+   *
+   * Optional globally unique caller-supplied page id. Supported clients use this to bind page-scoped tags atomically.
+   */
+  page_id?: string | null;
+  /**
    * Parent Id
    */
   parent_id?: string | null;

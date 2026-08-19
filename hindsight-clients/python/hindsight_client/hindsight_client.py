@@ -1458,6 +1458,7 @@ class Hindsight:
         tags: list[str] | None = None,
         max_tokens: int | None = None,
         trigger: dict[str, Any] | None = None,
+        page_id: str | None = None,
     ):
         """
         Create a knowledge-base page (sync wrapper — use
@@ -1477,6 +1478,7 @@ class Hindsight:
             trigger: Optional trigger settings. Omit to use the page defaults
                 (observation-only, delta mode, refresh after consolidation); a
                 supplied trigger replaces those defaults rather than merging.
+            page_id: Optional globally unique caller-supplied page ID.
 
         Returns:
             CreateKnowledgePageResponse with page_id, mental_model_id and operation_id
@@ -1490,6 +1492,7 @@ class Hindsight:
         request_obj = create_page_request.CreatePageRequest(
             name=name,
             source_query=source_query,
+            page_id=page_id,
             parent_id=parent_id,
             tags=tags,
             max_tokens=max_tokens,

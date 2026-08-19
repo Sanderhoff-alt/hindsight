@@ -14308,6 +14308,7 @@ class MemoryEngine(MemoryEngineInterface):
         content: str,
         *,
         parent_id: str | None = None,
+        page_id: str | None = None,
         tags: list[str] | None = None,
         max_tokens: int | None = None,
         trigger: dict[str, Any] | None = None,
@@ -14341,7 +14342,7 @@ class MemoryEngine(MemoryEngineInterface):
         effective_max_tokens = max_tokens if max_tokens is not None else self.KNOWLEDGE_PAGE_DEFAULT_MAX_TOKENS
         effective_trigger = self._merge_page_trigger(trigger)
         backend = await self._get_backend()
-        page_id = f"kp-{uuid.uuid4().hex}"
+        page_id = page_id or f"kp-{uuid.uuid4().hex}"
         try:
             async with acquire_with_retry(backend) as conn:
                 # The page row and its backing model have one lifecycle, so they
@@ -14376,7 +14377,7 @@ class MemoryEngine(MemoryEngineInterface):
                         managed,
                     )
         except asyncpg.UniqueViolationError as exc:
-            if getattr(exc, "constraint_name", None) != "uq_kp_folder_pagename":
+            if getattr(exc, "constraint_name", None) not in {"uq_kp_folder_pagename", "pk_knowledge_pages"}:
                 raise
             # The transaction already rolled the MM back; preserve the existing
             # API contract that a duplicate page is surfaced as HTTP 409.

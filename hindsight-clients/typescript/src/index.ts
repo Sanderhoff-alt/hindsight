@@ -1143,6 +1143,8 @@ export class HindsightClient {
     name: string,
     sourceQuery: string,
     options?: {
+      /** Optional globally unique caller-supplied page ID. */
+      pageId?: string;
       parentId?: string | null;
       /** Scopes which memories the page is built from. A `type:<x>` tag also sets the page's rendered type. */
       tags?: string[];
@@ -1169,6 +1171,7 @@ export class HindsightClient {
       body: {
         name,
         source_query: sourceQuery,
+        page_id: options?.pageId,
         parent_id: options?.parentId,
         tags: options?.tags,
         max_tokens: options?.maxTokens,

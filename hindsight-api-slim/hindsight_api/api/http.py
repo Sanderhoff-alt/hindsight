@@ -2429,6 +2429,14 @@ class CreatePageRequest(BaseModel):
 
     name: str
     source_query: str
+    page_id: str | None = Field(
+        default=None,
+        pattern=r"^kp-[0-9a-f]{32}$",
+        description=(
+            "Optional globally unique caller-supplied page id. Supported clients use this to bind "
+            "page-scoped tags atomically."
+        ),
+    )
     parent_id: str | None = None
     tags: list[str] | None = None
     max_tokens: int | None = None
@@ -5755,6 +5763,7 @@ def _register_routes(app: FastAPI):
                 source_query=body.source_query,
                 content="Generating content...",
                 parent_id=body.parent_id,
+                page_id=body.page_id,
                 tags=body.tags if body.tags else None,
                 max_tokens=body.max_tokens,
                 # Only what the client actually set: the engine merges these over the

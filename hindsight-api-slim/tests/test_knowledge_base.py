@@ -633,6 +633,32 @@ class TestCreate:
         assert await memory.get_mental_model(bank_id, rolled_back_mm_id, request_context=request_context) is None
         await memory.delete_bank(bank_id, request_context=request_context)
 
+    async def test_client_supplied_page_id_is_persisted_and_unique(self, memory: MemoryEngine, request_context):
+        bank_id = f"test-kb-create-{uuid.uuid4().hex[:8]}"
+        page_id = f"kp-{uuid.uuid4().hex}"
+        page = await memory.create_knowledge_page(
+            bank_id,
+            "Client id",
+            "What uses the client id?",
+            "seed",
+            page_id=page_id,
+            tags=["knowledge:feature-work", f"relatedPageId:{page_id}"],
+            request_context=request_context,
+        )
+        assert page["id"] == page_id
+        assert page["tags"] == ["knowledge:feature-work", f"relatedPageId:{page_id}"]
+
+        duplicate = await memory.create_knowledge_page(
+            bank_id,
+            "Another name",
+            "What should conflict?",
+            "seed",
+            page_id=page_id,
+            request_context=request_context,
+        )
+        assert duplicate is None
+        await memory.delete_bank(bank_id, request_context=request_context)
+
     async def test_duplicate_mental_model_id_is_not_reported_as_duplicate_page(
         self, memory: MemoryEngine, request_context
     ):

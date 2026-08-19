@@ -35,6 +35,7 @@ describe("createKnowledgePage mapping", () => {
 
   test("maps name, source query, parent and tags", async () => {
     await client.createKnowledgePage("bank", "Deploying the API", "How is the API deployed?", {
+      pageId: "kp-0123456789abcdef0123456789abcdef",
       parentId: "kf-1",
       tags: ["ops", "type:runbook"],
       maxTokens: 8192,
@@ -43,6 +44,7 @@ describe("createKnowledgePage mapping", () => {
     const body = mockedCreatePage.mock.calls[0][0].body as any;
     expect(body.name).toBe("Deploying the API");
     expect(body.source_query).toBe("How is the API deployed?");
+    expect(body.page_id).toBe("kp-0123456789abcdef0123456789abcdef");
     expect(body.parent_id).toBe("kf-1");
     expect(body.tags).toEqual(["ops", "type:runbook"]);
     expect(body.max_tokens).toBe(8192);

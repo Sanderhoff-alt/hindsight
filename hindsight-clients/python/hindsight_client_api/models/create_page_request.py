@@ -17,8 +17,9 @@ import pprint
 import re  # noqa: F401
 import json
 
-from pydantic import BaseModel, ConfigDict, StrictInt, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, field_validator
 from typing import Any, ClassVar, Dict, List, Optional
+from typing_extensions import Annotated
 from hindsight_client_api.models.mental_model_trigger_input import MentalModelTriggerInput
 from typing import Optional, Set
 from typing_extensions import Self
@@ -29,11 +30,22 @@ class CreatePageRequest(BaseModel):
     """ # noqa: E501
     name: StrictStr
     source_query: StrictStr
+    page_id: Optional[Annotated[str, Field(strict=True)]] = None
     parent_id: Optional[StrictStr] = None
     tags: Optional[List[StrictStr]] = None
     max_tokens: Optional[StrictInt] = None
     trigger: Optional[MentalModelTriggerInput] = None
-    __properties: ClassVar[List[str]] = ["name", "source_query", "parent_id", "tags", "max_tokens", "trigger"]
+    __properties: ClassVar[List[str]] = ["name", "source_query", "page_id", "parent_id", "tags", "max_tokens", "trigger"]
+
+    @field_validator('page_id')
+    def page_id_validate_regular_expression(cls, value):
+        """Validates the regular expression"""
+        if value is None:
+            return value
+
+        if not re.match(r"^kp-[0-9a-f]{32}$", value):
+            raise ValueError(r"must validate the regular expression /^kp-[0-9a-f]{32}$/")
+        return value
 
     model_config = ConfigDict(
         populate_by_name=True,
@@ -77,6 +89,11 @@ class CreatePageRequest(BaseModel):
         # override the default output from pydantic by calling `to_dict()` of trigger
         if self.trigger:
             _dict['trigger'] = self.trigger.to_dict()
+        # set to None if page_id (nullable) is None
+        # and model_fields_set contains the field
+        if self.page_id is None and "page_id" in self.model_fields_set:
+            _dict['page_id'] = None
+
         # set to None if parent_id (nullable) is None
         # and model_fields_set contains the field
         if self.parent_id is None and "parent_id" in self.model_fields_set:
@@ -111,6 +128,7 @@ class CreatePageRequest(BaseModel):
         _obj = cls.model_validate({
             "name": obj.get("name"),
             "source_query": obj.get("source_query"),
+            "page_id": obj.get("page_id"),
             "parent_id": obj.get("parent_id"),
             "tags": obj.get("tags"),
             "max_tokens": obj.get("max_tokens"),

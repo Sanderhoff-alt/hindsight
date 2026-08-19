@@ -9068,6 +9068,19 @@
             "type": "string",
             "title": "Source Query"
           },
+          "page_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^kp-[0-9a-f]{32}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Id",
+            "description": "Optional globally unique caller-supplied page id. Supported clients use this to bind page-scoped tags atomically."
+          },
           "parent_id": {
             "anyOf": [
               {
