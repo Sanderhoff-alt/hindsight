@@ -24,6 +24,7 @@ export interface KnowledgeNode {
   name: string;
   /** The page's source query (OKF `description`) — what a re-sync compares against. */
   description?: string;
+  tags?: string[];
   children?: KnowledgeNode[];
 }
 
@@ -661,10 +662,39 @@ export class HindsightClient {
         updated++;
       }
     }
+    await this.repairInitiativePageTags(roots);
     this.log(
       `[bank] knowledge pages seeded on ${this.bank}: ${created} created, ${updated} re-synced, ` +
         `${pages.length - created - updated} unchanged`
     );
+  }
+
+  /** Repair the scope tag on initiative pages created before page ids were client-assigned. */
+  private async repairInitiativePageTags(roots: KnowledgeNode[]): Promise<number> {
+    const folder = roots.find(
+      (node) => node.kind === "folder" && node.name.toLowerCase() === "initiatives"
+    );
+    if (!folder) return 0;
+    let repaired = 0;
+    const walk = async (nodes: KnowledgeNode[]): Promise<void> => {
+      for (const node of nodes) {
+        if (node.kind === "page") {
+          const scopeTag = `relatedPageId:${node.id}`;
+          if (!(node.tags ?? []).includes(scopeTag)) {
+            await this.req(
+              "PATCH",
+              this.bankUrl(`/knowledge-base/nodes/${encodeURIComponent(node.id)}`),
+              { tags: [...new Set([...(node.tags ?? []), scopeTag])] }
+            );
+            repaired++;
+          }
+        }
+        if (node.children?.length) await walk(node.children);
+      }
+    };
+    await walk(folder.children ?? []);
+    if (repaired) this.log(`[bank] repaired ${repaired} initiative page scope tag(s)`);
+    return repaired;
   }
 
   /** URL/id-safe slug: lowercase, non-alphanumerics → "-", trim dashes, cap length; fallback "initiative". */

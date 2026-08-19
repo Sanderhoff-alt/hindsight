@@ -506,6 +506,41 @@ describe("HindsightClient.captureInitiative", () => {
     expect(marker.tags).toEqual(["knowledge:feature-work", "relatedPageId:kp-server"]);
   });
 
+  it("repairs missing relatedPageId tags under the Initiatives folder", async () => {
+    const calls: any[] = [];
+    stubFetchRouted(calls, [
+      {
+        match: (m, u) => m === "GET" && u.endsWith("/knowledge-base/tree"),
+        json: {
+          roots: [
+            {
+              id: "folder",
+              kind: "folder",
+              name: "Initiatives",
+              children: [
+                { id: "kp-old", kind: "page", name: "Old", tags: ["knowledge:feature-work"] },
+                {
+                  id: "kp-scoped",
+                  kind: "page",
+                  name: "Scoped",
+                  tags: ["knowledge:feature-work", "relatedPageId:kp-scoped"],
+                },
+              ],
+            },
+          ],
+        },
+      },
+    ]);
+    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    await c.seedPages();
+    const patches = calls.filter((k) => k.method === "PATCH");
+    expect(patches).toHaveLength(1);
+    expect(patches[0].url).toContain("/knowledge-base/nodes/kp-old");
+    expect(patches[0].body).toEqual({
+      tags: ["knowledge:feature-work", "relatedPageId:kp-old"],
+    });
+  });
+
   it("enhancement (relatesToPageId): NO page POST; marker tagged the existing page id", async () => {
     const calls: any[] = [];
     stubFetchRouted(calls, [
