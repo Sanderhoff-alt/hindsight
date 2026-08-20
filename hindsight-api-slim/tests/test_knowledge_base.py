@@ -33,6 +33,67 @@ def _enc(bank_id: str) -> str:
     return urllib.parse.quote(bank_id, safe="")
 
 
+# The statement structural knowledge-tree writers use to serialize on the bank row.
+_BANK_LOCK_SQL = "FOR NO KEY UPDATE"
+
+
+class _BankLockPauser:
+    """Freeze the first structural tree writer for one bank while it holds the lock.
+
+    Wraps the connection the engine acquires and pauses inside the *real* bank-lock
+    query, after it has taken the row lock. A second writer then reaches the same
+    query and cannot get past it until the first commits, so the interleaving under
+    test is driven by events rather than by sleeps and is repeatable.
+
+    Matching is scoped to this bank's id, not just the SQL text: other callers take
+    the same lock on their own bank rows (async-operation submit dedupe, for one),
+    and mistaking one of those for the writer under test would pause an unrelated
+    transaction and desynchronize the test.
+    """
+
+    def __init__(self, bank_id: str) -> None:
+        self.bank_id = bank_id
+        self.first_holds_lock = asyncio.Event()
+        self.second_reached_lock = asyncio.Event()
+        self.release_first = asyncio.Event()
+        self._locks_seen = 0
+
+    def install(self, monkeypatch) -> None:
+        original_acquire = memory_engine_module.acquire_with_retry
+        pauser = self
+
+        class _PausingConnection:
+            def __init__(self, conn):
+                self._conn = conn
+
+            async def fetchrow(self, query, *args, **kwargs):
+                if _BANK_LOCK_SQL in query and args and args[0] == pauser.bank_id:
+                    pauser._locks_seen += 1
+                    if pauser._locks_seen == 1:
+                        row = await self._conn.fetchrow(query, *args, **kwargs)
+                        pauser.first_holds_lock.set()
+                        await pauser.release_first.wait()
+                        return row
+                    pauser.second_reached_lock.set()
+                return await self._conn.fetchrow(query, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self._conn, name)
+
+        @asynccontextmanager
+        async def pausing_acquire(backend, *args, **kwargs):
+            async with original_acquire(backend, *args, **kwargs) as conn:
+                yield _PausingConnection(conn)
+
+        monkeypatch.setattr(memory_engine_module, "acquire_with_retry", pausing_acquire)
+
+
+async def _assert_blocked(task: asyncio.Task, label: str) -> None:
+    """Assert the task is still waiting on the bank lock (it can only be released by a commit)."""
+    done, _pending = await asyncio.wait({task}, timeout=0.5)
+    assert not done, f"{label} must block on the bank lock until the first writer commits"
+
+
 class _RecordingValidator(OperationValidatorExtension):
     """A validator that records every bank read/write and rejects one operation.
 
@@ -858,68 +919,154 @@ class TestMoveRenameDelete:
     async def test_concurrent_opposite_moves_are_serialized(self, memory: MemoryEngine, request_context, monkeypatch):
         """The second opposite move must observe the first committed parent link.
 
-        Pause the first request only after its real ``FOR NO KEY UPDATE`` query has
-        acquired the bank lock. The second request then reaches the same query
-        but cannot finish it until the first commits, making this a deterministic
-        regression test rather than a timing-dependent concurrent test.
+        Without the bank lock both moves read the same pre-commit tree, both pass
+        the Python cycle guard, and both commit — leaving ``A.parent = B`` and
+        ``B.parent = A``.
         """
         bank_id = f"test-kb-move-race-{uuid.uuid4().hex[:8]}"
         folder_a = await memory.create_knowledge_folder(bank_id, "A", request_context=request_context)
         folder_b = await memory.create_knowledge_folder(bank_id, "B", request_context=request_context)
-        first_lock_acquired = asyncio.Event()
-        second_lock_attempted = asyncio.Event()
-        release_first_lock = asyncio.Event()
-        original_acquire = memory_engine_module.acquire_with_retry
-        lock_query = "FOR NO KEY UPDATE"
-        lock_query_count = 0
-
-        class _PausingConnection:
-            def __init__(self, conn):
-                self._conn = conn
-
-            async def fetchrow(self, query, *args, **kwargs):
-                nonlocal lock_query_count
-                if lock_query in query:
-                    lock_query_count += 1
-                    if lock_query_count == 1:
-                        row = await self._conn.fetchrow(query, *args, **kwargs)
-                        first_lock_acquired.set()
-                        await release_first_lock.wait()
-                        return row
-                    second_lock_attempted.set()
-                return await self._conn.fetchrow(query, *args, **kwargs)
-
-            async def fetch(self, query, *args, **kwargs):
-                return await self._conn.fetch(query, *args, **kwargs)
-
-            def __getattr__(self, name):
-                return getattr(self._conn, name)
-
-        @asynccontextmanager
-        async def pausing_acquire(backend, *args, **kwargs):
-            async with original_acquire(backend, *args, **kwargs) as conn:
-                yield _PausingConnection(conn)
-
-        monkeypatch.setattr(memory_engine_module, "acquire_with_retry", pausing_acquire)
+        pauser = _BankLockPauser(bank_id)
+        pauser.install(monkeypatch)
         try:
             first = asyncio.create_task(
                 memory.move_knowledge_node(bank_id, folder_a["id"], folder_b["id"], request_context=request_context)
             )
-            await asyncio.wait_for(first_lock_acquired.wait(), timeout=5)
+            await asyncio.wait_for(pauser.first_holds_lock.wait(), timeout=5)
 
             second = asyncio.create_task(
                 memory.move_knowledge_node(bank_id, folder_b["id"], folder_a["id"], request_context=request_context)
             )
-            await asyncio.wait_for(second_lock_attempted.wait(), timeout=5)
-            assert not second.done(), "second move must not finish before the first commits"
+            await asyncio.wait_for(pauser.second_reached_lock.wait(), timeout=5)
+            await _assert_blocked(second, "the second move")
 
-            release_first_lock.set()
+            pauser.release_first.set()
             first_result = await first
             assert first_result["parent_id"] == folder_b["id"]
             with pytest.raises(ValueError, match="own subtree"):
                 await second
         finally:
-            release_first_lock.set()
+            pauser.release_first.set()
+            await memory.delete_bank(bank_id, request_context=request_context)
+
+    async def test_move_serializes_behind_a_concurrent_delete(self, memory: MemoryEngine, request_context, monkeypatch):
+        """A move into a folder another request is deleting waits for that delete.
+
+        Delete is a structural writer too, so it takes the same lock. The move
+        then validates its destination against the committed tree and refuses
+        cleanly, instead of validating a stale parent and hitting a raw foreign
+        key violation on the UPDATE.
+        """
+        bank_id = f"test-kb-move-delete-race-{uuid.uuid4().hex[:8]}"
+        folder_a = await memory.create_knowledge_folder(bank_id, "A", request_context=request_context)
+        folder_b = await memory.create_knowledge_folder(bank_id, "B", request_context=request_context)
+        pauser = _BankLockPauser(bank_id)
+        pauser.install(monkeypatch)
+        try:
+            deleting = asyncio.create_task(
+                memory.delete_knowledge_node(bank_id, folder_b["id"], request_context=request_context)
+            )
+            await asyncio.wait_for(pauser.first_holds_lock.wait(), timeout=5)
+
+            moving = asyncio.create_task(
+                memory.move_knowledge_node(bank_id, folder_a["id"], folder_b["id"], request_context=request_context)
+            )
+            await asyncio.wait_for(pauser.second_reached_lock.wait(), timeout=5)
+            await _assert_blocked(moving, "the move")
+
+            pauser.release_first.set()
+            assert await deleting is True
+            with pytest.raises(ValueError, match="not found"):
+                await moving
+        finally:
+            pauser.release_first.set()
+            await memory.delete_bank(bank_id, request_context=request_context)
+
+    async def test_create_serializes_behind_a_concurrent_delete(
+        self, memory: MemoryEngine, request_context, monkeypatch
+    ):
+        """Creating into a folder another request is deleting waits for that delete.
+
+        Create is the third structural writer, so it takes the same lock and
+        validates its parent against the committed tree — a clean rejection
+        rather than an insert against a parent that is already gone.
+        """
+        bank_id = f"test-kb-create-delete-race-{uuid.uuid4().hex[:8]}"
+        folder = await memory.create_knowledge_folder(bank_id, "Doomed", request_context=request_context)
+        pauser = _BankLockPauser(bank_id)
+        pauser.install(monkeypatch)
+        try:
+            deleting = asyncio.create_task(
+                memory.delete_knowledge_node(bank_id, folder["id"], request_context=request_context)
+            )
+            await asyncio.wait_for(pauser.first_holds_lock.wait(), timeout=5)
+
+            creating = asyncio.create_task(
+                memory.create_knowledge_folder(
+                    bank_id, "Child", parent_id=folder["id"], request_context=request_context
+                )
+            )
+            await asyncio.wait_for(pauser.second_reached_lock.wait(), timeout=5)
+            await _assert_blocked(creating, "the create")
+
+            pauser.release_first.set()
+            assert await deleting is True
+            with pytest.raises(ValueError, match="not found"):
+                await creating
+        finally:
+            pauser.release_first.set()
+            await memory.delete_bank(bank_id, request_context=request_context)
+
+    async def test_tree_walks_terminate_on_a_pre_existing_cycle(self, memory: MemoryEngine, request_context):
+        """A tree corrupted before the bank lock existed must not hang a request.
+
+        The lock stops this process from committing a parent loop, but a bank
+        corrupted by the old race — or restored from an export of one — still
+        carries it, and nothing in the schema forbids it. Both Python tree walks
+        are bounded, so such a bank fails or deletes instead of spinning forever
+        inside an open transaction.
+        """
+        bank_id = f"test-kb-cycle-{uuid.uuid4().hex[:8]}"
+        folder_a = await memory.create_knowledge_folder(bank_id, "A", request_context=request_context)
+        folder_b = await memory.create_knowledge_folder(bank_id, "B", request_context=request_context)
+        folder_c = await memory.create_knowledge_folder(bank_id, "C", request_context=request_context)
+        try:
+            # Raw SQL because the engine API can no longer produce this state —
+            # forging the loop is the whole point. A -> B -> A.
+            async with memory._pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE knowledge_pages SET parent_id = $2 WHERE bank_id = $1 AND id = $3",
+                    bank_id,
+                    folder_b["id"],
+                    folder_a["id"],
+                )
+                await conn.execute(
+                    "UPDATE knowledge_pages SET parent_id = $2 WHERE bank_id = $1 AND id = $3",
+                    bank_id,
+                    folder_a["id"],
+                    folder_b["id"],
+                )
+
+            # The ancestor walk never reaches C, so only the cycle guard ends it.
+            with pytest.raises(ValueError, match="cycle"):
+                await asyncio.wait_for(
+                    memory.move_knowledge_node(
+                        bank_id, folder_c["id"], folder_a["id"], request_context=request_context
+                    ),
+                    timeout=10,
+                )
+
+            # The subtree walk visits each node once and deletes what it reached.
+            assert (
+                await asyncio.wait_for(
+                    memory.delete_knowledge_node(bank_id, folder_a["id"], request_context=request_context),
+                    timeout=10,
+                )
+                is True
+            )
+            remaining = {n["id"] for n in await memory.list_knowledge_nodes(bank_id, request_context=request_context)}
+            assert remaining == {folder_c["id"]}
+        finally:
             await memory.delete_bank(bank_id, request_context=request_context)
 
     async def test_delete_folder_cascades(self, api_client, kb_bank, memory, request_context):

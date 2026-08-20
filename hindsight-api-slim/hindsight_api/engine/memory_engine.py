@@ -15298,6 +15298,14 @@ class MemoryEngine(MemoryEngineInterface):
         FOR KEY SHARE locks taken by inserts into tables that reference banks.
         Oracle rewrites it to FOR UPDATE, which does not block indexed-FK child
         inserts there.
+
+        Correctness relies on READ COMMITTED (the default here): the waiter's
+        snapshot is taken per statement, so the hierarchy it reads *after* this
+        call reflects whatever the previous writer committed.
+
+        A missing bank row takes no lock and is not an error: there is then no
+        tree to serialize, and each caller already surfaces "not found" from its
+        own query (create paths ensure the bank in this same transaction first).
         """
         await conn.fetchrow(
             f"SELECT bank_id FROM {fq_table('banks')} WHERE bank_id = $1 FOR NO KEY UPDATE",
@@ -15808,10 +15816,19 @@ class MemoryEngine(MemoryEngineInterface):
                             bank_id,
                         )
                     }
+                    # `seen` bounds the walk. The lock above stops this process
+                    # from creating a loop, but a tree corrupted before the lock
+                    # existed (or restored from such an export) would otherwise
+                    # spin here forever, holding a connection and an open
+                    # transaction. Refuse the move instead of hanging.
+                    seen: set[str] = set()
                     cursor: str | None = new_parent_id
                     while cursor is not None:
                         if cursor == node_id:
                             raise ValueError("Cannot move a node into its own subtree")
+                        if cursor in seen:
+                            raise ValueError(f"Knowledge tree for bank '{bank_id}' contains a parent cycle")
+                        seen.add(cursor)
                         cursor = parents.get(cursor)
                 row = await conn.fetchrow(
                     f"""
@@ -15857,10 +15874,19 @@ class MemoryEngine(MemoryEngineInterface):
                 if not any(r["id"] == node_id for r in all_rows):
                     return False
                 # BFS the subtree rooted at node_id, collecting page mental models.
+                # `visited` bounds the walk: a tree corrupted before the bank lock
+                # existed (or restored from such an export) contains a parent cycle
+                # the FK does not forbid, and an unguarded walk would spin forever
+                # holding a connection and an open transaction. Visiting each node
+                # once still deletes every reachable node.
                 stack = [node_id]
+                visited: set[str] = set()
                 mm_ids: list[str] = []
                 while stack:
                     current = stack.pop()
+                    if current in visited:
+                        continue
+                    visited.add(current)
                     for child in by_parent.get(current, []):
                         stack.append(child["id"])
                     node_row = next((r for r in all_rows if r["id"] == current), None)
