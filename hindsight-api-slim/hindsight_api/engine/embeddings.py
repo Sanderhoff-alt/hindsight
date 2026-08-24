@@ -1377,7 +1377,8 @@ class LiteLLMEmbeddings(Embeddings):
     - Vertex AI (textembedding-gecko, etc.) - prefix with vertex_ai/
     - HuggingFace, Mistral, Voyage AI, etc.
 
-    The embedding dimension is auto-detected from the model at initialization.
+    The embedding dimension is auto-detected from the model at initialization,
+    or configured explicitly via dimensions.
     """
 
     def __init__(
@@ -1386,6 +1387,7 @@ class LiteLLMEmbeddings(Embeddings):
         api_key: str | None = None,
         model: str = DEFAULT_EMBEDDINGS_LITELLM_MODEL,
         batch_size: int = 100,
+        dimensions: int | None = None,
         timeout: float = 60.0,
         query_prefix: str = "",
         passage_prefix: str = "",
@@ -1400,6 +1402,7 @@ class LiteLLMEmbeddings(Embeddings):
             model: Embedding model name (default: text-embedding-3-small)
                    Use provider prefix for non-OpenAI models (e.g., cohere/embed-english-v3.0)
             batch_size: Maximum batch size for embedding requests (default: 100)
+            dimensions: Optional requested output dimensions (skips startup probe if set)
             timeout: Request timeout in seconds (default: 60.0)
             query_prefix: Prefix prepended to recall/search queries (default: none)
             passage_prefix: Prefix prepended to retained document text (default: none)
@@ -1410,6 +1413,7 @@ class LiteLLMEmbeddings(Embeddings):
         self.api_key = api_key
         self.model = model
         self.batch_size = batch_size
+        self.dimensions = dimensions
         self.timeout = timeout
         self.query_prefix = query_prefix
         self.passage_prefix = passage_prefix
@@ -1440,18 +1444,34 @@ class LiteLLMEmbeddings(Embeddings):
 
         self._client = httpx.Client(timeout=self.timeout, headers=headers)
 
+        if self.dimensions is not None:
+            self._dimension = self.dimensions
+            logger.info(f"Embeddings: LiteLLM provider initialized (model: {self.model}, dim: {self._dimension})")
+            return
+
         # Do a test embedding to detect dimension
         try:
-            response = self._client.post(
-                f"{self.api_base}/embeddings",
-                json={"model": self.model, "input": ["test"]},
+
+            def probe():
+                resp = self._client.post(
+                    f"{self.api_base}/embeddings",
+                    json={"model": self.model, "input": ["test"]},
+                )
+                resp.raise_for_status()
+                return resp.json()
+
+            result = _call_with_retry(
+                probe,
+                policy=self.retry_policy,
+                budget=self.retry_policy.new_budget(),
+                provider=self.provider_name,
             )
-            response.raise_for_status()
-            result = response.json()
             if result.get("data") and len(result["data"]) > 0:
                 self._dimension = len(result["data"][0]["embedding"])
+            else:
+                raise RuntimeError(f"Unable to detect embedding dimension for model {self.model} from LiteLLM proxy")
             logger.info(f"Embeddings: LiteLLM provider initialized (model: {self.model}, dim: {self._dimension})")
-        except httpx.HTTPError as e:
+        except Exception as e:
             raise RuntimeError(f"Failed to connect to LiteLLM proxy at {self.api_base}: {e}")
 
     def encode(self, texts: list[str]) -> list[list[float]]:
@@ -1480,10 +1500,17 @@ class LiteLLMEmbeddings(Embeddings):
         for i in range(0, len(texts), self.batch_size):
             batch = texts[i : i + self.batch_size]
 
-            def post_batch(payload_batch=batch):
+            request = {
+                "model": self.model,
+                "input": batch,
+            }
+            if self.dimensions is not None:
+                request["dimensions"] = self.dimensions
+
+            def post_batch(payload_dict=request):
                 response = self._client.post(
                     f"{self.api_base}/embeddings",
-                    json={"model": self.model, "input": payload_batch},
+                    json=payload_dict,
                 )
                 # Inside the retried closure so a 5xx from the proxy is retried
                 # rather than raised straight through to the caller.
@@ -2100,6 +2127,7 @@ def create_embeddings_from_env() -> Embeddings:
             api_base=config.embeddings_litellm_api_base,
             api_key=config.embeddings_litellm_api_key,
             model=config.embeddings_litellm_model,
+            dimensions=config.embeddings_litellm_dimensions,
             query_prefix=query_prefix,
             passage_prefix=passage_prefix,
             retry_policy=_retry_policy_from_config(config),
