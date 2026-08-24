@@ -15,6 +15,7 @@ from .ops import (
     LinkExpansionRows,
     TagListingParts,
     UpdatedWindow,
+    consolidation_bank_serialization_sql,
     document_serialization_sql,
     graph_maintenance_bank_serialization_sql,
 )
@@ -1161,6 +1162,7 @@ class OracleOps(DataAccessOps):
         table: str,
         busy_bank_ids: list[str],
         claimed_ids: list,
+        claimed_bank_ids: list[str],
         limit: int,
         priority_map: dict[str, int] | None,
     ) -> list:
@@ -1173,7 +1175,9 @@ class OracleOps(DataAccessOps):
             return []
 
         if not priority_map:
-            return await self._claim_consolidation_plain(conn, table, busy_bank_ids, claimed_ids, limit)
+            return await self._claim_consolidation_plain(
+                conn, table, busy_bank_ids, claimed_ids, claimed_bank_ids, limit
+            )
 
         # --- Tiered claiming (same algorithm as PG) ---
         specific_by_priority: dict[int, list[str]] = {}
@@ -1203,11 +1207,14 @@ class OracleOps(DataAccessOps):
                     table,
                     busy_bank_ids,
                     claimed_ids,
+                    claimed_bank_ids,
                     remaining,
                     specific_by_priority[pri],
                 )
                 for row in rows:
                     claimed_ids.append(row["operation_id"])
+                    if row["bank_id"] not in claimed_bank_ids:
+                        claimed_bank_ids.append(row["bank_id"])
                     result.append(row)
                 remaining -= len(rows)
 
@@ -1217,11 +1224,14 @@ class OracleOps(DataAccessOps):
                     table,
                     busy_bank_ids,
                     claimed_ids,
+                    claimed_bank_ids,
                     remaining,
                     all_specific_sql,
                 )
                 for row in rows:
                     claimed_ids.append(row["operation_id"])
+                    if row["bank_id"] not in claimed_bank_ids:
+                        claimed_bank_ids.append(row["bank_id"])
                     result.append(row)
                 remaining -= len(rows)
 
@@ -1233,80 +1243,39 @@ class OracleOps(DataAccessOps):
         table,
         busy_bank_ids,
         claimed_ids,
+        claimed_bank_ids,
         limit,
     ) -> list:
         """Claim consolidation tasks with default created_at ordering."""
-        exclude_ids = claimed_ids if claimed_ids else None
+        params: list = []
+        conditions = [
+            "status = 'pending'",
+            "task_payload IS NOT NULL",
+            "operation_type = 'consolidation'",
+            "(next_retry_at IS NULL OR next_retry_at <= NOW())",
+        ]
         if busy_bank_ids:
-            if exclude_ids:
-                return await conn.fetch(
-                    f"""
-                    SELECT operation_id, operation_type, task_payload, retry_count, serialization_key, bank_id
-                    FROM {table}
-                    WHERE status = 'pending'
-                      AND task_payload IS NOT NULL
-                      AND operation_type = 'consolidation'
-                      AND (next_retry_at IS NULL OR next_retry_at <= NOW())
-                      AND bank_id != ALL($1::text[])
-                      AND operation_id != ALL($2::uuid[])
-                    ORDER BY created_at
-                    LIMIT $3
-                    FOR UPDATE SKIP LOCKED
-                    """,
-                    busy_bank_ids,
-                    exclude_ids,
-                    limit,
-                )
-            else:
-                return await conn.fetch(
-                    f"""
-                    SELECT operation_id, operation_type, task_payload, retry_count, serialization_key, bank_id
-                    FROM {table}
-                    WHERE status = 'pending'
-                      AND task_payload IS NOT NULL
-                      AND operation_type = 'consolidation'
-                      AND (next_retry_at IS NULL OR next_retry_at <= NOW())
-                      AND bank_id != ALL($1::text[])
-                    ORDER BY created_at
-                    LIMIT $2
-                    FOR UPDATE SKIP LOCKED
-                    """,
-                    busy_bank_ids,
-                    limit,
-                )
-        else:
-            if exclude_ids:
-                return await conn.fetch(
-                    f"""
-                    SELECT operation_id, operation_type, task_payload, retry_count, serialization_key, bank_id
-                    FROM {table}
-                    WHERE status = 'pending'
-                      AND task_payload IS NOT NULL
-                      AND operation_type = 'consolidation'
-                      AND (next_retry_at IS NULL OR next_retry_at <= NOW())
-                      AND operation_id != ALL($1::uuid[])
-                    ORDER BY created_at
-                    LIMIT $2
-                    FOR UPDATE SKIP LOCKED
-                    """,
-                    exclude_ids,
-                    limit,
-                )
-            else:
-                return await conn.fetch(
-                    f"""
-                    SELECT operation_id, operation_type, task_payload, retry_count, serialization_key, bank_id
-                    FROM {table}
-                    WHERE status = 'pending'
-                      AND task_payload IS NOT NULL
-                      AND operation_type = 'consolidation'
-                      AND (next_retry_at IS NULL OR next_retry_at <= NOW())
-                    ORDER BY created_at
-                    LIMIT $1
-                    FOR UPDATE SKIP LOCKED
-                    """,
-                    limit,
-                )
+            params.append(busy_bank_ids)
+            conditions.append(f"bank_id != ALL(${len(params)}::text[])")
+        if claimed_bank_ids:
+            params.append(claimed_bank_ids)
+            conditions.append(f"bank_id != ALL(${len(params)}::text[])")
+        if claimed_ids:
+            params.append(claimed_ids)
+            conditions.append(f"operation_id != ALL(${len(params)}::uuid[])")
+        params.append(limit)
+        return await conn.fetch(
+            f"""
+            SELECT operation_id, operation_type, task_payload, retry_count, serialization_key, bank_id
+            FROM {table} o
+            WHERE {" AND ".join(conditions)}
+              AND {consolidation_bank_serialization_sql(table, "o")}
+            ORDER BY created_at
+            LIMIT ${len(params)}
+            FOR UPDATE SKIP LOCKED
+            """,
+            *params,
+        )
 
     async def _claim_consolidation_like(
         self,
@@ -1314,6 +1283,7 @@ class OracleOps(DataAccessOps):
         table,
         busy_bank_ids,
         claimed_ids,
+        claimed_bank_ids,
         limit,
         sql_patterns,
     ) -> list:
@@ -1327,6 +1297,11 @@ class OracleOps(DataAccessOps):
             params.append(busy_bank_ids)
             idx += 1
 
+        if claimed_bank_ids:
+            conditions.append(f"bank_id != ALL(${idx}::text[])")
+            params.append(claimed_bank_ids)
+            idx += 1
+
         if claimed_ids:
             conditions.append(f"operation_id != ALL(${idx}::uuid[])")
             params.append(claimed_ids)
@@ -1337,12 +1312,13 @@ class OracleOps(DataAccessOps):
         return await conn.fetch(
             f"""
             SELECT operation_id, operation_type, task_payload, retry_count, serialization_key, bank_id
-            FROM {table}
+            FROM {table} o
             WHERE status = 'pending'
               AND task_payload IS NOT NULL
               AND operation_type = 'consolidation'
               AND (next_retry_at IS NULL OR next_retry_at <= NOW())
               AND {extra}
+              AND {consolidation_bank_serialization_sql(table, "o")}
             ORDER BY created_at
             LIMIT ${idx}
             FOR UPDATE SKIP LOCKED
@@ -1356,6 +1332,7 @@ class OracleOps(DataAccessOps):
         table,
         busy_bank_ids,
         claimed_ids,
+        claimed_bank_ids,
         limit,
         exclude_patterns,
     ) -> list:
@@ -1374,6 +1351,11 @@ class OracleOps(DataAccessOps):
             params.append(busy_bank_ids)
             idx += 1
 
+        if claimed_bank_ids:
+            conditions.append(f"bank_id != ALL(${idx}::text[])")
+            params.append(claimed_bank_ids)
+            idx += 1
+
         if claimed_ids:
             conditions.append(f"operation_id != ALL(${idx}::uuid[])")
             params.append(claimed_ids)
@@ -1384,11 +1366,12 @@ class OracleOps(DataAccessOps):
         return await conn.fetch(
             f"""
             SELECT operation_id, operation_type, task_payload, retry_count, serialization_key, bank_id
-            FROM {table}
+            FROM {table} o
             WHERE status = 'pending'
               AND task_payload IS NOT NULL
               AND operation_type = 'consolidation'
               AND (next_retry_at IS NULL OR next_retry_at <= NOW()){extra_clause}
+              AND {consolidation_bank_serialization_sql(table, "o")}
             ORDER BY created_at
             LIMIT ${idx}
             FOR UPDATE SKIP LOCKED
@@ -1409,6 +1392,7 @@ class OracleOps(DataAccessOps):
         """Oracle two-step claiming to avoid ORA-02014 with NOT EXISTS + FOR UPDATE."""
         all_rows = []
         claimed_ids = []
+        claimed_consolidation_bank_ids = []
 
         # --- Phase 1: claim from reserved pools ---
         for op_type, limit in reserved_limits.items():
@@ -1429,6 +1413,7 @@ class OracleOps(DataAccessOps):
                     table,
                     busy_bank_ids,
                     claimed_ids,
+                    claimed_consolidation_bank_ids,
                     limit,
                     consolidation_bank_priority,
                 )
@@ -1453,6 +1438,8 @@ class OracleOps(DataAccessOps):
 
             for row in rows:
                 claimed_ids.append(row["operation_id"])
+                if op_type == "consolidation" and row["bank_id"] not in claimed_consolidation_bank_ids:
+                    claimed_consolidation_bank_ids.append(row["bank_id"])
                 all_rows.append(row)
 
         # --- Phase 2: claim from shared pool ---
@@ -1518,12 +1505,15 @@ class OracleOps(DataAccessOps):
                     table,
                     busy_bank_ids_2,
                     claimed_ids,
+                    claimed_consolidation_bank_ids,
                     remaining_shared,
                     consolidation_bank_priority,
                 )
 
                 for row in rows:
                     claimed_ids.append(row["operation_id"])
+                    if row["bank_id"] not in claimed_consolidation_bank_ids:
+                        claimed_consolidation_bank_ids.append(row["bank_id"])
                     all_rows.append(row)
 
         if not all_rows:

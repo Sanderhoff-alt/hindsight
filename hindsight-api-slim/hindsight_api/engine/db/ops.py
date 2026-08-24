@@ -140,6 +140,33 @@ def graph_maintenance_bank_serialization_sql(table: str, alias: str) -> str:
     """
 
 
+def consolidation_bank_serialization_sql(table: str, alias: str) -> str:
+    """SQL predicate serialising consolidation claims per bank.
+
+    Consolidation reads and drains a bank-wide backlog, so concurrent runs for
+    one bank duplicate the same LLM work. Exclude banks already processing and
+    every same-bank pending peer newer than the oldest claimable row. The
+    latter clause is required because all rows in one claim batch are marked
+    ``processing`` only after the SELECTs finish.
+    """
+    return f"""
+        NOT EXISTS (
+            SELECT 1 FROM {table} consolidation_peer
+            WHERE consolidation_peer.bank_id = {alias}.bank_id
+              AND consolidation_peer.operation_type = 'consolidation'
+              AND (
+                  consolidation_peer.status = 'processing'
+                  OR (consolidation_peer.status = 'pending'
+                      AND consolidation_peer.task_payload IS NOT NULL
+                      AND (consolidation_peer.next_retry_at IS NULL OR consolidation_peer.next_retry_at <= NOW())
+                      AND (consolidation_peer.created_at < {alias}.created_at
+                           OR (consolidation_peer.created_at = {alias}.created_at
+                               AND consolidation_peer.operation_id < {alias}.operation_id)))
+              )
+        )
+    """
+
+
 @dataclass
 class TagListingParts:
     """Backend-specific SQL fragments for the tag listing query."""
@@ -760,9 +787,11 @@ class DataAccessOps(ABC):
 
         Implementations must apply :func:`graph_maintenance_bank_serialization_sql`
         to every query that can return a ``graph_maintenance`` row, so at most one
-        such row per bank is ever in flight, and :func:`document_serialization_sql`
-        to every query that can return a ``retain`` row, so at most one retain per
-        document is ever in flight.
+        such row per bank is ever in flight; :func:`consolidation_bank_serialization_sql`
+        to every consolidation claim query, so at most one consolidation per bank
+        is ever in flight; and :func:`document_serialization_sql` to every query
+        that can return a ``retain`` row, so at most one retain per document is
+        ever in flight.
 
         Args:
             consolidation_bank_priority: Per-bank priority for consolidation scheduling.

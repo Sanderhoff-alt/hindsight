@@ -380,3 +380,36 @@ async def test_reserved_and_shared_phases_do_not_double_claim(pool, backend, cle
 
     ours = [op for op in op_ids if str(op) in claimed]
     assert len(ours) == 1, f"expected exactly one same-bank claim across both phases, got {len(ours)}"
+
+
+@pytest.mark.asyncio
+async def test_consolidation_claims_at_most_one_per_bank(pool, backend, clean_operations):
+    """Consolidation must serialize a bank within one claim batch as well as across polls."""
+    bank = await _make_bank(pool)
+    other_bank = await _make_bank(pool)
+    base = datetime.now(UTC) - timedelta(minutes=10)
+    same_bank = [
+        await _insert_op(pool, bank, "consolidation", created_at=base + timedelta(seconds=i)) for i in range(3)
+    ]
+    other = await _insert_op(pool, other_bank, "consolidation", created_at=base + timedelta(seconds=10))
+
+    claimed = await _claim(backend, shared=5)
+
+    ours = [op for op in same_bank if str(op) in claimed]
+    assert len(ours) == 1, f"expected one same-bank consolidation claim, got {len(ours)}"
+    assert ours[0] == same_bank[0]
+    assert str(other) in claimed, "different banks should still be claimed in parallel"
+
+
+@pytest.mark.asyncio
+async def test_consolidation_reserved_and_shared_phases_do_not_double_claim(pool, backend, clean_operations):
+    """The per-bank guard must survive reserved-to-shared consolidation claiming."""
+    bank = await _make_bank(pool)
+    base = datetime.now(UTC) - timedelta(minutes=10)
+    op_ids = [await _insert_op(pool, bank, "consolidation", created_at=base + timedelta(seconds=i)) for i in range(3)]
+
+    claimed = await _claim(backend, shared=5, reserved={"consolidation": 1})
+
+    ours = [op for op in op_ids if str(op) in claimed]
+    assert len(ours) == 1, f"expected one same-bank claim across both phases, got {len(ours)}"
+    assert ours[0] == op_ids[0]
