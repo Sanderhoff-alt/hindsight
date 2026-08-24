@@ -67,12 +67,17 @@ class TestWallTimeoutResolution:
             clear_config_cache()
             assert _wall_timeout_for("batch_retain") is None
 
-    def test_other_task_types_are_unbounded(self):
-        """Only retain is bounded: reflect self-bounds inside the engine, and the
-        rest have no reported wedge. Bounding them here would be a behaviour
-        change nobody asked for — consolidation on a large bank is legitimately
-        long-running."""
-        assert _wall_timeout_for("consolidation") is None
+    def test_consolidation_is_bounded(self):
+        with patch.dict("os.environ", {"HINDSIGHT_API_CONSOLIDATION_WALL_TIMEOUT": "7200"}):
+            clear_config_cache()
+            assert _wall_timeout_for("consolidation") == 7200.0
+
+    def test_zero_disables_consolidation(self):
+        with patch.dict("os.environ", {"HINDSIGHT_API_CONSOLIDATION_WALL_TIMEOUT": "0"}):
+            clear_config_cache()
+            assert _wall_timeout_for("consolidation") is None
+
+    def test_unknown_task_types_are_unbounded(self):
         assert _wall_timeout_for("graph_maintenance") is None
         assert _wall_timeout_for("reflect") is None
 
@@ -164,8 +169,8 @@ class TestWallTimeoutEnforcement:
 
     @pytest.mark.asyncio
     async def test_unbounded_type_is_not_cancelled(self):
-        """A slow non-retain task runs to completion even past the retain
-        ceiling — the timeout is per operation type, not global."""
+        """A slow unknown task runs to completion because only mapped types
+        have a wall-clock ceiling."""
         import asyncio
 
         async def slow(_task_dict):
@@ -173,7 +178,30 @@ class TestWallTimeoutEnforcement:
 
         with patch.dict("os.environ", {"HINDSIGHT_API_RETAIN_WALL_TIMEOUT": "1"}):
             clear_config_cache()
-            poller, task = await _run(slow, task_type="consolidation")
+            poller, task = await _run(slow, task_type="graph_maintenance")
 
-        poller._mark_completed.assert_awaited_once()
-        poller._mark_failed.assert_not_awaited()
+            poller._mark_completed.assert_awaited_once()
+            poller._mark_failed.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_wedged_consolidation_is_cancelled_and_marked_failed(self):
+        import asyncio
+
+        cancelled = asyncio.Event()
+
+        async def wedged(_task_dict):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        with patch.dict("os.environ", {"HINDSIGHT_API_CONSOLIDATION_WALL_TIMEOUT": "1"}):
+            clear_config_cache()
+            poller, _ = await _run(wedged, task_type="consolidation")
+
+        assert cancelled.is_set()
+        poller._mark_completed.assert_not_awaited()
+        poller._mark_failed.assert_awaited_once()
+        message = poller._mark_failed.await_args.args[1]
+        assert "HINDSIGHT_API_CONSOLIDATION_WALL_TIMEOUT" in message

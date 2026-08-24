@@ -19,7 +19,11 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from ..config import get_config
+from ..config import (
+    ENV_CONSOLIDATION_WALL_TIMEOUT,
+    ENV_RETAIN_WALL_TIMEOUT,
+    get_config,
+)
 from ..engine.schema import fq_table_explicit as fq_table
 from ..metrics import get_metrics_collector
 from .exceptions import DeferOperation, RetryTaskAt, format_task_error
@@ -30,6 +34,14 @@ from .stage import StageHolder, bind_holder
 # operation="retain" series the synchronous API path emits. Unknown types
 # pass through unchanged.
 _RETAIN_OP_TYPES = {"retain", "batch_retain", "file_convert_retain"}
+_WALL_TIMEOUT_CONFIG_ATTRS = {
+    **dict.fromkeys(_RETAIN_OP_TYPES, "retain_wall_timeout"),
+    "consolidation": "consolidation_wall_timeout",
+}
+_WALL_TIMEOUT_ENV_VARS = {
+    "retain_wall_timeout": ENV_RETAIN_WALL_TIMEOUT,
+    "consolidation_wall_timeout": ENV_CONSOLIDATION_WALL_TIMEOUT,
+}
 
 
 def _current_rss_bytes() -> int | None:
@@ -73,13 +85,19 @@ def _wall_timeout_for(task_type: str) -> float | None:
     LLM call or one query, never the whole task — this is the outer backstop
     that turns "wedged until restart" into "failed and retryable".
 
-    Only retain is bounded today; reflect self-bounds inside the engine
-    (``reflect_wall_timeout``) and the remaining types have no reported wedge.
+    Reflect self-bounds inside the engine (``reflect_wall_timeout``); unknown
+    task types remain unbounded until they get an explicit ceiling.
     """
-    if task_type in _RETAIN_OP_TYPES:
-        timeout = get_config().retain_wall_timeout
-        return float(timeout) if timeout > 0 else None
-    return None
+    config_attr = _WALL_TIMEOUT_CONFIG_ATTRS.get(task_type)
+    if config_attr is None:
+        return None
+    timeout = getattr(get_config(), config_attr)
+    return float(timeout) if timeout > 0 else None
+
+
+def _wall_timeout_env_var(task_type: str) -> str:
+    config_attr = _WALL_TIMEOUT_CONFIG_ATTRS[task_type]
+    return _WALL_TIMEOUT_ENV_VARS[config_attr]
 
 
 class _WallTimeoutExceeded(Exception):
@@ -1033,7 +1051,7 @@ class WorkerPoller:
             stage = holder.stage if holder is not None else "unknown"
             message = (
                 f"Task exceeded the {e.timeout:.0f}s wall-clock limit for '{task_type}' "
-                f"(stage={stage}) and was cancelled. Raise HINDSIGHT_API_RETAIN_WALL_TIMEOUT "
+                f"(stage={stage}) and was cancelled. Raise {_wall_timeout_env_var(task_type)} "
                 f"if this is a legitimately long operation, or set it to 0 to disable the limit."
             )
             logger.error(f"Task {task.operation_id} timed out: {message}")
