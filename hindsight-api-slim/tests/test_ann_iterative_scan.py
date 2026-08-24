@@ -201,19 +201,44 @@ async def test_the_kill_switch_flips_real_retrieval_depth(memory, request_contex
     retain would drag in extraction and consolidation.
     """
     from hindsight_api.engine.search.retrieval import retrieve_semantic_bm25_combined_sql
-    from hindsight_api.engine.retain.bank_utils import get_or_create_bank_profile
+    from hindsight_api.engine.retain.bank_utils import (
+        _BANK_INDEX_FACT_TYPES,
+        _bank_index_name,
+        _vector_index_clause,
+        get_or_create_bank_profile,
+    )
     from hindsight_api.engine.task_backend import fq_table
 
     bank_id = f"test_iter_scan_{uuid.uuid4().hex[:8]}"
     budget = 400  # deliberately above the standing ef_search of 200
-    # Creating the bank also builds its per-(bank, fact_type) partial vector index —
-    # the same one recall uses — so this exercises the production index, not a stand-in.
+    # Ensure bank profile exists. When HINDSIGHT_API_VECTOR_INDEX_MIN_ROWS > 0
+    # (lazy indexing mode), bank creation does not build partial vector indexes up front.
+    # We explicitly build the index below so this test exercises the real production index
+    # regardless of the configured threshold setting.
     await get_or_create_bank_profile(memory._backend, bank_id)
     pool = await memory._get_pool()
     probe = _near_query_vector(0)
     table = fq_table("memory_units")
     try:
         async with pool.acquire() as conn:
+            internal_id = await conn.fetchval(
+                f"SELECT internal_id FROM {fq_table('banks')} WHERE bank_id = $1", bank_id
+            )
+            assert internal_id is not None, f"bank {bank_id} internal_id not found"
+            index_name = _bank_index_name("world", str(internal_id))
+            index_clause = _vector_index_clause()
+            if not index_clause:
+                pytest.skip("Backend does not use per-bank vector indexes")
+
+            await memory._backend.ops.create_bank_vector_indexes(
+                conn,
+                table,
+                bank_id,
+                str(internal_id),
+                index_clause,
+                {"world": _BANK_INDEX_FACT_TYPES["world"]},
+            )
+
             await conn.executemany(
                 f"INSERT INTO {table} (bank_id, text, fact_type, embedding) VALUES ($1, $2, 'world', $3::vector)",
                 [(bank_id, f"filler fact {i}", _near_query_vector(i)) for i in range(_ROWS)],
@@ -241,11 +266,10 @@ async def test_the_kill_switch_flips_real_retrieval_depth(memory, request_contex
                         probe,
                     )
                 )
-                # "Index Scan" alone is not enough — a btree scan plus a Sort also
-                # matches, and it returns every row regardless of the candidate list,
-                # which would make this quietly measure nothing. An ANN scan emits rows
-                # already ordered, so the giveaway is the absence of a Sort node.
-                assert "Index Scan" in plan and "Sort" not in plan, f"expected an ANN scan, got:\n{plan}"
+                # Assert that the plan uses the specific ANN index for this bank and fact_type,
+                # and that it does not fall back to a btree scan plus Sort.
+                assert index_name in plan, f"expected an ANN scan using {index_name}, got:\n{plan}"
+                assert "Sort" not in plan, f"expected an ANN scan without Sort, got:\n{plan}"
                 result = await retrieve_semantic_bm25_combined_sql(
                     conn, probe, "", bank_id, ["world"], budget, min_semantic=0.0
                 )
