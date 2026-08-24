@@ -60,15 +60,27 @@ an outdated decision — silent disregard leaves the trap armed for the next ses
 
 ## Configuration — ONE file: `~/.hindsight/coding-agent.json`
 
-No environment variables (exceptions: `HINDSIGHT_CONFIG` relocates this file;
-`HINDSIGHT_DIAG_FILE`/`HINDSIGHT_LOG_FILE`/`HINDSIGHT_LOG_LEVEL` for diagnostics).
-Layering, later wins: defaults → file → `harnesses.<name>` → `banks.<resolvedBankId>`.
+The file is the normal configuration surface. Scalar fields can also be supplied through their
+`HINDSIGHT_<FIELD_IN_CAPS>` environment variable (for example,
+`HINDSIGHT_DYNAMIC_BANK_ID`, `HINDSIGHT_BANK_ID_TEMPLATE`, `HINDSIGHT_OPT_IN_PATHS`, and
+`HINDSIGHT_MAX_PARALLEL_RETAINS`); file values win over environment values. `HINDSIGHT_CONFIG`
+relocates the file. `HINDSIGHT_DIAG_FILE`, `HINDSIGHT_LOG_FILE`, and `HINDSIGHT_LOG_LEVEL` control
+diagnostics. Map-valued fields (`mapPathToBank`, `harnesses`, `banks`, and `retainMetadata`) are
+file-only. Layering, later wins: defaults → environment → file → `harnesses.<name>` →
+`banks.<resolvedBankId>`.
 
 ```jsonc
 {
   "apiUrl": "http://localhost:8888", // your Hindsight server
   "apiToken": "…", // Hindsight Cloud only
   "gitIngest": "message", // "message" | "full" (per-commit diffs) | "none"
+  "dynamicBankId": true,
+  "bankIdTemplate": "coding-agent::{gitProject}",
+  "resolveWorktrees": true,
+  "optInOnly": false,
+  "optInPaths": ["~/work/client-x"],
+  "retainTags": ["project:{gitProject}"],
+  "retainMetadata": { "repo": "{gitProject}" },
   "harnesses": { "claude-code": { "disabled": true } }, // per-agent override of anything
   "mapPathToBank": { "/Users/me/work/client-x": "client-x-memory" }, // path-prefix → bank
   "banks": {
@@ -91,7 +103,43 @@ first-prompt synthesis — the agent is instead told to call `hindsight_reflect`
 each consolidation, `cron` on a schedule, `manual` never — existing pages keep the trigger they were
 created with), `autoSeed`/`seedLimit` (true/300),
 `codebaseSurvey`/`surveyModel`/`surveyBudgetUsd` (true/haiku/2), `surveyRefreshCommits` (0=off),
-`logLevel` ("info").
+`maxParallelRetains` (10; lower it if bursts receive 429s), and `logLevel` ("info").
+
+Daemon-only settings are `serverMode: "daemon"`, `apiPort` (default `9077`),
+`daemonProfile` (default `coding-agent`), `daemonIdleTimeout` (unset means keep it running),
+`embedVersion` (default `latest`), and `embedPackagePath` (a local checkout for development).
+`apiPort` is deliberately separate from the usual self-hosted server port `8888`.
+
+Bank routing fields are also valid at the top level:
+
+- `bankId` selects one static bank. If it is omitted, the default is dynamic per-repository
+  resolution; set `dynamicBankId: false` to force a static bank.
+- `bankIdTemplate` controls dynamic IDs. It supports `{gitProject}`, `{project}`, `{harness}`,
+  `{channel}`, and `{user}`. The default `coding-agent::{gitProject}` shares a repository bank
+  across coding agents.
+- `resolveWorktrees` defaults to `true`, so linked worktrees inherit the main repository's bank,
+  mapping, and opt-in status.
+- `mapPathToBank` maps absolute path prefixes to a named bank. The **longest matching prefix wins**
+  and mapping a parent directory also captures every nested repository unless a more specific entry
+  overrides it. It has no environment-variable form.
+
+With `optInOnly: true`, memory is inert unless the directory is under an `optInPaths` prefix or a
+`mapPathToBank` entry. A bare `bankId` does not opt a project in: it names a bank, not an approved
+directory.
+
+The resolved bank can be controlled after routing with `banks.<resolvedBankId>`:
+
+```jsonc
+{
+  "banks": {
+    "coding-agent::private-project": { "disabled": true },
+    "coding-agent::old-name": { "bank": "team::shared" },
+  },
+}
+```
+
+`disabled` suppresses recall injection, retain, and session-start work for that bank. `bank` is an
+exact-match alias/rename of the destination; it is the supported way to rename a resolved ID.
 
 Config is read at process start, not watched: a hook harness picks an edit up on the next prompt, a
 persistent plugin (opencode, Kilo, Cline, Prime Agent, dsh) only after the agent restarts, and the
@@ -106,6 +154,11 @@ Bank resolution order: `mapPathToBank` longest prefix → static `bankId` → te
 (default `coding-agent::{gitProject}`) → the matching `banks.<id>` section (its `bank` field
 renames the destination). Two repos share memory by converging their `banks.<id>.bank` on one
 name, or by one `mapPathToBank` prefix over their parent directory.
+
+`{gitProject}` comes from Git's common directory. Outside a Git repository, it falls back to the
+directory where the session started. Starting sessions from arbitrary non-Git parent directories can
+therefore create separate, low-value banks (for example `coding-agent::tmp`); use a deliberate
+`bankId`, `mapPathToBank`, or `optInOnly` policy for non-repository work.
 
 ## Install / update (for setting up another machine or harness)
 
