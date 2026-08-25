@@ -111,6 +111,26 @@ def _cleanup_leaked_span_recorders():
             recorders.remove(recorder)
 
 
+@pytest.fixture(autouse=True)
+def _cleanup_leaked_metrics_collector():
+    """Reset the process-global metrics collector to NoOpMetricsCollector around each test (#3780).
+
+    ``create_metrics_collector()`` (called e.g. during FastAPI app lifespan startup)
+    permanently sets ``_metrics_collector`` to a real ``MetricsCollector``. Without
+    per-test teardown, this leaks across tests in the same pytest-xdist worker.
+    Subsequent provider tests with MagicMock-based usage objects fail with
+    TypeError when ``MetricsCollector.record_llm_call`` performs integer comparisons.
+    """
+    import hindsight_api.metrics as metrics_module
+
+    original_collector = metrics_module._metrics_collector
+    metrics_module._metrics_collector = metrics_module.NoOpMetricsCollector()
+    try:
+        yield
+    finally:
+        metrics_module._metrics_collector = original_collector
+
+
 # Default pg0 instance configuration for tests
 DEFAULT_PG0_INSTANCE_NAME = "hindsight-test"
 DEFAULT_PG0_PORT = int(os.environ.get("HINDSIGHT_TEST_PG_PORT", "5556"))

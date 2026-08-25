@@ -1120,3 +1120,11 @@ def create_metrics_collector() -> MetricsCollector:
     global _metrics_collector
     _metrics_collector = MetricsCollector()
     return _metrics_collector
+
+
+def reset_metrics_collector() -> None:
+    """
+    Reset the global metrics collector back to NoOpMetricsCollector.
+    """
+    global _metrics_collector
+    _metrics_collector = NoOpMetricsCollector()

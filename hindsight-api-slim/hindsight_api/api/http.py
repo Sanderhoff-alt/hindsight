@@ -198,6 +198,7 @@ from hindsight_api.metrics import (
     get_metrics_collector,
     initialize_metrics,
     normalize_http_endpoint,
+    reset_metrics_collector,
 )
 from hindsight_api.models import RequestContext
 
@@ -3969,6 +3970,9 @@ def create_app(
         from hindsight_api.tracing import shutdown_tracing
 
         shutdown_tracing()
+
+        # Prevent in-process app instances from leaking a live collector across tests (#3780).
+        reset_metrics_collector()
 
     from hindsight_api import __version__
     from hindsight_api.config import get_config

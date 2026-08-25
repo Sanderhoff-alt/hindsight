@@ -12,6 +12,7 @@ from hindsight_api.metrics import (
     create_metrics_collector,
     initialize_metrics,
     normalize_http_endpoint,
+    reset_metrics_collector,
 )
 
 
@@ -265,22 +266,41 @@ class TestMetricsCollector:
         assert attributes["bank_id"] == "test_bank"
 
 
+@pytest.mark.xdist_group(name="metrics_collector_isolation")
 class TestGetMetricsCollector:
-    """Tests for the get_metrics_collector function."""
+    """Tests for the get_metrics_collector function.
+
+    Pinned to a single xdist worker group so the leak-then-verify pair runs
+    sequentially on the same worker, proving the autouse fixture cleans up
+    a leaked collector between tests (#3780).
+    """
 
     def test_returns_noop_by_default(self):
         """Test that get_metrics_collector returns NoOpMetricsCollector by default."""
-        # Reset global state
-        import hindsight_api.metrics as metrics_module
+        collector = get_metrics_collector()
+        assert isinstance(collector, NoOpMetricsCollector)
 
-        original_collector = metrics_module._metrics_collector
+    def test_create_and_reset_metrics_collector(self):
+        """Test creating and resetting the global metrics collector (#3780)."""
+        with patch("hindsight_api.metrics.get_meter") as mock_get_meter:
+            mock_get_meter.return_value = MagicMock()
+            collector = create_metrics_collector()
+            assert isinstance(collector, MetricsCollector)
+            assert get_metrics_collector() is collector
 
-        try:
-            metrics_module._metrics_collector = NoOpMetricsCollector()
-            collector = get_metrics_collector()
-            assert isinstance(collector, NoOpMetricsCollector)
-        finally:
-            metrics_module._metrics_collector = original_collector
+            reset_metrics_collector()
+            assert isinstance(get_metrics_collector(), NoOpMetricsCollector)
+
+    def test_creates_collector_without_explicit_reset(self):
+        """First of the ordered pair: creates a collector without explicit reset (#3780)."""
+        with patch("hindsight_api.metrics.get_meter") as mock_get_meter:
+            mock_get_meter.return_value = MagicMock()
+            create_metrics_collector()
+            assert isinstance(get_metrics_collector(), MetricsCollector)
+
+    def test_collector_is_noop_in_subsequent_test(self):
+        """Second of the ordered pair: proves the fixture cleaned up the leak on this worker (#3780)."""
+        assert isinstance(get_metrics_collector(), NoOpMetricsCollector)
 
 
 class TestMetricsCollectorBase:
