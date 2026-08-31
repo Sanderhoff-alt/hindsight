@@ -42,7 +42,7 @@ from .local_device import (
     resolve_model_device_type,
     select_local_device,
 )
-from .tei_retry import tei_retry_delay
+from .tei_retry import TEI_KEEPALIVE_EXPIRY_SECONDS, is_retryable_tei_transport_error, tei_retry_delay
 
 logger = logging.getLogger(__name__)
 
@@ -383,7 +383,29 @@ class RemoteTEICrossEncoder(CrossEncoderModel):
                         response = await client.post(url, **kwargs)
                     response.raise_for_status()
                     return response
-                except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout) as e:
+                except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout, httpx.WriteTimeout) as e:
+                    last_error = e
+                    if attempt < self.max_retries:
+                        logger.warning(
+                            f"TEI request failed (attempt {attempt + 1}/{self.max_retries + 1}): {e}. "
+                            f"Retrying in {delay}s..."
+                        )
+                        await asyncio.sleep(delay)
+                        delay *= 2  # Exponential backoff
+                except httpx.RequestError as e:
+                    if not is_retryable_tei_transport_error(e):
+                        raise
+                    last_error = e
+                    if attempt < self.max_retries:
+                        logger.warning(
+                            f"TEI request failed (attempt {attempt + 1}/{self.max_retries + 1}): {e}. "
+                            f"Retrying in {delay}s..."
+                        )
+                        await asyncio.sleep(delay)
+                        delay *= 2  # Exponential backoff
+                except OSError as e:
+                    if not is_retryable_tei_transport_error(e):
+                        raise
                     last_error = e
                     if attempt < self.max_retries:
                         logger.warning(
@@ -422,7 +444,10 @@ class RemoteTEICrossEncoder(CrossEncoderModel):
             f"Reranker: initializing TEI provider at {self.base_url} "
             f"(batch_size={self.batch_size}, max_concurrent={self.max_concurrent})"
         )
-        self._async_client = httpx.AsyncClient(timeout=self.timeout)
+        self._async_client = httpx.AsyncClient(
+            timeout=self.timeout,
+            limits=httpx.Limits(keepalive_expiry=min(self.timeout, TEI_KEEPALIVE_EXPIRY_SECONDS)),
+        )
 
         # Verify server is reachable and get model info
         # Use a temporary semaphore for initialization
@@ -1043,14 +1068,15 @@ class FlashRankCrossEncoder(CrossEncoderModel):
 
 
 def _truncate_to_tokens(text: str, max_tokens: int) -> str:
-    """Truncate text to at most max_tokens using the shared tiktoken encoder."""
-    from .memory_engine import _get_tiktoken_encoding
+    """Truncate text to at most max_tokens using the shared encoder.
 
-    enc = _get_tiktoken_encoding()
-    tokens = enc.encode(text)
-    if len(tokens) <= max_tokens:
-        return text
-    return enc.decode(tokens[:max_tokens])
+    Reranking truncates every candidate document, and the overwhelming majority
+    already fit — so this counts first and only builds the ids for the ones that
+    actually need cutting.
+    """
+    from .token_encoding import truncate_to_tokens
+
+    return truncate_to_tokens(text, max_tokens).text
 
 
 class LiteLLMCrossEncoder(CrossEncoderModel):
@@ -1088,7 +1114,7 @@ class LiteLLMCrossEncoder(CrossEncoderModel):
                    Use provider prefix (e.g., cohere/, together_ai/, voyage/)
             timeout: Request timeout in seconds (default: 60.0)
             max_tokens_per_doc: If set, truncate each document to this many tokens before
-                                sending to the reranker (uses tiktoken cl100k_base encoding).
+                                sending to the reranker (uses the configured encoding).
                                 Useful for models with small context windows (e.g. 1024 tokens).
         """
         self.api_base = api_base.rstrip("/")
@@ -1203,7 +1229,7 @@ class LiteLLMSDKCrossEncoder(CrossEncoderModel):
             api_base: Custom base URL for API (optional)
             timeout: Request timeout in seconds (default: 60.0)
             max_tokens_per_doc: If set, truncate each document to this many tokens before
-                                sending to the reranker (uses tiktoken cl100k_base encoding).
+                                sending to the reranker (uses the configured encoding).
                                 Useful for models with small context windows (e.g. 1024 tokens).
         """
         self.api_key = api_key
