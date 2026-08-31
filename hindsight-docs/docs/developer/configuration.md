@@ -251,7 +251,14 @@ Hindsight supports five backends for BM25 keyword retrieval:
 - **vchord** — VectorChord BM25 (uses the `llmlingua2` multilingual tokenizer).
 - **pg_textsearch** — Timescale's pg_textsearch extension. English-only.
 - **pgroonga** — pgroonga full-text search. Multilingual / CJK out of the box.
-- **pg_search** — ParadeDB pg_search. True BM25; the only backend that is Citus-compatible.
+- **pg_search** — ParadeDB pg_search. True BM25; the only backend that is Citus-compatible (requires pg_search $\ge$ 0.21.0 when using `min_scores.keyword`).
+
+:::warning[pg_search Version Requirement for Keyword Score Floors]
+When configuring `min_scores.keyword` with `HINDSIGHT_API_TEXT_SEARCH_EXTENSION=pg_search`, ParadeDB **0.21.0 or higher** is recommended (and **0.15.6+** is strictly required):
+- **0.15.6 (Syntax threshold)**: `paradedb.score()` in `WHERE` was introduced in `paradedb#2197`. Versions below 0.15.6 raise a query syntax error when a score floor is configured.
+- **0.17.0 (Direct bugfix)**: Resolved the primary issue where combining `@@@` with standard `AND` filters (`bank_id`, `fact_type`) caused `score()` to return `NULL` (`paradedb#2661`, `paradedb#2740`).
+- **0.21.0 (Conservative safe floor)**: Fully resolved residual outer `WHERE` score-loss defects (`paradedb#3550`, `paradedb#3768`) and planner hook edge cases with `unnest` subqueries (`paradedb#3679`). On self-hosted PostgreSQL instances running versions between 0.15.6 and 0.21.0, complex composite `WHERE` clauses can evaluate `score(id)` to `NULL` or 0, silently pruning matching rows.
+:::
 
 A bank can also use none of them: [`enable_text_search`](#recall-pipeline-stages)
 switches the keyword arm off per bank, leaving pure vector search. Every setting in

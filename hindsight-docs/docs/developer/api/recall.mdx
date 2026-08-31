@@ -404,20 +404,20 @@ When set to `true`, the response includes a detailed debug trace covering the qu
 
 ### min_scores
 
-An optional object of per-stage score floors, each compared **inclusively** (`>=`) against the matching field of a result's [`scores`](#scores) and AND-ed together. Any field you leave unset imposes no floor; omitting `min_scores` entirely (the default) applies no score filtering at all. The four fields operate at **two different levels of the pipeline**:
+An optional object of per-stage score floors, each compared **inclusively** (`>=`). Any field you leave unset imposes no floor; omitting `min_scores` entirely (the default) applies no score filtering at all. The four fields operate at **two different levels of the pipeline**:
 
 | field | level | effect |
 |---|---|---|
-| `semantic` | retrieval | minimum vector similarity, pushed into the SQL — prunes weak vector matches **before** fusion (overrides the global similarity minimum for this request) |
-| `keyword` | retrieval | minimum keyword/full-text (BM25) score, pushed into the SQL — prunes weak keyword matches before fusion |
-| `reranker` | post-query | minimum normalized cross-encoder score, applied to the ranked results |
-| `final` | post-query | minimum final ranking score, applied to the ranked results |
+| `semantic` | retrieval | minimum vector similarity, pushed into the SQL arm — prunes weak vector matches **before** fusion (overrides the global similarity minimum for this request) |
+| `keyword` | retrieval | minimum keyword/full-text (BM25) score, pushed into the SQL arm — prunes weak keyword matches before fusion |
+| `reranker` | post-query | minimum normalized cross-encoder score, applied to all ranked results |
+| `final` | post-query | minimum final ranking score, applied to all ranked results |
 
 ```json
-{ "query": "...", "min_scores": { "reranker": 0.5 } }
+{ "query": "...", "min_scores": { "final": 0.5 } }
 ```
 
-The retrieval-level floors (`semantic`/`keyword`) change *which candidates are considered*, so they can also change the final ordering; the post-query floors (`reranker`/`final`) only drop already-ranked results. Because freed slots are **not** backfilled, any floor can return fewer results than the budget allows.
+The retrieval-level floors (`semantic`/`keyword`) operate per retrieval arm, changing *which candidates from that arm enter fusion*. Because recall merges candidates from multiple arms (semantic, keyword, graph, temporal), a candidate surfaced by one arm can still be returned even if it lacks or falls below another arm's score. To enforce an abstention or quality gate on the entire returned result set, use the post-query floors (`reranker`/`final`). Because freed slots are **not** backfilled, any floor can return fewer results than the budget allows.
 
 **Use floors with care.** The reranker's scores are reliable for *ordering* but not as *absolute* values — a clearly-relevant memory can score `~0.001` on one query and `~1.0` on another, so a fixed cutoff risks silently dropping good results. Calibrate any threshold against the scores you actually observe (recall with no `min_scores` first and inspect the [`scores`](#scores) object).
 

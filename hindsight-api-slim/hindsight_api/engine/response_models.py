@@ -200,20 +200,48 @@ class RecallScores(BaseModel):
 
 
 class MinScores(BaseModel):
-    """Optional per-stage score floors for recall (all inclusive, AND-ed).
+    """Optional per-stage score floors for recall (all inclusive >=).
 
-    ``semantic`` and ``keyword`` are **retrieval-level** cutoffs pushed into the SQL
-    arms (overriding the global ``semantic_min_similarity`` / ``bm25_min_score``
-    config for this request), so they prune weak matches before fusion. ``reranker``
-    and ``final`` are **post-query** filters applied to the scored results after
-    reranking. Any field left None imposes no floor; all-None (the default) means
-    no score filtering.
+    ``semantic`` and ``keyword`` are **per-arm retrieval-level** cutoffs pushed
+    into the individual SQL query arms (overriding the global
+    ``semantic_min_similarity`` / ``bm25_min_score`` config for this request), so
+    they prune weak matches within each arm before fusion. Because recall merges
+    candidates across multiple arms (semantic, keyword, graph, temporal), a result
+    clearing one arm's threshold enters fusion even if absent or below floor in
+    another arm (i.e. not a cross-arm same-result intersection).
+
+    ``reranker`` and ``final`` are **post-ranking filters** applied to all scored
+    candidates after fusion and reranking, filtering out results that do not satisfy
+    the threshold.
+
+    Any field left None imposes no floor; all-None (the default) means no score
+    filtering.
     """
 
-    semantic: float | None = Field(default=None, description="Retrieval-level: minimum vector similarity (0-1).")
-    keyword: float | None = Field(default=None, description="Retrieval-level: minimum keyword/full-text (BM25) score.")
-    reranker: float | None = Field(default=None, description="Post-query: minimum normalized reranker score (0-1).")
-    final: float | None = Field(default=None, description="Post-query: minimum final ranking score.")
+    semantic: float | None = Field(
+        default=None,
+        ge=0.0,
+        allow_inf_nan=False,
+        description="Retrieval-level: minimum vector similarity (0-1) for the semantic arm.",
+    )
+    keyword: float | None = Field(
+        default=None,
+        ge=0.0,
+        allow_inf_nan=False,
+        description="Retrieval-level: minimum keyword/full-text (BM25) score for the keyword arm.",
+    )
+    reranker: float | None = Field(
+        default=None,
+        ge=0.0,
+        allow_inf_nan=False,
+        description="Post-query: minimum normalized reranker score (0-1) for ranked results.",
+    )
+    final: float | None = Field(
+        default=None,
+        ge=0.0,
+        allow_inf_nan=False,
+        description="Post-query: minimum final ranking score for ranked results.",
+    )
 
 
 class TemporalWindow(BaseModel):

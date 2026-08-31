@@ -352,9 +352,10 @@ class RecallRequest(BaseModel):
     )
     min_scores: MinScores | None = Field(
         default=None,
-        description="Optional per-stage score floors (all inclusive, AND-ed). `semantic` and `keyword` are "
-        "retrieval-level cutoffs pushed into the SQL arms (overriding the global similarity/BM25 minimums for "
-        "this request); `reranker` and `final` are post-ranking filters on the scored results. Any field left "
+        description="Optional per-stage score floors (all inclusive >=). `semantic` and `keyword` are "
+        "per-arm retrieval-level cutoffs pushed into the SQL arms (overriding the global similarity/BM25 minimums for "
+        "this request), pruning weak matches within each arm before fusion (without enforcing cross-arm intersection); "
+        "`reranker` and `final` are post-ranking filters applied to the scored results. Any field left "
         "unset imposes no floor; omitting `min_scores` entirely (the default) applies no score filtering. Use "
         "with care — the reranker's absolute scores are not calibrated across queries (a clearly-relevant match "
         "may score ~0.001 even though it is ranked first).",

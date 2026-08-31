@@ -313,13 +313,21 @@ class PostgreSQLDialect(SQLDialect):
             bm25_order_by = f"{bm25_score_expr} DESC"
             # Unlike native tsvector (which has a boolean `@@` match gate), the
             # VectorChord operator ranks *every* document, so a bare ORDER BY ...
-            # LIMIT pads the result with zero-score, non-matching rows. Gate on the
-            # score so only genuine term matches survive into fusion/reranking.
-            bm25_where_filter = f"AND -(search_vector <&> to_bm25query('idx_memory_units_text_search', tokenize({text_param}, 'llmlingua2'))) > {bm25_min_score:g}"
+            # LIMIT pads the result with zero-score, non-matching rows.
+            # When bm25_min_score <= 0 (default), gate strictly on > 0 to exclude
+            # zero-score non-matches; when bm25_min_score > 0, use >= for inclusive
+            # score floor semantics aligned with all other stages.
+            effective_min = max(bm25_min_score, 0.0)
+            score_op = ">=" if effective_min > 0 else ">"
+            bm25_where_filter = f"AND -(search_vector <&> to_bm25query('idx_memory_units_text_search', tokenize({text_param}, 'llmlingua2'))) {score_op} {effective_min:g}"
         elif text_search_extension == "pg_textsearch":
             bm25_score_expr = f"-(text <@> to_bm25query({text_param}, 'idx_memory_units_text_search'))"
             bm25_order_by = f"text <@> to_bm25query({text_param}, 'idx_memory_units_text_search') ASC"
-            bm25_where_filter = ""
+            bm25_where_filter = (
+                f"AND -(text <@> to_bm25query({text_param}, 'idx_memory_units_text_search')) >= {bm25_min_score:g}"
+                if bm25_min_score > 0
+                else ""
+            )
         elif text_search_extension == "pgroonga":
             # &@~ accepts pgroonga's query syntax. Tokenize the raw query with
             # pgroonga_tokenize using TokenBigram + NormalizerNFKC150 (the same
@@ -328,6 +336,10 @@ class PostgreSQLDialect(SQLDialect):
             # generation strategy (broadening recall across all scripts); precision
             # is restored downstream via BM25 score ranking, multi-arm RRF fusion,
             # and Cross-Encoder reranking.
+            # NOTE: pgroonga_score() returns a real score only off a PGroonga index
+            # scan and evaluates to 0.0 under sequential scans. The WHERE clause
+            # below matches the expression on idx_memory_units_text_search so the planner
+            # can use the index scan.
             bm25_score_expr = "pgroonga_score(tableoid, ctid)"
             bm25_order_by = f"{bm25_score_expr} DESC"
             query_expr = (
@@ -338,11 +350,16 @@ class PostgreSQLDialect(SQLDialect):
                 f"AND (COALESCE(text, '') || ' ' || COALESCE(context, '') || ' ' || COALESCE(text_signals, '')) "
                 f"&@~ {query_expr}"
             )
+            if bm25_min_score > 0:
+                bm25_where_filter += f" AND pgroonga_score(tableoid, ctid) >= {bm25_min_score:g}"
         elif text_search_extension == "pg_search":
             # ParadeDB pg_search: BM25 index over (id, text, context, text_signals)
             # with key_field='id'. The @@@ operator on the key_field requires a
             # field-qualified query (`text:foo`); to keep the bind-parameter form,
             # we fan the query out across all indexed text fields with paradedb.boolean.
+            # NOTE: Filtering by score in WHERE requires pg_search custom-scan
+            # predicate pushdown support when combined with @@@ and relational filters
+            # (e.g. bank_id, fact_type).
             bm25_score_expr = f"{pg_search_function_schema}.score(id)"
             bm25_order_by = f"{pg_search_function_schema}.score(id) DESC"
             bm25_where_filter = (
@@ -352,12 +369,16 @@ class PostgreSQLDialect(SQLDialect):
                 f"{pg_search_function_schema}.match('text_signals', {text_param})"
                 f"])"
             )
+            if bm25_min_score > 0:
+                bm25_where_filter += f" AND {pg_search_function_schema}.score(id) >= {bm25_min_score:g}"
         else:  # native tsvector
             # bm25_language is validated as a PG identifier in HindsightConfig.validate(),
             # so embedding it as a SQL literal here is safe.
             bm25_score_expr = f"ts_rank_cd(search_vector, to_tsquery('{bm25_language}', {text_param}))"
             bm25_order_by = f"{bm25_score_expr} DESC"
             bm25_where_filter = f"AND search_vector @@ to_tsquery('{bm25_language}', {text_param})"
+            if bm25_min_score > 0:
+                bm25_where_filter += f" AND {bm25_score_expr} >= {bm25_min_score:g}"
 
         return (
             f"(SELECT {cols},"

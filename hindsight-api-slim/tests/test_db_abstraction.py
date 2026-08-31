@@ -242,6 +242,18 @@ class TestPostgreSQLDialect:
         assert "to_tsquery('french', $4)" in arm
         assert "to_tsquery('english'" not in arm
 
+    def test_build_bm25_arm_native_honors_custom_min_score(self, d):
+        arm = d.build_bm25_arm(
+            table="schema.memory_units",
+            cols="id, text",
+            fact_type="world",
+            bank_id_param="$2",
+            limit_param="$3",
+            text_param="$4",
+            bm25_min_score=0.3,
+        )
+        assert "AND ts_rank_cd(search_vector, to_tsquery('english', $4)) >= 0.3" in arm
+
     def test_build_bm25_arm_vchord(self, d):
         arm = d.build_bm25_arm(
             table="t",
@@ -285,7 +297,22 @@ class TestPostgreSQLDialect:
             text_search_extension="vchord",
             bm25_min_score=2.5,
         )
-        assert "> 2.5" in arm
+        assert ">= 2.5" in arm
+
+    def test_build_bm25_arm_vchord_clamps_negative_min_score(self, d):
+        arm = d.build_bm25_arm(
+            table="t",
+            cols="id",
+            fact_type="world",
+            bank_id_param="$2",
+            limit_param="$3",
+            text_param="$4",
+            text_search_extension="vchord",
+            bm25_min_score=-1.0,
+        )
+        assert (
+            "-(search_vector <&> to_bm25query('idx_memory_units_text_search', tokenize($4, 'llmlingua2'))) > 0" in arm
+        )
 
     def test_build_bm25_arm_pg_textsearch_scores_each_row(self, d):
         arm = d.build_bm25_arm(
@@ -301,6 +328,20 @@ class TestPostgreSQLDialect:
         assert f"-({expected_distance}) AS bm25_score" in arm
         assert f"ORDER BY {expected_distance} ASC" in arm
         assert "$4 <@>" not in arm
+
+    def test_build_bm25_arm_pg_textsearch_honors_custom_min_score(self, d):
+        arm = d.build_bm25_arm(
+            table="schema.memory_units",
+            cols="id, text",
+            fact_type="world",
+            bank_id_param="$2",
+            limit_param="$3",
+            text_param="$4",
+            text_search_extension="pg_textsearch",
+            bm25_min_score=1.5,
+        )
+        expected_distance = "text <@> to_bm25query($4, 'idx_memory_units_text_search')"
+        assert f"AND -({expected_distance}) >= 1.5" in arm
 
     def test_build_bm25_arm_pgroonga(self, d):
         arm = d.build_bm25_arm(
@@ -318,6 +359,19 @@ class TestPostgreSQLDialect:
         assert "pgroonga_tokenize($4, 'tokenizer', 'TokenBigram', 'normalizer', 'NormalizerNFKC150')" in arm
         assert "pgroonga_score(tableoid, ctid)" in arm
         assert "to_tsquery" not in arm
+
+    def test_build_bm25_arm_pgroonga_honors_custom_min_score(self, d):
+        arm = d.build_bm25_arm(
+            table="schema.memory_units",
+            cols="id, text",
+            fact_type="world",
+            bank_id_param="$2",
+            limit_param="$3",
+            text_param="$4",
+            text_search_extension="pgroonga",
+            bm25_min_score=0.8,
+        )
+        assert "AND pgroonga_score(tableoid, ctid) >= 0.8" in arm
 
     def test_build_bm25_arm_pgroonga_ignores_bm25_language(self, d):
         """pgroonga's tokenizer is fixed at index creation; bm25_language must not leak in."""
@@ -353,6 +407,19 @@ class TestPostgreSQLDialect:
         assert "paradedb.score(id) DESC" in arm
         assert "'bm25' AS source" in arm
         assert "LIMIT $3" in arm
+
+    def test_build_bm25_arm_pg_search_honors_custom_min_score(self, d):
+        arm = d.build_bm25_arm(
+            table="schema.memory_units",
+            cols="id, text",
+            fact_type="world",
+            bank_id_param="$2",
+            limit_param="$3",
+            text_param="$4",
+            text_search_extension="pg_search",
+            bm25_min_score=2.0,
+        )
+        assert "AND paradedb.score(id) >= 2" in arm
 
     def test_build_bm25_arm_pg_search_custom_schema(self, d):
         arm = d.build_bm25_arm(
@@ -465,8 +532,35 @@ class TestOracleDialect:
         )
         assert "CONTAINS" in arm
         assert "SCORE(10)" in arm
+        assert "CONTAINS(text, :4, 10) > 0" in arm
         assert "'bm25' AS source" in arm
         assert "FETCH FIRST :3 ROWS ONLY" in arm
+
+    def test_build_bm25_arm_honors_custom_min_score(self, d):
+        arm = d.build_bm25_arm(
+            table="memory_units",
+            cols="id, text",
+            fact_type="world",
+            bank_id_param=":2",
+            limit_param=":3",
+            text_param=":4",
+            arm_index=0,
+            bm25_min_score=2.5,
+        )
+        assert "CONTAINS(text, :4, 10) >= 2.5" in arm
+
+    def test_build_bm25_arm_clamps_negative_min_score(self, d):
+        arm = d.build_bm25_arm(
+            table="memory_units",
+            cols="id, text",
+            fact_type="world",
+            bank_id_param=":2",
+            limit_param=":3",
+            text_param=":4",
+            arm_index=0,
+            bm25_min_score=-1.0,
+        )
+        assert "CONTAINS(text, :4, 10) > 0" in arm
 
     def test_build_bm25_arm_unique_labels(self, d):
         """Each arm_index produces a unique SCORE label to avoid conflicts in UNION ALL."""

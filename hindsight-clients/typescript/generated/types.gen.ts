@@ -3849,38 +3849,46 @@ export type MentalModelTriggerOutput = {
 /**
  * MinScores
  *
- * Optional per-stage score floors for recall (all inclusive, AND-ed).
+ * Optional per-stage score floors for recall (all inclusive >=).
  *
- * ``semantic`` and ``keyword`` are **retrieval-level** cutoffs pushed into the SQL
- * arms (overriding the global ``semantic_min_similarity`` / ``bm25_min_score``
- * config for this request), so they prune weak matches before fusion. ``reranker``
- * and ``final`` are **post-query** filters applied to the scored results after
- * reranking. Any field left None imposes no floor; all-None (the default) means
- * no score filtering.
+ * ``semantic`` and ``keyword`` are **per-arm retrieval-level** cutoffs pushed
+ * into the individual SQL query arms (overriding the global
+ * ``semantic_min_similarity`` / ``bm25_min_score`` config for this request), so
+ * they prune weak matches within each arm before fusion. Because recall merges
+ * candidates across multiple arms (semantic, keyword, graph, temporal), a result
+ * clearing one arm's threshold enters fusion even if absent or below floor in
+ * another arm (i.e. not a cross-arm same-result intersection).
+ *
+ * ``reranker`` and ``final`` are **post-ranking filters** applied to all scored
+ * candidates after fusion and reranking, filtering out results that do not satisfy
+ * the threshold.
+ *
+ * Any field left None imposes no floor; all-None (the default) means no score
+ * filtering.
  */
 export type MinScores = {
   /**
    * Semantic
    *
-   * Retrieval-level: minimum vector similarity (0-1).
+   * Retrieval-level: minimum vector similarity (0-1) for the semantic arm.
    */
   semantic?: number | null;
   /**
    * Keyword
    *
-   * Retrieval-level: minimum keyword/full-text (BM25) score.
+   * Retrieval-level: minimum keyword/full-text (BM25) score for the keyword arm.
    */
   keyword?: number | null;
   /**
    * Reranker
    *
-   * Post-query: minimum normalized reranker score (0-1).
+   * Post-query: minimum normalized reranker score (0-1) for ranked results.
    */
   reranker?: number | null;
   /**
    * Final
    *
-   * Post-query: minimum final ranking score.
+   * Post-query: minimum final ranking score for ranked results.
    */
   final?: number | null;
 };
@@ -4205,7 +4213,7 @@ export type RecallRequest = {
    */
   tag_groups?: Array<TagGroupLeaf | TagGroupAndInput | TagGroupOrInput | TagGroupNotInput> | null;
   /**
-   * Optional per-stage score floors (all inclusive, AND-ed). `semantic` and `keyword` are retrieval-level cutoffs pushed into the SQL arms (overriding the global similarity/BM25 minimums for this request); `reranker` and `final` are post-ranking filters on the scored results. Any field left unset imposes no floor; omitting `min_scores` entirely (the default) applies no score filtering. Use with care — the reranker's absolute scores are not calibrated across queries (a clearly-relevant match may score ~0.001 even though it is ranked first).
+   * Optional per-stage score floors (all inclusive >=). `semantic` and `keyword` are per-arm retrieval-level cutoffs pushed into the SQL arms (overriding the global similarity/BM25 minimums for this request), pruning weak matches within each arm before fusion (without enforcing cross-arm intersection); `reranker` and `final` are post-ranking filters applied to the scored results. Any field left unset imposes no floor; omitting `min_scores` entirely (the default) applies no score filtering. Use with care — the reranker's absolute scores are not calibrated across queries (a clearly-relevant match may score ~0.001 even though it is ranked first).
    */
   min_scores?: MinScores | null;
   /**

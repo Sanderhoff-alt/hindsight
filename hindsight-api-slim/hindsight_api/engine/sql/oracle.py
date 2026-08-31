@@ -276,6 +276,12 @@ class OracleDialect(SQLDialect):
         # Each arm gets a unique SCORE label (10 + arm_index) to avoid
         # conflicts within the UNION ALL.
         label = 10 + arm_index
+        # CONTAINS already gates to genuine matches; the configurable floor
+        # (default 0) keeps the threshold semantics uniform across backends.
+        # Score 0 in Oracle Text indicates no match, so default (0) uses > 0
+        # while positive user-defined floors use >= for inclusive semantics.
+        effective_min = max(bm25_min_score, 0.0)
+        score_op = ">=" if effective_min > 0 else ">"
         return (
             f"SELECT * FROM (SELECT {cols},"
             f"        NULL AS similarity,"
@@ -284,9 +290,7 @@ class OracleDialect(SQLDialect):
             f" FROM {table}"
             f" WHERE bank_id = {bank_id_param}"
             f"   AND fact_type = '{fact_type}'"
-            # CONTAINS already gates to genuine matches; the configurable floor
-            # (default 0) keeps the threshold semantics uniform across backends.
-            f"   AND CONTAINS(text, {text_param}, {label}) > {bm25_min_score:g}"
+            f"   AND CONTAINS(text, {text_param}, {label}) {score_op} {effective_min:g}"
             f"   {tags_clause}"
             f"   {groups_clause}"
             f"   {extra_where}"

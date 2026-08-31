@@ -17,19 +17,20 @@ import pprint
 import re  # noqa: F401
 import json
 
-from pydantic import BaseModel, ConfigDict, StrictFloat, StrictInt
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Any, ClassVar, Dict, List, Optional, Union
+from typing_extensions import Annotated
 from typing import Optional, Set
 from typing_extensions import Self
 
 class MinScores(BaseModel):
     """
-    Optional per-stage score floors for recall (all inclusive, AND-ed).  ``semantic`` and ``keyword`` are **retrieval-level** cutoffs pushed into the SQL arms (overriding the global ``semantic_min_similarity`` / ``bm25_min_score`` config for this request), so they prune weak matches before fusion. ``reranker`` and ``final`` are **post-query** filters applied to the scored results after reranking. Any field left None imposes no floor; all-None (the default) means no score filtering.
+    Optional per-stage score floors for recall (all inclusive >=).  ``semantic`` and ``keyword`` are **per-arm retrieval-level** cutoffs pushed into the individual SQL query arms (overriding the global ``semantic_min_similarity`` / ``bm25_min_score`` config for this request), so they prune weak matches within each arm before fusion. Because recall merges candidates across multiple arms (semantic, keyword, graph, temporal), a result clearing one arm's threshold enters fusion even if absent or below floor in another arm (i.e. not a cross-arm same-result intersection).  ``reranker`` and ``final`` are **post-ranking filters** applied to all scored candidates after fusion and reranking, filtering out results that do not satisfy the threshold.  Any field left None imposes no floor; all-None (the default) means no score filtering.
     """ # noqa: E501
-    semantic: Optional[Union[StrictFloat, StrictInt]] = None
-    keyword: Optional[Union[StrictFloat, StrictInt]] = None
-    reranker: Optional[Union[StrictFloat, StrictInt]] = None
-    final: Optional[Union[StrictFloat, StrictInt]] = None
+    semantic: Optional[Union[Annotated[float, Field(strict=True, ge=0.0)], Annotated[int, Field(strict=True, ge=0)]]] = None
+    keyword: Optional[Union[Annotated[float, Field(strict=True, ge=0.0)], Annotated[int, Field(strict=True, ge=0)]]] = None
+    reranker: Optional[Union[Annotated[float, Field(strict=True, ge=0.0)], Annotated[int, Field(strict=True, ge=0)]]] = None
+    final: Optional[Union[Annotated[float, Field(strict=True, ge=0.0)], Annotated[int, Field(strict=True, ge=0)]]] = None
     __properties: ClassVar[List[str]] = ["semantic", "keyword", "reranker", "final"]
 
     model_config = ConfigDict(

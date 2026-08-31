@@ -35,8 +35,8 @@ RC = RequestContext(tenant_id="default")
 async def _insert_fact(conn, *, fact_id: str, text: str, bank_id: str, embedding_str: str) -> None:
     await conn.execute(
         """
-        INSERT INTO memory_units (id, bank_id, text, fact_type, embedding)
-        VALUES ($1, $2, $3, 'world', $4::vector)
+        INSERT INTO memory_units (id, bank_id, text, fact_type, embedding, search_vector)
+        VALUES ($1, $2, $3, 'world', $4::vector, to_tsvector('english', $3))
         """,
         fact_id,
         bank_id,
@@ -171,16 +171,73 @@ class TestRetrievalLevelFilters:
         for r in filtered.results:
             assert r.scores.semantic is not None and r.scores.semantic >= floor
 
-    async def test_semantic_floor_above_one_returns_empty(self, seeded_memory):
+    async def test_semantic_floor_above_one_returns_empty_when_no_keyword_match(self, seeded_memory):
         engine, bank_id = seeded_memory
-        filtered = await _recall(engine, bank_id, min_scores=MinScores(semantic=1.1))
+        filtered = await _recall(engine, bank_id, query="philosophy and computers", min_scores=MinScores(semantic=1.1))
+        assert filtered.results == []
+
+    @pytest.mark.memory_backend_incompatible
+    async def test_semantic_floor_prunes_only_semantic_arm_and_keeps_keyword_arm(self, seeded_memory):
+        """A semantic floor above 1.0 prunes all semantic candidates, but keyword matches
+        still survive into fusion since floors operate per retrieval arm."""
+        engine, bank_id = seeded_memory
+        filtered = await _recall(engine, bank_id, query="animals and nature", min_scores=MinScores(semantic=1.1))
+        assert len(filtered.results) > 0
+        for r in filtered.results:
+            assert r.scores.semantic is None
+            assert r.scores.keyword is not None
+
+    @pytest.mark.memory_backend_incompatible
+    async def test_keyword_floor_prunes_in_retrieval(self, seeded_memory):
+        """min_scores.keyword is a SQL-arm cutoff: when keyword search surfaces
+        results, a keyword floor prunes matches below that threshold in the BM25 arm."""
+        engine, bank_id = seeded_memory
+        baseline = await _recall(engine, bank_id, query="cat and dogs")
+        keywords = sorted(r.scores.keyword for r in baseline.results if r.scores.keyword is not None)
+        assert keywords, "keyword arm should have surfaced matched facts"
+        floor = keywords[-1]
+        # Restrict semantic arm to ensure results only come from the keyword arm
+        filtered = await _recall(
+            engine, bank_id, query="cat and dogs", min_scores=MinScores(semantic=1.1, keyword=floor)
+        )
+        assert filtered.results, "Inclusive boundary: result with max score must survive the floor"
+        assert len(filtered.results) <= len(baseline.results)
+        for r in filtered.results:
+            assert r.scores.keyword is not None and r.scores.keyword >= floor
+
+    @pytest.mark.memory_backend_incompatible
+    async def test_keyword_floor_impossibly_high_returns_empty(self, seeded_memory):
+        engine, bank_id = seeded_memory
+        filtered = await _recall(
+            engine, bank_id, query="cat and dogs", min_scores=MinScores(semantic=1.1, keyword=10000.0)
+        )
         assert filtered.results == []
 
 
-class TestRecallRequestDefault:
-    """min_scores is opt-in: the HTTP recall defaults to None (no filtering)."""
+class TestRecallRequestValidation:
+    """Validation tests for RecallRequest and MinScores."""
 
     def test_http_request_defaults_to_none(self):
         from hindsight_api.api.http import RecallRequest
 
         assert RecallRequest(query="hi").min_scores is None
+
+    def test_min_scores_rejects_inf_and_nan(self):
+        from pydantic import ValidationError
+
+        for field in ("semantic", "keyword", "reranker", "final"):
+            with pytest.raises(ValidationError):
+                MinScores(**{field: float("inf")})
+            with pytest.raises(ValidationError):
+                MinScores(**{field: float("-inf")})
+            with pytest.raises(ValidationError):
+                MinScores(**{field: float("nan")})
+
+    def test_min_scores_rejects_negative_scores(self):
+        from pydantic import ValidationError
+
+        for field in ("semantic", "keyword", "reranker", "final"):
+            with pytest.raises(ValidationError):
+                MinScores(**{field: -1.0})
+            with pytest.raises(ValidationError):
+                MinScores(**{field: -0.01})

@@ -13097,55 +13097,59 @@
           "semantic": {
             "anyOf": [
               {
-                "type": "number"
+                "type": "number",
+                "minimum": 0.0
               },
               {
                 "type": "null"
               }
             ],
             "title": "Semantic",
-            "description": "Retrieval-level: minimum vector similarity (0-1)."
+            "description": "Retrieval-level: minimum vector similarity (0-1) for the semantic arm."
           },
           "keyword": {
             "anyOf": [
               {
-                "type": "number"
+                "type": "number",
+                "minimum": 0.0
               },
               {
                 "type": "null"
               }
             ],
             "title": "Keyword",
-            "description": "Retrieval-level: minimum keyword/full-text (BM25) score."
+            "description": "Retrieval-level: minimum keyword/full-text (BM25) score for the keyword arm."
           },
           "reranker": {
             "anyOf": [
               {
-                "type": "number"
+                "type": "number",
+                "minimum": 0.0
               },
               {
                 "type": "null"
               }
             ],
             "title": "Reranker",
-            "description": "Post-query: minimum normalized reranker score (0-1)."
+            "description": "Post-query: minimum normalized reranker score (0-1) for ranked results."
           },
           "final": {
             "anyOf": [
               {
-                "type": "number"
+                "type": "number",
+                "minimum": 0.0
               },
               {
                 "type": "null"
               }
             ],
             "title": "Final",
-            "description": "Post-query: minimum final ranking score."
+            "description": "Post-query: minimum final ranking score for ranked results."
           }
         },
         "type": "object",
         "title": "MinScores",
-        "description": "Optional per-stage score floors for recall (all inclusive, AND-ed).\n\n``semantic`` and ``keyword`` are **retrieval-level** cutoffs pushed into the SQL\narms (overriding the global ``semantic_min_similarity`` / ``bm25_min_score``\nconfig for this request), so they prune weak matches before fusion. ``reranker``\nand ``final`` are **post-query** filters applied to the scored results after\nreranking. Any field left None imposes no floor; all-None (the default) means\nno score filtering."
+        "description": "Optional per-stage score floors for recall (all inclusive >=).\n\n``semantic`` and ``keyword`` are **per-arm retrieval-level** cutoffs pushed\ninto the individual SQL query arms (overriding the global\n``semantic_min_similarity`` / ``bm25_min_score`` config for this request), so\nthey prune weak matches within each arm before fusion. Because recall merges\ncandidates across multiple arms (semantic, keyword, graph, temporal), a result\nclearing one arm's threshold enters fusion even if absent or below floor in\nanother arm (i.e. not a cross-arm same-result intersection).\n\n``reranker`` and ``final`` are **post-ranking filters** applied to all scored\ncandidates after fusion and reranking, filtering out results that do not satisfy\nthe threshold.\n\nAny field left None imposes no floor; all-None (the default) means no score\nfiltering."
       },
       "ObservationScope": {
         "properties": {
@@ -13769,7 +13773,7 @@
                 "type": "null"
               }
             ],
-            "description": "Optional per-stage score floors (all inclusive, AND-ed). `semantic` and `keyword` are retrieval-level cutoffs pushed into the SQL arms (overriding the global similarity/BM25 minimums for this request); `reranker` and `final` are post-ranking filters on the scored results. Any field left unset imposes no floor; omitting `min_scores` entirely (the default) applies no score filtering. Use with care \u2014 the reranker's absolute scores are not calibrated across queries (a clearly-relevant match may score ~0.001 even though it is ranked first)."
+            "description": "Optional per-stage score floors (all inclusive >=). `semantic` and `keyword` are per-arm retrieval-level cutoffs pushed into the SQL arms (overriding the global similarity/BM25 minimums for this request), pruning weak matches within each arm before fusion (without enforcing cross-arm intersection); `reranker` and `final` are post-ranking filters applied to the scored results. Any field left unset imposes no floor; omitting `min_scores` entirely (the default) applies no score filtering. Use with care \u2014 the reranker's absolute scores are not calibrated across queries (a clearly-relevant match may score ~0.001 even though it is ranked first)."
           },
           "temporal_window": {
             "anyOf": [
