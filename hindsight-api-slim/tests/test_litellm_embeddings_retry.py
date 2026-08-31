@@ -124,40 +124,107 @@ async def test_litellm_embeddings_probe_exhausts_retries_and_raises() -> None:
         assert mock_post.call_count == 3
 
 
-def test_litellm_embeddings_encode_retries_on_503_and_succeeds() -> None:
-    """encode() should retry transient 503 errors and recover."""
+def _ready_embeddings(dimensions: int | None, dim: int) -> LiteLLMEmbeddings:
+    """A LiteLLMEmbeddings past initialize(), without touching the network."""
     embeddings = LiteLLMEmbeddings(
         api_base="http://test-litellm:4000",
         model="text-embedding-3-small",
-        dimensions=512,
+        dimensions=dimensions,
         retry_policy=EmbeddingRetryPolicy(max_retries=2, initial_backoff=0.01),
     )
-
-    # Initialize client with dimensions override (0 probe calls)
     embeddings._client = httpx.Client()
-    embeddings._dimension = 512
+    embeddings._dimension = dim
+    return embeddings
 
+
+def _embed_response(dim: int, count: int) -> httpx.Response:
     req = httpx.Request("POST", "http://test-litellm:4000/embeddings")
-    err_resp = httpx.Response(503, request=req)
-    ok_resp = httpx.Response(
+    return httpx.Response(
         200,
-        json={
-            "data": [
-                {"embedding": [0.1] * 512, "index": 0},
-                {"embedding": [0.2] * 512, "index": 1},
-            ]
-        },
+        json={"data": [{"embedding": [0.1] * dim, "index": i} for i in range(count)]},
         request=req,
     )
 
-    with patch.object(httpx.Client, "post", side_effect=[err_resp, ok_resp]) as mock_post:
+
+def test_litellm_embeddings_encode_retries_on_503_and_succeeds() -> None:
+    """encode() should retry transient 503 errors and recover."""
+    embeddings = _ready_embeddings(dimensions=512, dim=512)
+
+    req = httpx.Request("POST", "http://test-litellm:4000/embeddings")
+    err_resp = httpx.Response(503, request=req)
+
+    with patch.object(httpx.Client, "post", side_effect=[err_resp, _embed_response(512, 2)]) as mock_post:
         res = embeddings.encode(["hello", "world"])
         assert len(res) == 2
         assert len(res[0]) == 512
         assert mock_post.call_count == 2
-        # Check payload included dimensions
-        call_kwargs = mock_post.call_args[1]
-        assert call_kwargs["json"]["dimensions"] == 512
+
+
+def test_litellm_embeddings_encode_never_forwards_dimensions() -> None:
+    """A declared width must not be sent upstream: proxied backends reject the field."""
+    embeddings = _ready_embeddings(dimensions=512, dim=512)
+
+    with patch.object(httpx.Client, "post", return_value=_embed_response(512, 1)) as mock_post:
+        embeddings.encode(["hello"])
+
+    payload = mock_post.call_args[1]["json"]
+    assert "dimensions" not in payload
+    assert payload == {"model": "text-embedding-3-small", "input": ["hello"]}
+
+
+def test_litellm_embeddings_encode_rejects_wrong_declared_dimension() -> None:
+    """A declared width that the proxy contradicts must fail loudly, not corrupt vectors."""
+    embeddings = _ready_embeddings(dimensions=512, dim=512)
+
+    with patch.object(httpx.Client, "post", return_value=_embed_response(1536, 1)):
+        with pytest.raises(RuntimeError, match="declares 512 dimensions but"):
+            embeddings.encode(["hello"])
+
+
+def test_litellm_embeddings_encode_without_declared_dimension_is_unchecked() -> None:
+    """Probe-detected dimensions need no second-guessing on the encode path."""
+    embeddings = _ready_embeddings(dimensions=None, dim=1536)
+
+    with patch.object(httpx.Client, "post", return_value=_embed_response(1536, 1)) as mock_post:
+        res = embeddings.encode(["hello"])
+
+    assert len(res[0]) == 1536
+    assert "dimensions" not in mock_post.call_args[1]["json"]
+
+
+@pytest.mark.asyncio
+async def test_litellm_embeddings_probe_does_not_retry_client_error() -> None:
+    """A 400 is a misconfiguration, not a cold proxy: fail fast without burning retries."""
+    embeddings = LiteLLMEmbeddings(
+        api_base="http://test-litellm:4000",
+        model="text-embedding-3-small",
+        retry_policy=EmbeddingRetryPolicy(max_retries=3, initial_backoff=0.01),
+    )
+
+    req = httpx.Request("POST", "http://test-litellm:4000/embeddings")
+    bad_resp = httpx.Response(400, request=req)
+
+    with patch.object(httpx.Client, "post", return_value=bad_resp) as mock_post:
+        with pytest.raises(RuntimeError, match="Failed to connect to LiteLLM proxy"):
+            await embeddings.initialize()
+        assert mock_post.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_litellm_embeddings_probe_empty_data_names_the_env_var() -> None:
+    """An empty data array is unrecoverable; the error must point at the escape hatch."""
+    embeddings = LiteLLMEmbeddings(
+        api_base="http://test-litellm:4000",
+        model="text-embedding-3-small",
+        retry_policy=EmbeddingRetryPolicy(initial_backoff=0.01),
+    )
+
+    req = httpx.Request("POST", "http://test-litellm:4000/embeddings")
+    empty_resp = httpx.Response(200, json={"data": []}, request=req)
+
+    with patch.object(httpx.Client, "post", return_value=empty_resp):
+        with pytest.raises(RuntimeError, match=ENV_EMBEDDINGS_LITELLM_DIMENSIONS):
+            await embeddings.initialize()
 
 
 def test_create_embeddings_from_env_with_dimensions(monkeypatch: pytest.MonkeyPatch) -> None:
