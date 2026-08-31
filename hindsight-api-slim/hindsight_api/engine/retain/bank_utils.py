@@ -166,6 +166,27 @@ async def get_bank_profile(pool, bank_id: str) -> BankProfile:
     return result.profile
 
 
+async def bank_exists_on_conn(conn: "DatabaseConnection", bank_id: str) -> bool:
+    """Existence probe for a bank row on a caller-supplied connection.
+
+    Deliberately narrower than ``get_bank_profile_if_exists_on_conn``: callers on
+    the lazy-create hot path only need to know whether the row is there, so this
+    selects a constant instead of reading and JSON-decoding the disposition.
+    """
+    return await conn.fetchval(f"SELECT 1 FROM {fq_table('banks')} WHERE bank_id = $1", bank_id) is not None
+
+
+async def bank_exists(pool, bank_id: str) -> bool:
+    """Dedicated-connection variant of ``bank_exists_on_conn``.
+
+    A bare SELECT with no surrounding transaction — this is the read-only fast
+    path taken by every write to an already-existing bank, so it must not pay
+    for a BEGIN/COMMIT round trip.
+    """
+    async with acquire_with_retry(pool) as conn:
+        return await bank_exists_on_conn(conn, bank_id)
+
+
 async def get_bank_profile_if_exists_on_conn(conn: "DatabaseConnection", bank_id: str) -> BankProfile | None:
     """Get bank profile (name, disposition + mission) on conn without auto-creating.
 
@@ -215,9 +236,18 @@ async def create_bank_row_on_conn(conn: "DatabaseConnection", bank_id: str, *, o
     Uses ``INSERT ... ON CONFLICT (bank_id) DO NOTHING RETURNING bank_id``.
     Returns True if the bank was freshly inserted on this call, False if it already existed.
 
-    Note: On Oracle, the dialect layer strips RETURNING from ON CONFLICT DO NOTHING,
-    so fetchval returns None and created evaluates to False (pre-existing dialect behaviour).
+    The ``created`` flag drives one-time side effects (per-bank vector indexes
+    here, the default-bank-template hook in the caller), so it has to be exact on
+    both dialects. It is: the Oracle layer strips RETURNING from ON CONFLICT DO
+    NOTHING, but ``fetchval`` compensates — it returns the first bind argument on
+    a successful insert and None when it suppresses ORA-00001 (see
+    ``db/oracle.py``). Use ``fetchval`` here, not ``fetchrow``, which has no such
+    compensation and would report every fresh Oracle insert as an existing row.
     """
+    # internal_id is minted here rather than defaulted server-side so its value is
+    # known without a RETURNING round-trip: the index names derive from it, both
+    # for the eager create below and for the maintenance operation when a
+    # threshold is set.
     internal_id = uuid.uuid4()
     inserted = await conn.fetchval(
         f"""
@@ -244,11 +274,20 @@ async def create_bank_row_on_conn(conn: "DatabaseConnection", bank_id: str, *, o
 
 
 async def create_bank_if_missing(pool, bank_id: str) -> bool:
-    """Dedicated-connection variant of create_bank_row_on_conn with transaction & deadlock retry.
+    """Dedicated-connection variant of ``create_bank_row_on_conn``.
 
     Returns True if freshly created on this call, False if it already existed.
     """
 
+    # Retried as a whole transaction. With the size threshold off (the default)
+    # a fresh bank builds its per-(bank, fact_type) partial vector indexes with a
+    # plain CREATE INDEX — it must, since this runs inside the bank-create tx and
+    # CONCURRENTLY cannot — and that CREATE takes a ShareLock on the shared
+    # memory_units table, which can deadlock with concurrent writers. Even with
+    # no DDL to issue, the lazy create can lose a deadlock (40P01 / ORA-00060) to
+    # a concurrent writer touching the same bank row. The body is idempotent
+    # (INSERT ... ON CONFLICT DO NOTHING + CREATE INDEX IF NOT EXISTS), so
+    # retrying the whole tx stays correct and cheap.
     async def _create() -> bool:
         async with acquire_with_retry(pool) as conn:
             async with conn.transaction():
@@ -272,15 +311,8 @@ async def get_or_create_bank_profile(pool, bank_id: str) -> BankProfileResult:
     ``get_or_create_bank_profile_on_conn`` instead.
     """
 
-    # Retried as a whole transaction. With the size threshold off (the default)
-    # a fresh bank builds its per-(bank, fact_type) partial vector indexes with a
-    # plain CREATE INDEX — it must, since this runs inside the bank-create tx and
-    # CONCURRENTLY cannot — and that CREATE takes a ShareLock on the shared
-    # memory_units table, which can deadlock with concurrent writers. Even with
-    # no DDL to issue, the lazy create can lose a deadlock (40P01 / ORA-00060) to
-    # a concurrent writer touching the same bank row. The body is idempotent
-    # (INSERT ... ON CONFLICT DO NOTHING + CREATE INDEX IF NOT EXISTS), so
-    # retrying the whole tx stays correct and cheap.
+    # Retried as a whole transaction — see the deadlock note on
+    # ``create_bank_if_missing``; the body is idempotent, so retrying is safe.
     async def _create() -> BankProfileResult:
         async with acquire_with_retry(pool) as conn:
             async with conn.transaction():
@@ -312,10 +344,7 @@ async def get_or_create_bank_profile_on_conn(
             created=False,
         )
 
-    # Bank doesn't exist, create with defaults. internal_id is minted inside
-    # create_bank_row_on_conn rather than defaulted server-side so its value is
-    # known without a RETURNING round-trip: the index names derive from it, both
-    # for the eager create and for the maintenance operation when a threshold is set.
+    # Bank doesn't exist, create with defaults.
     created = await create_bank_row_on_conn(conn, bank_id, ops=ops)
 
     return BankProfileResult(
