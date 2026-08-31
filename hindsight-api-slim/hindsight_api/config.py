@@ -1452,9 +1452,12 @@ DEFAULT_RETAIN_SUBBATCH_CONCURRENCY = 1
 # genuine wedge — the per-attempt LLM timeout and the retry budget already bound
 # the normal slow path.
 DEFAULT_RETAIN_WALL_TIMEOUT = 3600  # seconds (1 hour)
-# Wall-clock ceiling for one consolidation task in the worker (0 disables).
-# Consolidation rounds are LLM-heavy, so the default is intentionally longer
-# than retain's ceiling while still recovering a genuinely wedged worker slot.
+# Ceiling on how long one consolidation task may run *without making progress*
+# (0 disables). Unlike retain's ceiling this is an idle timeout, not a cap on total
+# runtime: consolidation is a loop over batches that each commit their own memories,
+# and every committed batch restarts the clock. A bank with a large backlog is
+# therefore never cut short — only a job that has genuinely stalled is. The default
+# is still longer than retain's because a single batch is LLM-heavy.
 DEFAULT_CONSOLIDATION_WALL_TIMEOUT = 7200  # seconds (2 hours)
 
 # Reflect agent settings
