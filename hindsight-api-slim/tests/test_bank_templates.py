@@ -497,35 +497,33 @@ class TestImportApply:
         assert "Dir Only" in data["directives_created"]
 
     @pytest.mark.asyncio
-    async def test_import_handles_resource_created_before_write(self, api_client, memory, bank_id):
+    async def test_import_handles_resource_created_before_write(self, api_client, memory, bank_id, monkeypatch):
         """When a resource is created before the write phase, import updates it safely."""
+        # Create between the classification snapshot and the writes: _ensure_bank_exists
+        # runs inside the authorization context manager, after the snapshot.
         orig_ensure_bank = memory._ensure_bank_exists
-        injected = False
 
         async def injected_ensure_bank(*args, **kwargs):
-            nonlocal injected
+            # Restore first: creating a mental model lazily ensures the bank itself.
+            monkeypatch.setattr(memory, "_ensure_bank_exists", orig_ensure_bank)
             res = await orig_ensure_bank(*args, **kwargs)
-            if not injected:
-                injected = True
-                memory._ensure_bank_exists = orig_ensure_bank
-                # Concurrently create a directive and mental model
-                await memory.create_directive(
-                    bank_id=bank_id,
-                    name="Concurrent Directive",
-                    content="Initially created concurrently",
-                    request_context=RequestContext(),
-                )
-                await memory.create_mental_model(
-                    bank_id=bank_id,
-                    mental_model_id="concurrent-mm",
-                    name="Concurrent MM",
-                    source_query="initial query",
-                    content="Initial content",
-                    request_context=RequestContext(),
-                )
+            await memory.create_directive(
+                bank_id=bank_id,
+                name="Concurrent Directive",
+                content="Initially created concurrently",
+                request_context=RequestContext(),
+            )
+            await memory.create_mental_model(
+                bank_id=bank_id,
+                mental_model_id="concurrent-mm",
+                name="Concurrent MM",
+                source_query="initial query",
+                content="Initial content",
+                request_context=RequestContext(),
+            )
             return res
 
-        memory._ensure_bank_exists = injected_ensure_bank
+        monkeypatch.setattr(memory, "_ensure_bank_exists", injected_ensure_bank)
 
         resp = await api_client.post(
             f"/v1/default/banks/{bank_id}/import",
@@ -554,7 +552,7 @@ class TestImportApply:
         assert data["directives_created"] == []
 
     @pytest.mark.asyncio
-    async def test_import_handles_resource_deleted_before_write(self, api_client, memory, bank_id):
+    async def test_import_handles_resource_deleted_before_write(self, api_client, memory, bank_id, monkeypatch):
         """When an existing resource is deleted before the write phase, import creates it safely."""
         # Pre-create the bank with resources
         await api_client.put(f"/v1/default/banks/{bank_id}", json={})
@@ -573,21 +571,20 @@ class TestImportApply:
             request_context=RequestContext(),
         )
 
-        orig_auth = memory._authenticate_tenant
-        injected = False
+        # Delete between the classification snapshot and the writes: _ensure_bank_exists
+        # runs inside the authorization context manager, after the snapshot.
+        orig_ensure_bank = memory._ensure_bank_exists
 
-        async def injected_auth(*args, **kwargs):
-            nonlocal injected
-            if not injected:
-                injected = True
-                memory._authenticate_tenant = orig_auth
-                await memory.delete_directive(bank_id=bank_id, directive_id=d["id"], request_context=RequestContext())
-                await memory.delete_mental_model(
-                    bank_id=bank_id, mental_model_id="deleted-mm", request_context=RequestContext()
-                )
-            return await orig_auth(*args, **kwargs)
+        async def injected_ensure_bank(*args, **kwargs):
+            monkeypatch.setattr(memory, "_ensure_bank_exists", orig_ensure_bank)
+            res = await orig_ensure_bank(*args, **kwargs)
+            await memory.delete_directive(bank_id=bank_id, directive_id=d["id"], request_context=RequestContext())
+            await memory.delete_mental_model(
+                bank_id=bank_id, mental_model_id="deleted-mm", request_context=RequestContext()
+            )
+            return res
 
-        memory._authenticate_tenant = injected_auth
+        monkeypatch.setattr(memory, "_ensure_bank_exists", injected_ensure_bank)
 
         resp = await api_client.post(
             f"/v1/default/banks/{bank_id}/import",
