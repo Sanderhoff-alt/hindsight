@@ -496,6 +496,125 @@ class TestImportApply:
         assert data["mental_models_created"] == []
         assert "Dir Only" in data["directives_created"]
 
+    @pytest.mark.asyncio
+    async def test_import_handles_resource_created_before_write(self, api_client, memory, bank_id):
+        """When a resource is created before the write phase, import updates it safely."""
+        orig_ensure_bank = memory._ensure_bank_exists
+        injected = False
+
+        async def injected_ensure_bank(*args, **kwargs):
+            nonlocal injected
+            res = await orig_ensure_bank(*args, **kwargs)
+            if not injected:
+                injected = True
+                memory._ensure_bank_exists = orig_ensure_bank
+                # Concurrently create a directive and mental model
+                await memory.create_directive(
+                    bank_id=bank_id,
+                    name="Concurrent Directive",
+                    content="Initially created concurrently",
+                    request_context=RequestContext(),
+                )
+                await memory.create_mental_model(
+                    bank_id=bank_id,
+                    mental_model_id="concurrent-mm",
+                    name="Concurrent MM",
+                    source_query="initial query",
+                    content="Initial content",
+                    request_context=RequestContext(),
+                )
+            return res
+
+        memory._ensure_bank_exists = injected_ensure_bank
+
+        resp = await api_client.post(
+            f"/v1/default/banks/{bank_id}/import",
+            json={
+                "version": "1",
+                "mental_models": [
+                    {
+                        "id": "concurrent-mm",
+                        "name": "Updated MM Name",
+                        "source_query": "updated query",
+                    }
+                ],
+                "directives": [
+                    {
+                        "name": "Concurrent Directive",
+                        "content": "Updated directive content",
+                    }
+                ],
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert "concurrent-mm" in data["mental_models_updated"]
+        assert "Concurrent Directive" in data["directives_updated"]
+        assert data["mental_models_created"] == []
+        assert data["directives_created"] == []
+
+    @pytest.mark.asyncio
+    async def test_import_handles_resource_deleted_before_write(self, api_client, memory, bank_id):
+        """When an existing resource is deleted before the write phase, import creates it safely."""
+        # Pre-create the bank with resources
+        await api_client.put(f"/v1/default/banks/{bank_id}", json={})
+        d = await memory.create_directive(
+            bank_id=bank_id,
+            name="Deleted Directive",
+            content="To be deleted",
+            request_context=RequestContext(),
+        )
+        await memory.create_mental_model(
+            bank_id=bank_id,
+            mental_model_id="deleted-mm",
+            name="Deleted MM",
+            source_query="query",
+            content="content",
+            request_context=RequestContext(),
+        )
+
+        orig_auth = memory._authenticate_tenant
+        injected = False
+
+        async def injected_auth(*args, **kwargs):
+            nonlocal injected
+            if not injected:
+                injected = True
+                memory._authenticate_tenant = orig_auth
+                await memory.delete_directive(bank_id=bank_id, directive_id=d["id"], request_context=RequestContext())
+                await memory.delete_mental_model(
+                    bank_id=bank_id, mental_model_id="deleted-mm", request_context=RequestContext()
+                )
+            return await orig_auth(*args, **kwargs)
+
+        memory._authenticate_tenant = injected_auth
+
+        resp = await api_client.post(
+            f"/v1/default/banks/{bank_id}/import",
+            json={
+                "version": "1",
+                "mental_models": [
+                    {
+                        "id": "deleted-mm",
+                        "name": "Recreated MM",
+                        "source_query": "new query",
+                    }
+                ],
+                "directives": [
+                    {
+                        "name": "Deleted Directive",
+                        "content": "Recreated directive content",
+                    }
+                ],
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert "deleted-mm" in data["mental_models_created"]
+        assert "Deleted Directive" in data["directives_created"]
+        assert data["mental_models_updated"] == []
+        assert data["directives_updated"] == []
+
 
 class TestExport:
     """Test bank template export."""

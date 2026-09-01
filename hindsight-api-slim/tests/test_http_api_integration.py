@@ -1897,7 +1897,9 @@ async def test_import_reuses_each_preauthorization_once(api_client, memory, monk
 
     assert [call.args[0].operation for call in validator.validate_bank_write.await_args_list] == [
         BankWriteOperation.UPDATE_BANK_CONFIG,
+        BankWriteOperation.UPDATE_MENTAL_MODEL,
         BankWriteOperation.CREATE_MENTAL_MODEL,
+        BankWriteOperation.UPDATE_DIRECTIVE,
         BankWriteOperation.CREATE_DIRECTIVE,
     ]
     validator.validate_mental_model_refresh.assert_awaited_once()
