@@ -16673,6 +16673,13 @@ class MemoryEngine(MemoryEngineInterface):
         is unpopulated (``vchord``) degrade to a vector-only search rather than
         erroring. ``enable_text_search=false`` drops that arm outright, leaving a
         vector-only ranking.
+
+        Like recall's, the BM25 arm generates candidates disjunctively (``tok | tok``
+        on the native backend) rather than requiring every term. Precision comes back
+        from the fusion with the vector arm — so when no embedding is available the
+        ranking is ``ts_rank_cd`` alone, which weighs term density and proximity but
+        not term rarity. That fallback is broad by design: an exhaustive AND returned
+        nothing at all for ordinary multi-word questions.
         """
         await self._authenticate_tenant(request_context)
         if self._operation_validator and not _nested_operation_authorized.get():
@@ -16748,10 +16755,6 @@ class MemoryEngine(MemoryEngineInterface):
             out.sort(key=lambda d: order[d["mental_model_id"]])
             return out[:limit]
 
-        from .search.retrieval import tokenize_query
-
-        tokens = tokenize_query(query)
-
         # BM25 clauses for the configured text-search backend (same per-backend
         # dispatch the memory-recall BM25 arm uses — see knowledge_bm25_arm).
         cfg = get_config()
@@ -16765,13 +16768,16 @@ class MemoryEngine(MemoryEngineInterface):
         bank_config = await self._config_resolver.get_bank_config(bank_id, request_context)
         enable_text_search = bool(bank_config.get("enable_text_search", True))
 
-        # Native tsvector requires non-empty tokens to construct a valid to_tsquery expression.
-        include_bm25 = enable_text_search and (bool(tokens) or text_search_extension != "native")
+        from .search.retrieval import tokenize_query
+
+        # No tokens means no BM25 arm — the same gate recall applies (see
+        # retrieve_semantic_bm25_combined_sql): there is nothing to match on, and on the
+        # native backend an empty token list cannot even build a valid to_tsquery.
+        # Tokenizing feeds nothing else, so a bank with text search off skips it.
+        tokens = tokenize_query(query) if enable_text_search else []
+        include_bm25 = bool(tokens)
         if not include_bm25 and emb_str is None:
             return []
-
-        assert self._dialect is not None
-        max_query_terms = cfg.bm25_max_query_terms
 
         backend = await self._get_backend()
         async with acquire_with_retry(backend) as conn:
@@ -16788,36 +16794,23 @@ class MemoryEngine(MemoryEngineInterface):
                 """
                 rows = await conn.fetch(sql, emb_str, bank_id)
             else:
-                bm25_tokens = tokens
-                # Native tsvector has no IDF and ranks every `@@` match, so long OR
-                # queries scan and rank a large fraction of the bank (+60s prod timeout).
-                # Keep only the most selective terms via pg_stats (see bm25_term_selection).
-                if (
-                    text_search_extension == "native"
-                    and max_query_terms > 0
-                    and len(tokens) > max_query_terms
-                    and cfg.bm25_selective_terms
-                    and getattr(conn, "backend_type", "postgresql") == "postgresql"
-                ):
-                    from .search.bm25_term_selection import select_selective_bm25_tokens
+                # Same builder the memory-recall BM25 arm uses, so the two paths cannot
+                # drift apart on query shape again — knowledge search used to bind the
+                # raw query to a conjunctive websearch_to_tsquery here, which returned
+                # no candidates at all for ordinary multi-word questions.
+                # The dialect is built from the connection, as recall builds its own.
+                # `mental_models.search_vector` is generated with a hard-coded 'english'
+                # config (see migrations), so its stats are read with 'english' too.
+                from .search.bm25_term_selection import build_bm25_query_text
 
-                    bm25_tokens = await select_selective_bm25_tokens(
-                        conn,
-                        tokens,
-                        schema=get_current_schema(),
-                        table="mental_models",
-                        language="english",
-                        max_terms=max_query_terms,
-                    )
-                bm25_text = (
-                    self._dialect.prepare_bm25_text(
-                        bm25_tokens,
-                        query,
-                        text_search_extension=text_search_extension,
-                        max_query_terms=max_query_terms,
-                    )
-                    if tokens
-                    else query
+                bm25_text = await build_bm25_query_text(
+                    conn,
+                    create_sql_dialect(getattr(conn, "backend_type", "postgresql")),
+                    tokens=tokens,
+                    query_text=query,
+                    table="mental_models",
+                    language="english",
+                    config=cfg,
                 )
 
                 if emb_str is not None:

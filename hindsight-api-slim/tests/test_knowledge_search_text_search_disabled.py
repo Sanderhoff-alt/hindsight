@@ -18,7 +18,6 @@ import pytest
 from hindsight_api.engine import memory_engine as engine_mod
 from hindsight_api.engine.memory_engine import MemoryEngine
 from hindsight_api.engine.retain import embedding_utils
-from hindsight_api.engine.sql import create_sql_dialect
 
 # Every assertion here reads the SQL this search emitted (`search.conn.queries`). A store that owns
 # the knowledge index answers the search itself and emits none, so these assert a Postgres-internal
@@ -49,8 +48,6 @@ def search(monkeypatch):
     engine = MemoryEngine.__new__(MemoryEngine)
     engine._operation_validator = None
     engine.embeddings = object()
-    engine._dialect = create_sql_dialect("postgresql")
-    engine._database_backend_type = "postgresql"
     resolved: dict[str, object] = {}
 
     async def fake_authenticate(request_context):
@@ -177,6 +174,16 @@ async def test_native_empty_tokens_without_embedding_returns_empty(search):
 
 
 @pytest.mark.asyncio
+async def test_empty_tokens_drops_the_arm_on_every_backend(search):
+    """Recall drops BM25 whenever the query has no word characters, whatever the
+    backend; knowledge search must not keep feeding a punctuation-only string to a
+    non-native parser."""
+    await search.run(enable_text_search=True, embedding=[0.1, 0.2], query="???", ext="pgroonga")
+    assert "ts_rank_cd" not in search.conn.queries[0]
+    assert search.conn.params[0] == ("[0.1, 0.2]", "bank-1")
+
+
+@pytest.mark.asyncio
 async def test_native_selective_terms_pruning(search, monkeypatch):
     from hindsight_api.engine.search import bm25_term_selection
 
@@ -189,10 +196,12 @@ async def test_native_selective_terms_pruning(search, monkeypatch):
         return ["selected", "tokens"]
 
     monkeypatch.setattr(bm25_term_selection, "select_selective_bm25_tokens", fake_select)
+    monkeypatch.setattr(bm25_term_selection, "get_current_schema", lambda: "public")
 
     long_query = " ".join([f"term{i}" for i in range(25)])
     await search.run(enable_text_search=True, embedding=[0.1, 0.2], query=long_query, bm25_selective_terms=True)
 
+    assert received_args["schema"] == "public"
     assert received_args["table"] == "mental_models"
     assert received_args["language"] == "english"
     assert received_args["max_terms"] == 20

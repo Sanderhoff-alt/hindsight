@@ -132,8 +132,9 @@ def knowledge_bm25_arm(
     # websearch_to_tsquery was originally used here as an error-free parser for
     # raw strings (#2455), but its default conjunctive AND (&) across words caused
     # multi-word queries to return 0 hits. Joining tokens with OR aligns candidate
-    # recall with memory recall (build_bm25_arm); precision is restored downstream
-    # via ts_rank_cd ranking and RRF fusion.
+    # generation with memory recall (build_bm25_arm); ranking is then ts_rank_cd,
+    # fused with the vector arm when the search has an embedding to fuse with
+    # (search_knowledge_pages runs no reranker either way).
     score = f"ts_rank_cd({a}.search_vector, to_tsquery('english', {p}))"
     return KnowledgeBm25Arm(
         score_expr=score,
