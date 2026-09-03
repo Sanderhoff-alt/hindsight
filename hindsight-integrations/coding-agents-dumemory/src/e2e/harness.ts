@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -77,18 +77,28 @@ function run(command: string, args: string[], options: { cwd?: string } = {}): s
 }
 
 function loadHindsightConfig(): RawConfig {
-  const path =
-    process.env.HINDSIGHT_E2E_CONFIG || join(homedir(), ".hindsight", "coding-agent.json");
-  if (!existsSync(path)) {
-    throw new Error(
-      `Hindsight config not found at ${path}; set HINDSIGHT_E2E_CONFIG to a local config file`
-    );
+  const explicitPath = process.env.HINDSIGHT_E2E_CONFIG;
+  if (explicitPath) {
+    if (!existsSync(explicitPath)) {
+      throw new Error(
+        `Hindsight config not found at ${explicitPath}; set HINDSIGHT_E2E_CONFIG to a local config file`
+      );
+    }
+    try {
+      return JSON.parse(readFileSync(explicitPath, "utf8")) as RawConfig;
+    } catch {
+      throw new Error(`Hindsight config at ${explicitPath} is not valid JSON`);
+    }
   }
-  try {
-    return JSON.parse(readFileSync(path, "utf8")) as RawConfig;
-  } catch {
-    throw new Error(`Hindsight config at ${path} is not valid JSON`);
+  const defaultPath = join(homedir(), ".hindsight", "coding-agent.json");
+  if (existsSync(defaultPath)) {
+    try {
+      return JSON.parse(readFileSync(defaultPath, "utf8")) as RawConfig;
+    } catch {
+      throw new Error(`Hindsight config at ${defaultPath} is not valid JSON`);
+    }
   }
+  return {};
 }
 
 function dockerApiUrl(apiUrl: string): string {
@@ -234,21 +244,28 @@ export async function runHarnessE2e(harness: HarnessDockerSetup): Promise<E2eRun
     );
     // This is the same production ingestion engine used by SessionStart, run in the foreground so
     // the test has a deterministic semantic fixture before it starts the real CLI harness.
-    execFileSync(
-      "node",
-      [
-        join(PACKAGE_ROOT, "dist", "deepen.js"),
-        "--repo",
-        workDir,
-        "--bank",
-        bankId,
-        "--config",
-        hostConfigPath,
-        "--git-ingest",
-        "full",
-      ],
-      { encoding: "utf8", timeout: 600_000 }
-    );
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(
+        "node",
+        [
+          join(PACKAGE_ROOT, "dist", "deepen.js"),
+          "--repo",
+          workDir,
+          "--bank",
+          bankId,
+          "--config",
+          hostConfigPath,
+          "--git-ingest",
+          "full",
+        ],
+        { stdio: "pipe" }
+      );
+      child.on("close", (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`deepen.js exited with code ${code}`));
+      });
+      child.on("error", reject);
+    });
     buildImage(harness);
 
     const prompt =
@@ -261,48 +278,71 @@ export async function runHarnessE2e(harness: HarnessDockerSetup): Promise<E2eRun
     stub = harness.stubModelEnv ? await startStubModel() : undefined;
     const stubEnv = stub ? harness.stubModelEnv!(stub.containerUrl) : {};
 
-    const result = spawnSync(
-      "docker",
-      [
-        "run",
-        "--rm",
-        "--add-host",
-        "host.docker.internal:host-gateway",
-        "--mount",
-        `type=bind,src=${tarball},dst=/plugin/${basename(tarball)},readonly`,
-        // Staged read-only; the entrypoint copies it to credentialTarget. Mounting straight onto
-        // the target breaks harnesses whose credentials are a directory holding a live SQLite
-        // store the CLI opens read-write (copilot, cline), and copying keeps the host's real
-        // subscription credentials unwritable by the run.
-        ...(credentials && harness.credentialTarget
-          ? [
-              "--mount",
-              `type=bind,src=${credentials},dst=/hindsight-credentials/source,readonly`,
-              "--env",
-              `HINDSIGHT_E2E_CREDENTIAL_TARGET=${harness.credentialTarget}`,
-            ]
-          : []),
-        ...Object.entries(stubEnv).flatMap(([key, value]) => ["--env", `${key}=${value}`]),
-        "--mount",
-        `type=bind,src=${configPath},dst=/hindsight/config.json,readonly`,
-        "--mount",
-        `type=bind,src=${workDir},dst=/workspace`,
-        "--mount",
-        `type=bind,src=${resultDir},dst=/results`,
-        "--env",
-        `HINDSIGHT_CONFIG=/hindsight/config.json`,
-        "--env",
-        "HINDSIGHT_DIAG_FILE=/results/diagnostics.jsonl",
-        "--env",
-        `HINDSIGHT_E2E_INSTALL_COMMAND=${harness.installCommand}`,
-        // Every harness operates on the fixture repo, so start there. Without this the container's
-        // cwd is `/`, which makes a CLI resolve the wrong project (Devin refused to run at all).
-        "--workdir",
-        "/workspace",
-        imageFor(harness),
-        ...harness.command(prompt, { stubUrl: stub?.containerUrl }),
-      ],
-      { encoding: "utf8", timeout: 300_000 }
+    const dockerArgs = [
+      "run",
+      "--rm",
+      "--add-host",
+      "host.docker.internal:host-gateway",
+      "--mount",
+      `type=bind,src=${tarball},dst=/plugin/${basename(tarball)},readonly`,
+      // Staged read-only; the entrypoint copies it to credentialTarget. Mounting straight onto
+      // the target breaks harnesses whose credentials are a directory holding a live SQLite
+      // store the CLI opens read-write (copilot, cline), and copying keeps the host's real
+      // subscription credentials unwritable by the run.
+      ...(credentials && harness.credentialTarget
+        ? [
+            "--mount",
+            `type=bind,src=${credentials},dst=/hindsight-credentials/source,readonly`,
+            "--env",
+            `HINDSIGHT_E2E_CREDENTIAL_TARGET=${harness.credentialTarget}`,
+          ]
+        : []),
+      ...Object.entries(stubEnv).flatMap(([key, value]) => ["--env", `${key}=${value}`]),
+      "--mount",
+      `type=bind,src=${configPath},dst=/hindsight/config.json,readonly`,
+      "--mount",
+      `type=bind,src=${workDir},dst=/workspace`,
+      "--mount",
+      `type=bind,src=${resultDir},dst=/results`,
+      "--env",
+      `HINDSIGHT_CONFIG=/hindsight/config.json`,
+      "--env",
+      "HINDSIGHT_DIAG_FILE=/results/diagnostics.jsonl",
+      "--env",
+      `HINDSIGHT_E2E_INSTALL_COMMAND=${harness.installCommand}`,
+      // Every harness operates on the fixture repo, so start there. Without this the container's
+      // cwd is `/`, which makes a CLI resolve the wrong project (Devin refused to run at all).
+      "--workdir",
+      "/workspace",
+      imageFor(harness),
+      ...harness.command(prompt, { stubUrl: stub?.containerUrl }),
+    ];
+
+    const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>(
+      (resolve) => {
+        const child = spawn("docker", dockerArgs, {
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        let stdout = "";
+        let stderr = "";
+        child.stdout?.on("data", (chunk: Buffer) => {
+          stdout += chunk.toString("utf8");
+        });
+        child.stderr?.on("data", (chunk: Buffer) => {
+          stderr += chunk.toString("utf8");
+        });
+        const timer = setTimeout(() => {
+          child.kill("SIGKILL");
+        }, 300_000);
+        child.on("close", (status) => {
+          clearTimeout(timer);
+          resolve({ status, stdout, stderr });
+        });
+        child.on("error", (err) => {
+          clearTimeout(timer);
+          resolve({ status: 1, stdout, stderr: err.message });
+        });
+      }
     );
     if (result.status !== 0) {
       throw new Error(
@@ -344,7 +384,7 @@ export async function getRetainedDocument(run: E2eRun): Promise<unknown> {
   // mid-hiccup is pure waste — and it is not hypothetical: a saturated machine (several harness
   // containers plus their ingest jobs) made this fail twice with `fetch failed` while the API was
   // healthy before and after.
-  for (let attempt = 0; attempt < 30 && !id; attempt++) {
+  for (let attempt = 0; attempt < 120 && !id; attempt++) {
     const tag = encodeURIComponent(`harness:${run.harness}`);
     try {
       const list = await fetch(`${bankUrl}/documents?tags=${tag}&tags_match=all`, {

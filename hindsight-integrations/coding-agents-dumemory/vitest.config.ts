@@ -4,6 +4,9 @@ import { join } from "node:path";
 
 export default defineConfig({
   test: {
+    pool: "forks",
+    testTimeout: 720_000,
+    teardownTimeout: 60_000,
     env: {
       // Unit tests exercise code paths that emit diagnostics; keep them out of the REAL
       // /tmp/hindsight-plugin.log so a developer's diag trail isn't polluted with test noise.
