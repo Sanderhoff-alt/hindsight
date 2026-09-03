@@ -47,7 +47,7 @@ describe("readLegacyEndpoint", () => {
 
   it("recognises the Cloud URL as cloud, not self-hosted", () => {
     const e = readLegacyEndpoint(
-      homeWith({ hindsightApiUrl: "https://api.hindsight.vectorize.io" })
+      homeWith({ hindsightApiUrl: "https://cloud.memory.bj.baidubce.com/api" })
     );
     expect(e?.serverMode).toBe("cloud");
   });

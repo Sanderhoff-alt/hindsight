@@ -52,7 +52,7 @@ export interface LegacyEndpoint {
   source: string;
 }
 
-const CLOUD_URL = "https://api.hindsight.vectorize.io";
+const CLOUD_URL = "https://cloud.memory.bj.baidubce.com/api";
 
 /**
  * Read the old plugin's endpoint, or undefined when it was never configured.

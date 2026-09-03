@@ -42,7 +42,6 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { applyEdits, modify } from "jsonc-parser";
 import { HOOK_HARNESSES, type HookHarnessName } from "./harness/hook-lifecycle";
 import { importLocalHistory } from "./core/history";
-import { detectLlm, hasRustToolchain, hasUvx, type LlmChoice } from "./core/daemon";
 import { readLegacyEndpoint } from "./core/legacy";
 import { SKILL_DIRS } from "./core/skill-dirs";
 import { createInstallerUi, type SelectOption } from "./install-ui";
@@ -76,15 +75,13 @@ export interface InstallCtx {
   /** Whether stdin can be prompted. Defaults to the real TTY check at the CLI entry; tests set it
    *  explicitly so the suite never blocks on a read. */
   interactive?: boolean;
-  /** Daemon prerequisite probes; injectable for tests. */
-  hasUvx?: () => boolean;
-  detectLlm?: () => LlmChoice | undefined;
-  hasRust?: () => boolean;
   /** Reads an old per-agent plugin's endpoint; injectable for tests. */
   readLegacy?: (home: string, prefer: readonly string[]) => ReturnType<typeof readLegacyEndpoint>;
   log?: (m: string) => void;
   /** Styles an interactive readLineSync prompt (the CLI passes the InstallerUi rail style). */
   promptStyle?: (q: string) => string;
+  /** Token input seam for interactive callers and tests. */
+  tokenPrompt?: () => string;
   /** Arrow-key picker (the CLI passes InstallerUi.select). Chosen index; null = cancelled;
    *  undefined = raw TTY unavailable, fall back to the numeric prompt. */
   selectPrompt?: (
@@ -849,9 +846,9 @@ function stageRuntime(c: InstallCtx): InstallCtx {
 
 // ── server setup (cloud / self-hosted / local daemon) ───────────────────────────
 
-export type ServerMode = "cloud" | "self-hosted" | "daemon";
+export type ServerMode = "cloud";
 
-const SERVER_MODES: ServerMode[] = ["cloud", "self-hosted", "daemon"];
+const SERVER_MODES: ServerMode[] = ["cloud"];
 
 /** Value of `--name value` or `--name=value`. */
 export function flagValue(args: string[], name: string): string | undefined {
@@ -881,45 +878,6 @@ const CONFIG_RELATIVE = [".hindsight", "coding-agent.json"];
  * then would be noise — worse, it would silently rewrite a working setup in CI, where there is no
  * one to answer. Non-interactive callers pass `--server`.
  */
-const SERVER_CHOICES: { mode: ServerMode; label: string; hint: string }[] = [
-  { mode: "cloud", label: "Hindsight Cloud", hint: "hosted, needs an API token" },
-  { mode: "self-hosted", label: "Self-hosted server", hint: "a Hindsight server you already run" },
-  {
-    mode: "daemon",
-    label: "Local daemon (on-device)",
-    hint: "runs hindsight-embed here; no account, needs uv + an LLM key",
-  },
-];
-
-function promptServerMode(c: InstallCtx): ServerMode | undefined {
-  // Preferred UX: arrow-key picker (digits still submit directly). It reports undefined when a
-  // raw TTY isn't available (no stty, exotic shell) — then the plain numbered menu below still
-  // works everywhere a line can be read.
-  if (c.selectPrompt) {
-    const picked = c.selectPrompt(
-      "Where should memory live?",
-      SERVER_CHOICES.map(({ label, hint }) => ({ label, hint })),
-      0
-    );
-    if (picked === null) {
-      c.log?.("no server chosen — leaving the server config unchanged");
-      return undefined;
-    }
-    if (picked !== undefined) return SERVER_CHOICES[picked].mode;
-  }
-  c.log?.(
-    `\nWhere should memory live?\n` +
-      SERVER_CHOICES.map((o, i) => `  ${i + 1}) ${o.label.padEnd(28)}— ${o.hint}`).join("\n") +
-      `\n`
-  );
-  const answer = readLineSync(c, "Choose [1-3] (default 1): ").trim();
-  if (answer === "") return "cloud";
-  const digit = Number.parseInt(answer, 10);
-  if (digit >= 1 && digit <= SERVER_CHOICES.length) return SERVER_CHOICES[digit - 1].mode;
-  c.log?.(`unrecognised choice "${answer}" — leaving the server config unchanged`);
-  return undefined;
-}
-
 /**
  * Read one line from stdin synchronously.
  *
@@ -957,11 +915,6 @@ function readLineSync(c: InstallCtx, prompt: string): string {
  * installed right after — unlike the harness preflights, which gate wiring that could never work.
  */
 function configureServer(c: InstallCtx, args: string[], installing: readonly string[]): boolean {
-  const explicit = flagValue(args, "server");
-  if (explicit && !SERVER_MODES.includes(explicit as ServerMode)) {
-    c.log?.(`unknown --server "${explicit}" — expected one of: ${SERVER_MODES.join(", ")}`);
-    return false;
-  }
   // The runtime resolves its config as HINDSIGHT_CONFIG || ~/.hindsight/coding-agent.json
   // (core/config.ts CONFIG_PATH). The wizard must honor the same override, or a user with that
   // var set would be configured into a file their sessions never read.
@@ -969,44 +922,39 @@ function configureServer(c: InstallCtx, args: string[], installing: readonly str
   const existing = readJson(configPath);
   const alreadyConfigured = !!(existing.serverMode || existing.apiUrl);
 
-  let mode = explicit as ServerMode | undefined;
-  if (!mode) {
+  {
     if (alreadyConfigured) return true; // respect what's already there
     // Someone coming from the old per-agent plugin already chose where their memory lives.
     // Adopt it rather than asking again — and above all rather than defaulting to Cloud, which
     // would quietly redirect their prompts and transcripts to a different server.
     const legacy = (c.readLegacy ?? readLegacyEndpoint)(c.home, installing);
     if (legacy) {
-      const carried: Record<string, unknown> = { ...existing, serverMode: legacy.serverMode };
-      if (legacy.apiUrl) carried.apiUrl = legacy.apiUrl;
+      const carried: Record<string, unknown> = { ...existing, serverMode: "cloud" };
       if (legacy.apiToken) carried.apiToken = legacy.apiToken;
       if (legacy.apiPort) carried.apiPort = legacy.apiPort;
       writeJson(configPath, carried);
       c.log?.(
-        `server: ${legacy.serverMode}${legacy.apiUrl ? ` (${legacy.apiUrl})` : ""} — carried over ` +
+        `server: cloud — carried over ` +
           `from the ${legacy.harness} plugin (${legacy.source})\n` +
           `        Only the endpoint moves; conversations do not. To bring this repo's history\n` +
           `        across, re-run here with --import-conversations.`
       );
-      if (legacy.serverMode === "daemon") reportDaemonPrereqs(c);
-      return true;
+      if (legacy.serverMode === "cloud" && legacy.apiToken) return true;
     }
-    if (!c.interactive) {
-      c.log?.(
-        `\nserver: defaulting to Hindsight Cloud. Re-run with --server self-hosted|daemon to change,\n` +
-          `        or edit ${configPath}.`
-      );
-      return true;
-    }
-    mode = promptServerMode(c);
-    if (!mode) return true;
   }
 
+  if (!c.interactive && !flagValue(args, "api-token") && !flagValue(args, "api-url")) {
+    c.log?.(`\nserver: defaulting to Hindsight Cloud. Pass --api-token <token> to configure it.`);
+    return true;
+  }
+
+  const mode: ServerMode = "cloud";
   const next: Record<string, unknown> = { ...existing, serverMode: mode };
-  if (mode === "cloud") {
-    delete next.apiUrl; // fall back to the built-in Cloud URL rather than pinning a stale one
+  {
     // Cloud always authenticates — a config without a token only surfaces later as 401s on the
     // first session, so the token is REQUIRED here (it used to be "blank to set later").
+    const apiUrl = flagValue(args, "api-url");
+    if (apiUrl) next.apiUrl = apiUrl;
     const token = flagValue(args, "api-token") ?? (c.interactive ? askToken(c) : undefined);
     if (!token) {
       c.log?.(
@@ -1015,24 +963,6 @@ function configureServer(c: InstallCtx, args: string[], installing: readonly str
       return false;
     }
     next.apiToken = token;
-  } else if (mode === "self-hosted") {
-    const url =
-      flagValue(args, "api-url") ??
-      (c.interactive
-        ? readLineSync(c, "Server URL (e.g. http://localhost:8888): ").trim()
-        : undefined);
-    if (!url) {
-      c.log?.(
-        `❌ self-hosted mode needs a server URL — pass --api-url <url> (or set apiUrl in ${configPath}).`
-      );
-      return false;
-    }
-    next.apiUrl = url;
-    const token = flagValue(args, "api-token");
-    if (token) next.apiToken = token;
-  } else {
-    delete next.apiUrl; // daemon mode derives its URL from apiPort
-    reportDaemonPrereqs(c);
   }
 
   writeJson(configPath, next);
@@ -1045,40 +975,13 @@ function configureServer(c: InstallCtx, args: string[], installing: readonly str
  *  and let the cloud branch abort with the actionable message. */
 function askToken(c: InstallCtx): string | undefined {
   for (let attempt = 0; attempt < 3; attempt++) {
-    const token = readLineSync(c, "API token (required for Hindsight Cloud): ").trim();
+    const token = (
+      c.tokenPrompt ?? (() => readLineSync(c, "API token (required for Hindsight Cloud): "))
+    )().trim();
     if (token) return token;
     c.log?.("  a token is required — find yours in the Hindsight Cloud dashboard");
   }
   return undefined;
-}
-
-/**
- * Daemon mode has two prerequisites the plugin can't supply. Report both up front rather than
- * letting the first session fail quietly with nothing but a diagnostic line.
- */
-function reportDaemonPrereqs(c: InstallCtx): void {
-  if (!(c.hasUvx ?? hasUvx)()) {
-    c.log?.(
-      `⚠️  \`uv\` is not on PATH. The daemon is fetched and run with it, so memory stays inert\n` +
-        `    until you install it: https://docs.astral.sh/uv/`
-    );
-  }
-  if (!(c.hasRust ?? hasRustToolchain)()) {
-    c.log?.(
-      `⚠️  macOS needs a current Rust toolchain to build the daemon's dependencies (litellm\n` +
-        `    publishes no macOS wheel). Install from https://rustup.rs, then\n` +
-        `    \`rustup default stable && rustup update\` — an OUT-OF-DATE toolchain fails too.`
-    );
-  }
-  const llm = (c.detectLlm ?? detectLlm)();
-  if (llm) {
-    c.log?.(`   local extraction will use ${llm.provider} (from ${llm.source})`);
-  } else {
-    c.log?.(
-      `⚠️  No LLM available for local fact extraction. Set OPENAI_API_KEY, ANTHROPIC_API_KEY or\n` +
-        `    GEMINI_API_KEY (or install the Claude Code CLI, which needs no key).`
-    );
-  }
 }
 
 const devin: HarnessInstaller = {
@@ -1638,7 +1541,7 @@ export function run(argv: string[], ctxIn: InstallCtx): number {
   const importHistory = rawArgs.includes("--import-conversations");
   // A flag's VALUE (`--server daemon`) is a bare word too — excluding it keeps "daemon" from being
   // read as a harness name and rejected.
-  const valueArgs = flagValueArgs(rawArgs, ["server", "api-url", "api-token"]);
+  const valueArgs = flagValueArgs(rawArgs, ["api-url", "api-token"]);
   const names = rawArgs.filter((a) => !a.startsWith("--") && !valueArgs.has(a));
   // Everything we write into a host's config is an ABSOLUTE path into this package. Run straight
   // from an npx cache those paths die on the first eviction and every hook stops SILENTLY, which is
@@ -1667,12 +1570,12 @@ export function run(argv: string[], ctxIn: InstallCtx): number {
     ctx.log?.(
       `usage: hindsight-coding-agents <install|uninstall> <all|harness...>\n` +
         `       hindsight-coding-agents update\n` +
-        `       [--server cloud|self-hosted|daemon] [--api-url <url>] [--api-token <token>]\n` +
+        `       [--api-url <url>] [--api-token <token>]\n` +
         `       [--import-conversations]\n` +
         `  all      every agent detected on this machine\n` +
         `  harness  ${INSTALLERS.map((i) => i.name).join(", ")} (agy aliases antigravity-cli)\n` +
         `  update   re-stage the runtime only, leaving every host config untouched\n` +
-        `  agents/CI: without a TTY nothing ever prompts — pass --server (and --api-url/--api-token) to choose`
+        `  agents/CI: without a TTY pass --api-token <token>`
     );
     return command ? 1 : 0;
   }

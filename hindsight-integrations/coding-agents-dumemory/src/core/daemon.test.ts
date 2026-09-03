@@ -5,38 +5,6 @@ import { describe, expect, it, vi } from "vitest";
 import { resolveConfig } from "./config";
 import { daemonEnv, detectLlm, ensureDaemon, startDaemonDetached } from "./daemon";
 
-describe("connection modes", () => {
-  it("daemon mode derives the URL from apiPort, ignoring apiUrl", () => {
-    // Resolving here (rather than at each client construction) is what lets the eight existing
-    // call sites stay untouched.
-    const cfg = resolveConfig({ serverMode: "daemon", apiUrl: "https://cloud.example" });
-    expect(cfg.apiUrl).toBe("http://127.0.0.1:9077");
-  });
-
-  it("uses a custom daemon port", () => {
-    expect(resolveConfig({ serverMode: "daemon", apiPort: 9999 }).apiUrl).toBe(
-      "http://127.0.0.1:9999"
-    );
-  });
-
-  it("defaults to cloud, leaving today's behaviour unchanged", () => {
-    const cfg = resolveConfig({});
-    expect(cfg.serverMode).toBe("cloud");
-    expect(cfg.apiUrl).toBe("https://api.hindsight.vectorize.io");
-  });
-
-  it("self-hosted keeps the configured apiUrl", () => {
-    const cfg = resolveConfig({ serverMode: "self-hosted", apiUrl: "http://localhost:8888" });
-    expect(cfg.apiUrl).toBe("http://localhost:8888");
-  });
-
-  // 9077, not hindsight-all's 8888: 8888 is the conventional port for a server the user runs, and
-  // a daemon must never squat on it.
-  it("defaults the daemon port to 9077", () => {
-    expect(resolveConfig({ serverMode: "daemon" }).apiPort).toBe(9077);
-  });
-});
-
 describe("detectLlm", () => {
   it("prefers an explicit provider, including one it knows nothing about", () => {
     const llm = detectLlm({

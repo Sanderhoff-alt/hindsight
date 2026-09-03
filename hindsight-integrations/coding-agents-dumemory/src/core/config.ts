@@ -25,24 +25,17 @@ export // HINDSIGHT_CONFIG joins the two env exceptions (diag/log files): it poi
 const CONFIG_PATH =
   process.env.HINDSIGHT_CONFIG || join(homedir(), ".hindsight", "coding-agent.json");
 
-/** Daemon-mode defaults. The port matches the old per-agent Claude Code plugin so a machine that
- *  already ran that daemon keeps using the same one. */
+/** Retained for backwards-compatible config parsing; Cloud mode does not use local daemon fields. */
 export const DEFAULT_DAEMON_PORT = 9077;
 export const DEFAULT_DAEMON_PROFILE = "coding-agent";
 
 /** Incremental git-sync settings (see core/sync.ts). */
 /** The config file's shape — every field optional; omitted fields take the documented default. */
 export interface RawConfig {
-  /** Where memory lives. All three modes speak the same HTTP API; they differ only in who runs it:
-   *   "cloud"       — Hindsight Cloud (the default `apiUrl`)
-   *   "self-hosted" — a Hindsight server you run; set `apiUrl` to it
-   *   "daemon"      — a local `hindsight-embed` daemon this plugin starts on demand, at
-   *                   127.0.0.1:{apiPort}. `apiUrl` is ignored in this mode.
-   * Omitted, it is inferred: "daemon" is never assumed, so an existing config keeps talking to
-   * whatever `apiUrl` it already names. */
-  serverMode?: "cloud" | "self-hosted" | "daemon";
-  apiUrl?: string; // Hindsight API base URL (default https://api.hindsight.vectorize.io — Cloud; set to http://localhost:8888 for a local server)
-  apiToken?: string; // bearer token (optional)
+  /** Hindsight Cloud is the only supported server mode. */
+  serverMode?: "cloud";
+  apiUrl?: string; // Ignored; Cloud uses the built-in API URL.
+  apiToken?: string; // Hindsight Cloud bearer token
   /** Daemon mode: port the local daemon listens on (default 9077).
    *  NOT 8888 — that is the conventional port for a server you run yourself, and a daemon must
    *  never squat on it. A healthy server already on this port is adopted rather than restarted. */
@@ -303,19 +296,11 @@ function resolveObservationScopes(raw: RawConfig["observationScopes"]): Observat
 
 /** Apply defaults to a raw (file) config. Pure — the single place the defaults live. */
 export function resolveConfig(raw: RawConfig = {}): Config {
-  const serverMode = ["cloud", "self-hosted", "daemon"].includes(raw.serverMode as string)
-    ? (raw.serverMode as "cloud" | "self-hosted" | "daemon")
-    : "cloud";
+  const serverMode = "cloud" as const;
   const apiPort = raw.apiPort || DEFAULT_DAEMON_PORT;
   return {
     serverMode,
-    // Daemon mode resolves the URL HERE rather than at each call site: every entry point already
-    // builds its client from cfg.apiUrl, so collapsing the mode into that one field means the
-    // daemon needs no plumbing through eight separate constructors.
-    apiUrl:
-      serverMode === "daemon"
-        ? `http://127.0.0.1:${apiPort}`
-        : (raw.apiUrl ?? "https://api.hindsight.vectorize.io"),
+    apiUrl: raw.apiUrl || "https://cloud.memory.bj.baidubce.com/api",
     apiToken: raw.apiToken || undefined,
     apiPort,
     daemonIdleTimeout: raw.daemonIdleTimeout,
