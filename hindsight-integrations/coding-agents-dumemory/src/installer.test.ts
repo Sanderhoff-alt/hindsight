@@ -1631,7 +1631,6 @@ describe("Cloud-only server setup", () => {
       apiToken: "token",
     });
   });
-
 });
 
 /**
