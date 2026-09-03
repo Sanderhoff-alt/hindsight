@@ -82,7 +82,7 @@ const HARNESS_REFLECT_CAP_MS: Record<string, number> = {
   codex: 28_000,
   "antigravity-cli": 28_000,
   "cursor-cli": 28_000,
-  "copilot-cli": 28_000,
+  "copilot-cli": 55_000,
   "devin-cli": 28_000,
   "grok-build": 28_000,
   "qwen-code": 28_000,

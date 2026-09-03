@@ -133,12 +133,6 @@ export const cursorDockerSetup: HarnessDockerSetup = {
 export const copilotDockerSetup: HarnessDockerSetup = {
   name: "copilot-cli",
   hindsightHarness: "copilot-cli",
-  unsupported:
-    "hangs to the timeout without ever calling the model — the stub served 0 requests despite the " +
-    "documented BYOK variables (COPILOT_PROVIDER_BASE_URL/TYPE/API_KEY + COPILOT_MODEL), which are " +
-    "supposed to make GitHub auth unnecessary. It stalls before the first request, so the block is " +
-    "upstream of the provider override, not a response-shape mismatch. Its real token lives in the " +
-    "system keyring, so there is no file to mount either.",
   installCommand: "hindsight-coding-agents install copilot-cli",
   stubModelEnv: (baseUrl) => ({
     COPILOT_PROVIDER_BASE_URL: `${baseUrl}/v1`,

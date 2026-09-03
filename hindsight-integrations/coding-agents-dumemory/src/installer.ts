@@ -219,10 +219,16 @@ function mergeHarnessHooks(
     const entry =
       spec.configStyle === "nested"
         ? cmdHook(dist, hook.entry, hook.timeout!)
-        : {
-            command: `node "${join(dist, hook.entry)}"`,
-            ...(hook.timeout ? { timeout: hook.timeout } : {}),
-          };
+        : harness === "copilot-cli"
+          ? {
+              type: "command",
+              command: `node "${join(dist, hook.entry)}"`,
+              ...(hook.timeout ? { timeoutSec: hook.timeout } : {}),
+            }
+          : {
+              command: `node "${join(dist, hook.entry)}"`,
+              ...(hook.timeout ? { timeout: hook.timeout } : {}),
+            };
     hooks[hook.event] = mergeHookEvent(hooks[hook.event], entry);
   }
 }
@@ -1083,10 +1089,11 @@ const copilot: HarnessInstaller = {
   name: "copilot-cli",
   detect: (c) => onPath("copilot") || existsSync(join(c.home, ".copilot")),
   install(c) {
-    const hooksPath = join(c.home, ".copilot", "hooks", "hindsight-coding-agents.json");
-    const hooks: Record<string, any> = {};
-    mergeHarnessHooks(hooks, "copilot-cli", c.dist);
-    writeJson(hooksPath, { version: 1, hooks });
+    const configPath = join(c.home, ".copilot", "config.json");
+    const config = readJson(configPath);
+    config.hooks = config.hooks ?? {};
+    mergeHarnessHooks(config.hooks, "copilot-cli", c.dist);
+    writeJson(configPath, config);
 
     const mcpPath = join(c.home, ".copilot", "mcp-config.json");
     const mcp = readJson(mcpPath);
@@ -1096,9 +1103,20 @@ const copilot: HarnessInstaller = {
     };
     writeJson(mcpPath, mcp);
     installSkill(c, "copilot-cli");
-    c.log?.(`copilot-cli: hooks installed at ${hooksPath}, MCP into ${mcpPath}`);
+    c.log?.(`copilot-cli: hooks installed into ${configPath}, MCP into ${mcpPath}`);
   },
   uninstall(c) {
+    const configPath = join(c.home, ".copilot", "config.json");
+    if (existsSync(configPath)) {
+      const config = readJson(configPath);
+      if (config.hooks) {
+        stripHarnessHooks(config.hooks, "copilot-cli");
+        if (Object.keys(config.hooks).length === 0) {
+          delete config.hooks;
+        }
+        writeJson(configPath, config);
+      }
+    }
     rmSync(join(c.home, ".copilot", "hooks", "hindsight-coding-agents.json"), {
       force: true,
     });

@@ -313,7 +313,7 @@ export const HOOK_HARNESSES: Record<HookHarnessName, HookHarnessSpec> = {
     configStyle: "flat",
     install: {
       sessionStart: { event: "sessionStart", entry: "copilot-sessionstart-hook.js", timeout: 30 },
-      prompt: { event: "userPromptTransformed", entry: "copilot-hook.js", timeout: 30 },
+      prompt: { event: "userPromptTransformed", entry: "copilot-hook.js", timeout: 60 },
       stop: { event: "agentStop", entry: "copilot-stop-hook.js", timeout: 60 },
     },
     sessionStart: {
