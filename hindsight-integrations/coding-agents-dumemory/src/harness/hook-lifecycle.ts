@@ -231,7 +231,7 @@ export const HOOK_HARNESSES: Record<HookHarnessName, HookHarnessSpec> = {
     configStyle: "nested",
     install: {
       sessionStart: { event: "SessionStart", entry: "dcode-sessionstart-hook.js", timeout: 30 },
-      prompt: { event: "UserPromptSubmit", entry: "dcode-hook.js", timeout: 30 },
+      prompt: { event: "UserPromptSubmit", entry: "dcode-hook.js", timeout: 60 },
       stop: { event: "Stop", entry: "dcode-stop-hook.js", timeout: 60 },
     },
     sessionStart: standardSessionStart("dcode"),

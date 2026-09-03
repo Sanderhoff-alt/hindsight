@@ -183,7 +183,7 @@ describe("buildHookOutput", () => {
     expect(result.context).toBeUndefined();
   });
 
-  it("uses a bounded low-budget reflect and caps its timeout at 25000ms for CLI hook harnesses", async () => {
+  it("uses a bounded low-budget reflect and caps its timeout at 28000ms for 30s CLI hook harnesses", async () => {
     const cfg = resolveConfig({}); // reflectTimeoutMs default 120000
     const client = makeClient();
     await buildHookOutput({
@@ -195,7 +195,23 @@ describe("buildHookOutput", () => {
     });
     expect(client.reflect).toHaveBeenCalledWith(buildReflectQuery("the prompt"), {
       budget: "low",
-      timeoutMs: 25000,
+      timeoutMs: 28000,
+    });
+  });
+
+  it("caps reflect timeout at 55000ms for dcode (which allows a 60s hook window)", async () => {
+    const cfg = resolveConfig({}); // reflectTimeoutMs default 120000
+    const client = makeClient();
+    await buildHookOutput({
+      harness: "dcode",
+      prompt: "the prompt",
+      cfg,
+      client,
+      cacheFile,
+    });
+    expect(client.reflect).toHaveBeenCalledWith(buildReflectQuery("the prompt"), {
+      budget: "low",
+      timeoutMs: 55000,
     });
   });
 

@@ -103,7 +103,7 @@ export async function startStubModel(): Promise<StubModel> {
       }
 
       const body = await readBody(req);
-      const echo = collectText(body).slice(0, 20_000);
+      const echo = collectText(body).slice(0, 100_000);
       served++;
 
       const asRecord = (body ?? {}) as Record<string, unknown>;

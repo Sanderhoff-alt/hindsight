@@ -70,19 +70,24 @@ interface HookClient {
  * otherwise the host kills the hook mid-reflect before the
  * result is cached, so the injection is discarded AND the reflect re-fires (uncached) every turn.
  */
-const HOOK_CLI_HARNESSES = new Set([
-  "claude-code",
-  "codex",
-  "antigravity-cli",
-  "cursor-cli",
-  "copilot-cli",
-  "devin-cli",
-  "grok-build",
-  "dcode",
-  "qwen-code",
-]);
-
-const HOOK_REFLECT_CAP_MS = 25_000;
+/**
+ * Reflect timeout caps per harness.
+ * For CLI hook harnesses with strict host timeouts (e.g. 30s in Claude Code), cap reflection at 28s
+ * to leave headroom before the host terminates the process.
+ * For harnesses with a 60s hook window (dcode), allow up to 55s.
+ * Plugin harnesses not listed here (dsh, opencode, cline, etc.) use cfg.reflectTimeoutMs directly.
+ */
+const HARNESS_REFLECT_CAP_MS: Record<string, number> = {
+  "claude-code": 28_000,
+  codex: 28_000,
+  "antigravity-cli": 28_000,
+  "cursor-cli": 28_000,
+  "copilot-cli": 28_000,
+  "devin-cli": 28_000,
+  "grok-build": 28_000,
+  "qwen-code": 28_000,
+  dcode: 55_000,
+};
 
 export interface HookOutput {
   /** The model-facing injection block, or undefined when there's nothing to inject. */
@@ -132,9 +137,10 @@ export async function buildHookOutput(args: {
         // supported default for bounded reflect calls; callers that explicitly invoke the MCP
         // tool still get the deeper high-budget path.
         budget: "low",
-        timeoutMs: HOOK_CLI_HARNESSES.has(harness)
-          ? Math.min(cfg.reflectTimeoutMs, HOOK_REFLECT_CAP_MS)
-          : cfg.reflectTimeoutMs,
+        timeoutMs:
+          HARNESS_REFLECT_CAP_MS[harness] !== undefined
+            ? Math.min(cfg.reflectTimeoutMs, HARNESS_REFLECT_CAP_MS[harness])
+            : cfg.reflectTimeoutMs,
       });
       diag(harness, reflectAnswer ? "reflect_ok" : "reflect_empty", {
         ms: Date.now() - t0,

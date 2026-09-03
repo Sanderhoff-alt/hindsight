@@ -165,9 +165,14 @@ function buildImage(harness: HarnessDockerSetup): void {
   if (check.status === 0) {
     return;
   }
-  run("docker", ["build", "--tag", `${IMAGE}-base`, "--file", "e2e/Dockerfile.base", "e2e"], {
-    cwd: PACKAGE_ROOT,
+  const baseCheck = spawnSync("docker", ["image", "inspect", `${IMAGE}-base`], {
+    stdio: "ignore",
   });
+  if (baseCheck.status !== 0) {
+    run("docker", ["build", "--tag", `${IMAGE}-base`, "--file", "e2e/Dockerfile.base", "e2e"], {
+      cwd: PACKAGE_ROOT,
+    });
+  }
   run(
     "docker",
     ["build", "--tag", targetImage, "--file", `e2e/Dockerfile.${harness.name}`, "e2e"],

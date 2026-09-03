@@ -112,7 +112,7 @@ describe("HOOK_HARNESSES lifecycle contract", () => {
     const dcode = HOOK_HARNESSES.dcode;
     expect(dcode.install).toMatchObject({
       sessionStart: { event: "SessionStart", entry: "dcode-sessionstart-hook.js", timeout: 30 },
-      prompt: { event: "UserPromptSubmit", entry: "dcode-hook.js", timeout: 30 },
+      prompt: { event: "UserPromptSubmit", entry: "dcode-hook.js", timeout: 60 },
       stop: { event: "Stop", entry: "dcode-stop-hook.js", timeout: 60 },
     });
     expect(dcode.prompt.parse({ prompt: "hello", cwd: "/repo", session_id: "s1" })).toEqual({
