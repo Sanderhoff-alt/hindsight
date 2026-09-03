@@ -69,8 +69,19 @@ interface HookClient {
  * UserPromptSubmit/PreInvocation hook timeout (currently 30s in the supported hook harnesses) —
  * otherwise the host kills the hook mid-reflect before the
  * result is cached, so the injection is discarded AND the reflect re-fires (uncached) every turn.
- * Raise the harness timeout in lockstep if you raise this.
  */
+const HOOK_CLI_HARNESSES = new Set([
+  "claude-code",
+  "codex",
+  "antigravity-cli",
+  "cursor-cli",
+  "copilot-cli",
+  "devin-cli",
+  "grok-build",
+  "dcode",
+  "qwen-code",
+]);
+
 const HOOK_REFLECT_CAP_MS = 25_000;
 
 export interface HookOutput {
@@ -121,7 +132,9 @@ export async function buildHookOutput(args: {
         // supported default for bounded reflect calls; callers that explicitly invoke the MCP
         // tool still get the deeper high-budget path.
         budget: "low",
-        timeoutMs: Math.min(cfg.reflectTimeoutMs, HOOK_REFLECT_CAP_MS),
+        timeoutMs: HOOK_CLI_HARNESSES.has(harness)
+          ? Math.min(cfg.reflectTimeoutMs, HOOK_REFLECT_CAP_MS)
+          : cfg.reflectTimeoutMs,
       });
       diag(harness, reflectAnswer ? "reflect_ok" : "reflect_empty", {
         ms: Date.now() - t0,

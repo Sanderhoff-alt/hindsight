@@ -160,12 +160,17 @@ const imageFor = (harness: HarnessDockerSetup): string => `${IMAGE}-${harness.na
  * because the base layer is cached across all of them.
  */
 function buildImage(harness: HarnessDockerSetup): void {
+  const targetImage = imageFor(harness);
+  const check = spawnSync("docker", ["image", "inspect", targetImage], { stdio: "ignore" });
+  if (check.status === 0) {
+    return;
+  }
   run("docker", ["build", "--tag", `${IMAGE}-base`, "--file", "e2e/Dockerfile.base", "e2e"], {
     cwd: PACKAGE_ROOT,
   });
   run(
     "docker",
-    ["build", "--tag", imageFor(harness), "--file", `e2e/Dockerfile.${harness.name}`, "e2e"],
+    ["build", "--tag", targetImage, "--file", `e2e/Dockerfile.${harness.name}`, "e2e"],
     { cwd: PACKAGE_ROOT }
   );
 }

@@ -183,7 +183,7 @@ describe("buildHookOutput", () => {
     expect(result.context).toBeUndefined();
   });
 
-  it("uses a bounded low-budget reflect and caps its timeout at 25000ms", async () => {
+  it("uses a bounded low-budget reflect and caps its timeout at 25000ms for CLI hook harnesses", async () => {
     const cfg = resolveConfig({}); // reflectTimeoutMs default 120000
     const client = makeClient();
     await buildHookOutput({
@@ -196,6 +196,22 @@ describe("buildHookOutput", () => {
     expect(client.reflect).toHaveBeenCalledWith(buildReflectQuery("the prompt"), {
       budget: "low",
       timeoutMs: 25000,
+    });
+  });
+
+  it("does not cap reflect timeout for in-process plugin harnesses (dsh, cline, opencode)", async () => {
+    const cfg = resolveConfig({}); // reflectTimeoutMs default 120000
+    const client = makeClient();
+    await buildHookOutput({
+      harness: "dsh",
+      prompt: "the prompt",
+      cfg,
+      client,
+      cacheFile,
+    });
+    expect(client.reflect).toHaveBeenCalledWith(buildReflectQuery("the prompt"), {
+      budget: "low",
+      timeoutMs: 120000,
     });
   });
 
