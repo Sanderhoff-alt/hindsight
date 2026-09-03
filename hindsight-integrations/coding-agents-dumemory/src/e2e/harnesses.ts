@@ -86,12 +86,6 @@ export const kiloDockerSetup: HarnessDockerSetup = {
 export const claudeCodeDockerSetup: HarnessDockerSetup = {
   name: "claude-code",
   hindsightHarness: "claude-code",
-  unsupported:
-    "hangs to the timeout with the stub serving 0 requests: ANTHROPIC_BASE_URL alone does not get " +
-    "it to the model, and it stalls before the first request — apparently waiting on login / " +
-    "onboarding that a fresh container has never completed. (An earlier attempt also showed " +
-    "--dangerously-skip-permissions is rejected under root, which is why that flag is absent.) " +
-    "The macOS subscription lives in the Keychain, so there is no credential file to mount either.",
   installCommand: "hindsight-coding-agents install claude-code",
   stubModelEnv: (baseUrl) => ({
     ANTHROPIC_BASE_URL: baseUrl,

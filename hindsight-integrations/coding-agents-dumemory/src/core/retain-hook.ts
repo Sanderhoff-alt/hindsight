@@ -13,7 +13,7 @@
  * without stdin; `runRetainHook` is thin plumbing around it, mirroring `runHook`/`buildHookOutput`
  * in core/hook.ts.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { deriveBankIdOrSkip } from "./bank";
 import { retainLiveSession } from "./chat";
 import { applyBankConfig, loadConfig } from "./config";
@@ -75,6 +75,26 @@ interface RetainClient {
 }
 
 /**
+ * Wait up to maxWaitMs for the host CLI to finish flushing the transcript file to disk.
+ *
+ * Several CLI harnesses (notably Claude Code in non-interactive `--print` mode) spawn the Stop
+ * hook concurrently while the session transcript is still being serialized and flushed.
+ * A 0-second synchronous read catches the file non-existent or 0-byte; polling briefly
+ * (50ms increments up to 2s) allows the concurrent write to land without dropping the session.
+ */
+async function waitForTranscript(path: string, maxWaitMs = 2000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    try {
+      if (statSync(path).size > 0) return;
+    } catch {
+      // not yet written / not yet created
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+/**
  * Pure retain logic: read the transcript, and if it has any usable turns, upsert the full
  * conversation under `conversation:<sessionId>`. A transcript with no usable turns (e.g. only
  * tool calls / meta lines) is a no-op — nothing worth remembering. Fail-open: never throws.
@@ -97,6 +117,7 @@ export async function buildRetain(args: {
   const { harness, sessionId, transcriptPath, client } = args;
   const readTranscript = args.readTranscript ?? readClaudeTranscript;
 
+  await waitForTranscript(transcriptPath);
   const turns = readTranscript(transcriptPath);
   // Decode BEFORE stripping/trimming: the raw field can be a serialized content-block list rather
   // than prose (see LastMessageReader), and the injected-memory tags live inside its text blocks.

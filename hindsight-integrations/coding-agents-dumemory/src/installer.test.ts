@@ -71,7 +71,7 @@ afterEach(() => {
 describe("claude-code installer", () => {
   const settingsPath = (ctx: InstallCtx) => join(ctx.home, ".claude", "settings.json");
 
-  it("install writes the 3 hook events with our dist commands and timeouts 30/30/60", () => {
+  it("install writes the 3 hook events with our dist commands and timeouts 30/60/60", () => {
     const ctx = makeCtx();
     expect(run(["install", "claude-code"], ctx)).toBe(0);
     const settings = readJson(settingsPath(ctx));
@@ -82,7 +82,7 @@ describe("claude-code installer", () => {
     expect(inner("UserPromptSubmit").command).toContain(join(ctx.dist, "claude-hook.js"));
     expect(inner("Stop").command).toContain(join(ctx.dist, "claude-stop-hook.js"));
     expect(inner("SessionStart").timeout).toBe(30);
-    expect(inner("UserPromptSubmit").timeout).toBe(30);
+    expect(inner("UserPromptSubmit").timeout).toBe(60);
     expect(inner("Stop").timeout).toBe(60);
     for (const ev of ["SessionStart", "UserPromptSubmit", "Stop"]) {
       expect(inner(ev).type).toBe("command");

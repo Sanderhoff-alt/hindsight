@@ -78,7 +78,7 @@ interface HookClient {
  * Plugin harnesses not listed here (dsh, opencode, cline, etc.) use cfg.reflectTimeoutMs directly.
  */
 const HARNESS_REFLECT_CAP_MS: Record<string, number> = {
-  "claude-code": 28_000,
+  "claude-code": 55_000,
   codex: 28_000,
   "antigravity-cli": 28_000,
   "cursor-cli": 28_000,

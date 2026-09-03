@@ -187,7 +187,7 @@ describe("buildHookOutput", () => {
     const cfg = resolveConfig({}); // reflectTimeoutMs default 120000
     const client = makeClient();
     await buildHookOutput({
-      harness: "claude-code",
+      harness: "codex",
       prompt: "the prompt",
       cfg,
       client,
@@ -199,11 +199,11 @@ describe("buildHookOutput", () => {
     });
   });
 
-  it("caps reflect timeout at 55000ms for dcode (which allows a 60s hook window)", async () => {
+  it("caps reflect timeout at 55000ms for 60s hook harnesses (claude-code, dcode)", async () => {
     const cfg = resolveConfig({}); // reflectTimeoutMs default 120000
     const client = makeClient();
     await buildHookOutput({
-      harness: "dcode",
+      harness: "claude-code",
       prompt: "the prompt",
       cfg,
       client,

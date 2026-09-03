@@ -94,6 +94,12 @@ export async function startStubModel(): Promise<StubModel> {
         res.end(text);
       };
 
+      if (req.method === "HEAD") {
+        res.writeHead(200);
+        res.end();
+        return;
+      }
+
       if (req.method === "GET" && url.includes("/models")) {
         json(200, {
           object: "list",

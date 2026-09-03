@@ -192,7 +192,7 @@ export const HOOK_HARNESSES: Record<HookHarnessName, HookHarnessSpec> = {
     configStyle: "nested",
     install: {
       sessionStart: { event: "SessionStart", entry: "claude-sessionstart-hook.js", timeout: 30 },
-      prompt: { event: "UserPromptSubmit", entry: "claude-hook.js", timeout: 30 },
+      prompt: { event: "UserPromptSubmit", entry: "claude-hook.js", timeout: 60 },
       stop: { event: "Stop", entry: "claude-stop-hook.js", timeout: 60 },
     },
     sessionStart: standardSessionStart("claude-code"),
