@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * hindsight-coding-agents install|uninstall [harness...]
+ * dumemory-coding-agents install|uninstall [harness...]
  *
  * ONE setup command for every supported coding agent. With no harness arguments it detects which
  * agents exist on this machine (binary on PATH or config dir present) and wires each one's NATIVE
@@ -9,7 +9,7 @@
  *   opencode     add this package to `plugin` in ~/.config/opencode/opencode.json
  *   claude-code  3 hooks in ~/.claude/settings.json + `claude mcp add` (user scope)
  *   codex        3 hooks in ~/.codex/hooks.json + [features]/[mcp_servers] in config.toml
- *   antigravity-cli PreInvocation + Stop hooks, Hindsight status line + MCP
+ *   antigravity-cli PreInvocation + Stop hooks, DuMemory status line + MCP
  *   devin-cli     SessionStart + UserPromptSubmit + Stop hooks in ~/.config/devin/config.json + MCP
  *   cursor-cli   sessionStart + beforeSubmitPrompt + stop hooks in ~/.cursor/hooks.json + ~/.cursor/mcp.json
  *   copilot-cli  sessionStart + userPromptTransformed + agentStop hooks in ~/.copilot/hooks/ + MCP
@@ -17,10 +17,10 @@
  *   dcode        native Agent Plugin via `dcode plugin marketplace/install`
  *   dsh          native Cordis plugin row in $DSH_HOME/cordis.patch.yml (DeepSeek Harness)
  *
- * IDEMPOTENT: our entries are recognized by the package path in their command ("hindsight-coding-
+ * IDEMPOTENT: our entries are recognized by the package path in their command ("dumemory-coding-
  * agents"), replaced on re-install (so moving the package just needs `install` again) and removed
  * on `uninstall`. Everything else in the host's config files is preserved; files are created when
- * missing. Backups: the first time we touch an existing file we write `<file>.hindsight-backup`.
+ * missing. Backups: the first time we touch an existing file we write `<file>.dumemory-backup`.
  */
 import { execFileSync } from "node:child_process";
 import {
@@ -42,7 +42,6 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { applyEdits, modify } from "jsonc-parser";
 import { HOOK_HARNESSES, type HookHarnessName } from "./harness/hook-lifecycle";
 import { importLocalHistory } from "./core/history";
-import { readLegacyEndpoint } from "./core/legacy";
 import { SKILL_DIRS } from "./core/skill-dirs";
 import { createInstallerUi, type SelectOption } from "./install-ui";
 
@@ -51,10 +50,10 @@ import { createInstallerUi, type SelectOption } from "./install-ui";
  * `uninstall` removes exactly what we added.
  *
  * It must appear in the package path under BOTH layouts: npm
- * (`node_modules/@vectorize-io/hindsight-coding-agents/...`) and a repo checkout
- * (`hindsight-integrations/coding-agents/...`). The old value was the full package name, which the
- * repo path stopped containing when the directory dropped its `hindsight-` prefix — silently
- * breaking dedupe-on-reinstall and uninstall for anyone running from a checkout.
+ * (`node_modules/@baiducloud/dumemory-coding-agents/...`) and a repo checkout
+ * (`hindsight-integrations/coding-agents-dumemory/...`). Deliberately NOT the full package name:
+ * the repo path does not contain it, which would silently break dedupe-on-reinstall and uninstall
+ * for anyone running from a checkout.
  */
 export const MARKER = "coding-agents";
 
@@ -75,8 +74,6 @@ export interface InstallCtx {
   /** Whether stdin can be prompted. Defaults to the real TTY check at the CLI entry; tests set it
    *  explicitly so the suite never blocks on a read. */
   interactive?: boolean;
-  /** Reads an old per-agent plugin's endpoint; injectable for tests. */
-  readLegacy?: (home: string, prefer: readonly string[]) => ReturnType<typeof readLegacyEndpoint>;
   log?: (m: string) => void;
   /** Styles an interactive readLineSync prompt (the CLI passes the InstallerUi rail style). */
   promptStyle?: (q: string) => string;
@@ -131,8 +128,8 @@ function writeJson(path: string, value: unknown): void {
 
 /** The first time we touch an existing file, keep a copy of what the user had. */
 function backupOnce(path: string): void {
-  if (existsSync(path) && !existsSync(`${path}.hindsight-backup`)) {
-    copyFileSync(path, `${path}.hindsight-backup`);
+  if (existsSync(path) && !existsSync(`${path}.dumemory-backup`)) {
+    copyFileSync(path, `${path}.dumemory-backup`);
   }
 }
 
@@ -191,15 +188,15 @@ const cmdHook = (dist: string, file: string, timeout: number) => ({
  * The MCP registration for a JSON-configured host.
  *
  * Every harness launches the SAME `dist/mcp-server.js`, so the command line alone cannot say who
- * is calling. `HINDSIGHT_MCP_HARNESS` is what the server reads to answer that; without it it falls
- * back to "claude-code", which is why a Codex `hindsight_ingest_document` landed tagged
+ * is calling. `DUMEMORY_MCP_HARNESS` is what the server reads to answer that; without it it falls
+ * back to "claude-code", which is why a Codex `dumemory_ingest_document` landed tagged
  * `harness:claude-code` (and derived its bank as Claude Code's) on machines running both. Every
  * registration MUST name its own harness — pass it here, never rely on the fallback.
  */
 const mcpServerEntry = (dist: string, harness: HookHarnessName | "cline-cli") => ({
   command: "node",
   args: [join(dist, "mcp-server.js")],
-  env: { HINDSIGHT_MCP_HARNESS: harness },
+  env: { DUMEMORY_MCP_HARNESS: harness },
 });
 
 /** Install/uninstall consume the same lifecycle declaration as the runtime entrypoints. Keeping
@@ -258,14 +255,14 @@ function installSkill(c: InstallCtx, harness: string): void {
   const src = join(c.pkgRoot, "skill");
   if (!existsSync(join(src, "SKILL.md"))) return;
   const skillsBase = skillsBaseFor(c, harness);
-  const dst = join(skillsBase, "hindsight-coding-agent");
+  const dst = join(skillsBase, "dumemory-coding-agent");
   mkdirSync(skillsBase, { recursive: true });
   cpSync(src, dst, { recursive: true });
   c.log?.(`${harness}: skill installed at ${dst}`);
 }
 
 function uninstallSkill(c: InstallCtx, harness: string): void {
-  rmSync(join(skillsBaseFor(c, harness), "hindsight-coding-agent"), {
+  rmSync(join(skillsBaseFor(c, harness), "dumemory-coding-agent"), {
     recursive: true,
     force: true,
   });
@@ -521,22 +518,22 @@ const claudeCode: HarnessInstaller = {
     // codex via the ~/.agents/skills standard).
     installSkill(c, "claude-code");
     const mcp = c.claudeMcp ?? defaultClaudeMcp;
-    // `claude mcp add` REFUSES when the name is taken ("MCP server hindsight already exists in
-    // user config") — so on a machine that already had Hindsight, a re-install could never
+    // `claude mcp add` REFUSES when the name is taken ("MCP server dumemory already exists in
+    // user config") — so on a machine that already had DuMemory, a re-install could never
     // repoint the server. After the package moved, the stale registration survived and Claude
-    // Code reported "Failed to connect — Connection closed" with the hindsight_* tools dead.
+    // Code reported "Failed to connect — Connection closed" with the dumemory_* tools dead.
     // Remove first (a no-op when absent) so the add always lands, matching how every other host
     // wiring is replaced rather than skipped.
-    mcp(["mcp", "remove", "--scope", "user", "hindsight"]);
+    mcp(["mcp", "remove", "--scope", "user", "dumemory"]);
     if (
       mcp([
         "mcp",
         "add",
         "--scope",
         "user",
-        "hindsight",
+        "dumemory",
         "--env",
-        "HINDSIGHT_MCP_HARNESS=claude-code",
+        "DUMEMORY_MCP_HARNESS=claude-code",
         "--",
         "node",
         join(c.dist, "mcp-server.js"),
@@ -546,7 +543,7 @@ const claudeCode: HarnessInstaller = {
     } else {
       c.log?.(
         `claude-code: could not run \`claude mcp add\` — register the tools manually:\n` +
-          `  claude mcp add --scope user hindsight --env HINDSIGHT_MCP_HARNESS=claude-code -- node "${join(c.dist, "mcp-server.js")}"`
+          `  claude mcp add --scope user dumemory --env DUMEMORY_MCP_HARNESS=claude-code -- node "${join(c.dist, "mcp-server.js")}"`
       );
     }
   },
@@ -561,7 +558,7 @@ const claudeCode: HarnessInstaller = {
       }
     }
     const mcp = c.claudeMcp ?? defaultClaudeMcp;
-    mcp(["mcp", "remove", "--scope", "user", "hindsight"]);
+    mcp(["mcp", "remove", "--scope", "user", "dumemory"]);
     uninstallSkill(c, "claude-code");
     c.log?.("claude-code: hooks + MCP registration + skill removed");
   },
@@ -577,15 +574,15 @@ function defaultClaudeMcp(args: string[]): boolean {
 }
 
 /**
- * Our `[mcp_servers.hindsight]` table (plus any sub-table of it): the header line through to the
+ * Our `[mcp_servers.dumemory]` table (plus any sub-table of it): the header line through to the
  * next table header or EOF. Shared by install — which REPLACES the block — and uninstall.
  */
-const CODEX_MCP_BLOCK_RE = /^\[mcp_servers\.hindsight(?:\.[^\]]+)?\][^\n]*\n(?:(?!\[)[^\n]*\n?)*/gm;
+const CODEX_MCP_BLOCK_RE = /^\[mcp_servers\.dumemory(?:\.[^\]]+)?\][^\n]*\n(?:(?!\[)[^\n]*\n?)*/gm;
 
-/** Inline `env`, so CODEX_MCP_BLOCK_RE never has to straddle a `[mcp_servers.hindsight.env]` table. */
+/** Inline `env`, so CODEX_MCP_BLOCK_RE never has to straddle a `[mcp_servers.dumemory.env]` table. */
 const codexMcpBlock = (dist: string) =>
-  `[mcp_servers.hindsight]\ncommand = "node"\nargs = [${JSON.stringify(join(dist, "mcp-server.js"))}]\n` +
-  `env = { HINDSIGHT_MCP_HARNESS = "codex" }`;
+  `[mcp_servers.dumemory]\ncommand = "node"\nargs = [${JSON.stringify(join(dist, "mcp-server.js"))}]\n` +
+  `env = { DUMEMORY_MCP_HARNESS = "codex" }`;
 
 const codex: HarnessInstaller = {
   name: "codex",
@@ -620,8 +617,8 @@ const codex: HarnessInstaller = {
     additions.push(codexMcpBlock(c.dist));
     const next = `${toml.replace(/\n*$/, "\n\n")}${additions.join("\n\n")}\n`;
     if (next !== existing) {
-      if (existsSync(tomlPath) && !existsSync(`${tomlPath}.hindsight-backup`)) {
-        copyFileSync(tomlPath, `${tomlPath}.hindsight-backup`);
+      if (existsSync(tomlPath) && !existsSync(`${tomlPath}.dumemory-backup`)) {
+        copyFileSync(tomlPath, `${tomlPath}.dumemory-backup`);
       }
       mkdirSync(dirname(tomlPath), { recursive: true });
       writeFileSync(tomlPath, next);
@@ -661,7 +658,7 @@ const antigravity: HarnessInstaller = {
     const hooksPath = join(c.home, ".gemini", "config", "hooks.json");
     const hooks = readJson(hooksPath);
     // Antigravity's hooks.json is a map of named customizations, not a direct event map. Keep
-    // Hindsight in its own namespace so it cannot collide with other global hook bundles.
+    // DuMemory in its own namespace so it cannot collide with other global hook bundles.
     // Drop any namespace we wrote under a PREVIOUS marker value. This file is keyed BY the marker,
     // so unlike every other host — where entries are matched by substring — a changed marker
     // orphans the old namespace instead of replacing it, leaving both registered and every hook
@@ -682,20 +679,20 @@ const antigravity: HarnessInstaller = {
     const mcp = readJson(mcpPath);
     mcp.mcpServers = {
       ...(mcp.mcpServers ?? {}),
-      hindsight: mcpServerEntry(c.dist, "antigravity-cli"),
+      dumemory: mcpServerEntry(c.dist, "antigravity-cli"),
     };
     writeJson(mcpPath, mcp);
     const settingsPath = join(c.home, ".gemini", "antigravity-cli", "settings.json");
     const settings = readJson(settingsPath);
     // A custom status-line command owns the whole rendered line. Do not overwrite a user's
-    // formatter; Hindsight can only add its native indicator when no formatter is already set.
+    // formatter; DuMemory can only add its native indicator when no formatter is already set.
     if (!settings.statusLine) {
       settings.statusLine = {
         type: "command",
         command: `node "${join(c.dist, "antigravity-statusline.js")}"`,
       };
       writeJson(settingsPath, settings);
-      c.log?.(`antigravity-cli: Hindsight status line enabled in ${settingsPath}`);
+      c.log?.(`antigravity-cli: DuMemory status line enabled in ${settingsPath}`);
     } else if (JSON.stringify(settings.statusLine).includes(MARKER)) {
       settings.statusLine = {
         type: "command",
@@ -704,7 +701,7 @@ const antigravity: HarnessInstaller = {
       writeJson(settingsPath, settings);
     } else {
       c.log?.(
-        "antigravity-cli: existing custom status line preserved (Hindsight indicator not added)"
+        "antigravity-cli: existing custom status line preserved (DuMemory indicator not added)"
       );
     }
     c.log?.(`antigravity-cli: hooks merged into ${hooksPath}, MCP into ${mcpPath}`);
@@ -727,8 +724,8 @@ const antigravity: HarnessInstaller = {
     const mcpPath = join(c.home, ".gemini", "config", "mcp_config.json");
     if (existsSync(mcpPath)) {
       const mcp = readJson(mcpPath);
-      if (mcp.mcpServers?.hindsight) {
-        delete mcp.mcpServers.hindsight;
+      if (mcp.mcpServers?.dumemory) {
+        delete mcp.mcpServers.dumemory;
         writeJson(mcpPath, mcp);
       }
     }
@@ -774,12 +771,12 @@ function pathNodeVersion(): string {
 /**
  * Where the runtime is copied to, and therefore what every hook command points at.
  *
- * Under ~/.hindsight, which this package already owns (the config file lives there), and named
+ * Under ~/.dumemory, which this package already owns (the config file lives there), and named
  * `coding-agents` on purpose: MARKER matching is what lets a re-install replace our entries and
  * `uninstall` remove them, and it looks for exactly that substring in the command path.
  */
 export function runtimeDir(home: string): string {
-  return join(home, ".hindsight", "coding-agents");
+  return join(home, ".dumemory", "coding-agents");
 }
 
 /** Names the directory `stageRuntime` copied from — read by core/auto-update.ts. */
@@ -850,11 +847,7 @@ function stageRuntime(c: InstallCtx): InstallCtx {
   }
 }
 
-// ── server setup (cloud / self-hosted / local daemon) ───────────────────────────
-
-export type ServerMode = "cloud";
-
-const SERVER_MODES: ServerMode[] = ["cloud"];
+// ── server setup (Baidu AI Cloud; `--api-url` points it at another deployment) ──
 
 /** Value of `--name value` or `--name=value`. */
 export function flagValue(args: string[], name: string): string | undefined {
@@ -874,7 +867,7 @@ export function flagValueArgs(args: string[], names: string[]): Set<string> {
   return taken;
 }
 
-const CONFIG_RELATIVE = [".hindsight", "coding-agent.json"];
+const CONFIG_RELATIVE = [".dumemory", "coding-agent.json"];
 
 /**
  * Ask which of the three connection modes to use, once.
@@ -914,65 +907,41 @@ function readLineSync(c: InstallCtx, prompt: string): string {
 }
 
 /**
- * Resolve and persist the connection mode into ~/.hindsight/coding-agent.json.
+ * Resolve and persist the server endpoint into ~/.dumemory/coding-agent.json.
  *
- * Returns false to abort the install. Everything else here is advisory: a daemon whose
- * prerequisites are missing is still worth configuring, because `uv` or an API key can be
- * installed right after — unlike the harness preflights, which gate wiring that could never work.
+ * Returns false to abort the install: Cloud always authenticates, so a config without a token is
+ * worse than no config — it fails as 401s on the first session instead of here.
  */
-function configureServer(c: InstallCtx, args: string[], installing: readonly string[]): boolean {
-  // The runtime resolves its config as HINDSIGHT_CONFIG || ~/.hindsight/coding-agent.json
+function configureServer(c: InstallCtx, args: string[]): boolean {
+  // The runtime resolves its config as DUMEMORY_CONFIG || ~/.dumemory/coding-agent.json
   // (core/config.ts CONFIG_PATH). The wizard must honor the same override, or a user with that
   // var set would be configured into a file their sessions never read.
-  const configPath = process.env.HINDSIGHT_CONFIG || join(c.home, ...CONFIG_RELATIVE);
+  const configPath = process.env.DUMEMORY_CONFIG || join(c.home, ...CONFIG_RELATIVE);
   const existing = readJson(configPath);
-  const alreadyConfigured = !!(existing.serverMode || existing.apiUrl);
-
-  {
-    if (alreadyConfigured) return true; // respect what's already there
-    // Someone coming from the old per-agent plugin already chose where their memory lives.
-    // Adopt it rather than asking again — and above all rather than defaulting to Cloud, which
-    // would quietly redirect their prompts and transcripts to a different server.
-    const legacy = (c.readLegacy ?? readLegacyEndpoint)(c.home, installing);
-    if (legacy) {
-      const carried: Record<string, unknown> = { ...existing, serverMode: "cloud" };
-      if (legacy.apiToken) carried.apiToken = legacy.apiToken;
-      if (legacy.apiPort) carried.apiPort = legacy.apiPort;
-      writeJson(configPath, carried);
-      c.log?.(
-        `server: cloud — carried over ` +
-          `from the ${legacy.harness} plugin (${legacy.source})\n` +
-          `        Only the endpoint moves; conversations do not. To bring this repo's history\n` +
-          `        across, re-run here with --import-conversations.`
-      );
-      if (legacy.serverMode === "cloud" && legacy.apiToken) return true;
-    }
-  }
+  if (existing.serverMode || existing.apiUrl) return true; // respect what's already there
 
   if (!c.interactive && !flagValue(args, "api-token") && !flagValue(args, "api-url")) {
-    c.log?.(`\nserver: defaulting to Hindsight Cloud. Pass --api-token <token> to configure it.`);
+    c.log?.(`\nserver: defaulting to Baidu AI Cloud. Pass --api-token <token> to configure it.`);
     return true;
   }
 
-  const mode: ServerMode = "cloud";
-  const next: Record<string, unknown> = { ...existing, serverMode: mode };
-  {
-    // Cloud always authenticates — a config without a token only surfaces later as 401s on the
-    // first session, so the token is REQUIRED here (it used to be "blank to set later").
-    const apiUrl = flagValue(args, "api-url");
-    if (apiUrl) next.apiUrl = apiUrl;
-    const token = flagValue(args, "api-token") ?? (c.interactive ? askToken(c) : undefined);
-    if (!token) {
-      c.log?.(
-        `❌ Hindsight Cloud needs an API token — pass --api-token <token> (or set apiToken in ${configPath}).`
-      );
-      return false;
-    }
-    next.apiToken = token;
+  // `serverMode` is recorded even though Cloud is the only value: `install` reads it back to
+  // detect an already-configured machine. `--api-url` overrides the endpoint for a self-hosted
+  // deployment of the same API.
+  const next: Record<string, unknown> = { ...existing, serverMode: "cloud" };
+  const apiUrl = flagValue(args, "api-url");
+  if (apiUrl) next.apiUrl = apiUrl;
+  const token = flagValue(args, "api-token") ?? (c.interactive ? askToken(c) : undefined);
+  if (!token) {
+    c.log?.(
+      `❌ Baidu AI Cloud needs an API token — pass --api-token <token> (or set apiToken in ${configPath}).`
+    );
+    return false;
   }
+  next.apiToken = token;
 
   writeJson(configPath, next);
-  c.log?.(`server: ${mode} (${configPath})`);
+  c.log?.(`server: cloud (${configPath})`);
   return true;
 }
 
@@ -982,10 +951,10 @@ function configureServer(c: InstallCtx, args: string[], installing: readonly str
 function askToken(c: InstallCtx): string | undefined {
   for (let attempt = 0; attempt < 3; attempt++) {
     const token = (
-      c.tokenPrompt ?? (() => readLineSync(c, "API token (required for Hindsight Cloud): "))
+      c.tokenPrompt ?? (() => readLineSync(c, "API token (required for Baidu AI Cloud): "))
     )().trim();
     if (token) return token;
-    c.log?.("  a token is required — find yours in the Hindsight Cloud dashboard");
+    c.log?.("  a token is required — find yours in the Baidu AI Cloud console");
   }
   return undefined;
 }
@@ -1016,7 +985,7 @@ const devin: HarnessInstaller = {
     const mcp = readJson(mcpPath);
     mcp.mcpServers = {
       ...(mcp.mcpServers ?? {}),
-      hindsight: mcpServerEntry(c.dist, "devin-cli"),
+      dumemory: mcpServerEntry(c.dist, "devin-cli"),
     };
     writeJson(mcpPath, mcp);
     c.log?.(`devin-cli: hooks merged into ${configPath}, MCP into ${mcpPath}`);
@@ -1034,8 +1003,8 @@ const devin: HarnessInstaller = {
     const mcpPath = join(c.home, ".config", "devin", "mcp_config.json");
     if (existsSync(mcpPath)) {
       const mcp = readJson(mcpPath);
-      if (mcp.mcpServers?.hindsight) {
-        delete mcp.mcpServers.hindsight;
+      if (mcp.mcpServers?.dumemory) {
+        delete mcp.mcpServers.dumemory;
         writeJson(mcpPath, mcp);
       }
     }
@@ -1056,7 +1025,7 @@ const cursor: HarnessInstaller = {
     const mcp = readJson(mcpPath);
     mcp.mcpServers = {
       ...(mcp.mcpServers ?? {}),
-      hindsight: mcpServerEntry(c.dist, "cursor-cli"),
+      dumemory: mcpServerEntry(c.dist, "cursor-cli"),
     };
     writeJson(mcpPath, mcp);
     c.log?.(`cursor-cli: hooks merged into ${hooksPath}, MCP into ${mcpPath}`);
@@ -1075,8 +1044,8 @@ const cursor: HarnessInstaller = {
     const mcpPath = join(c.home, ".cursor", "mcp.json");
     if (existsSync(mcpPath)) {
       const mcp = readJson(mcpPath);
-      if (mcp.mcpServers?.hindsight) {
-        delete mcp.mcpServers.hindsight;
+      if (mcp.mcpServers?.dumemory) {
+        delete mcp.mcpServers.dumemory;
         writeJson(mcpPath, mcp);
       }
     }
@@ -1099,7 +1068,7 @@ const copilot: HarnessInstaller = {
     const mcp = readJson(mcpPath);
     mcp.mcpServers = {
       ...(mcp.mcpServers ?? {}),
-      hindsight: mcpServerEntry(c.dist, "copilot-cli"),
+      dumemory: mcpServerEntry(c.dist, "copilot-cli"),
     };
     writeJson(mcpPath, mcp);
     installSkill(c, "copilot-cli");
@@ -1117,14 +1086,14 @@ const copilot: HarnessInstaller = {
         writeJson(configPath, config);
       }
     }
-    rmSync(join(c.home, ".copilot", "hooks", "hindsight-coding-agents.json"), {
+    rmSync(join(c.home, ".copilot", "hooks", "dumemory-coding-agents.json"), {
       force: true,
     });
     const mcpPath = join(c.home, ".copilot", "mcp-config.json");
     if (existsSync(mcpPath)) {
       const mcp = readJson(mcpPath);
-      if (mcp.mcpServers?.hindsight) {
-        delete mcp.mcpServers.hindsight;
+      if (mcp.mcpServers?.dumemory) {
+        delete mcp.mcpServers.dumemory;
         writeJson(mcpPath, mcp);
       }
     }
@@ -1133,8 +1102,8 @@ const copilot: HarnessInstaller = {
   },
 };
 
-const GROK_MARKER_START = "# HINDSIGHT_CODING_AGENTS_GROK_START";
-const GROK_MARKER_END = "# HINDSIGHT_CODING_AGENTS_GROK_END";
+const GROK_MARKER_START = "# DUMEMORY_CODING_AGENTS_GROK_START";
+const GROK_MARKER_END = "# DUMEMORY_CODING_AGENTS_GROK_END";
 /** Our sentinel-delimited block; shared by install (replace) and uninstall (strip). */
 const GROK_BLOCK_RE = new RegExp(`\\n?${GROK_MARKER_START}[\\s\\S]*?${GROK_MARKER_END}\\n?`);
 
@@ -1157,10 +1126,10 @@ const grok: HarnessInstaller = {
       `[[hooks.SessionStart]]\n  [[hooks.SessionStart.hooks]]\n  type = \"command\"\n  command = ${command("grok-sessionstart-hook.js")}\n  timeout = 30\n\n` +
       `[[hooks.UserPromptSubmit]]\n  [[hooks.UserPromptSubmit.hooks]]\n  type = \"command\"\n  command = ${command("grok-hook.js")}\n  timeout = 30\n\n` +
       `[[hooks.Stop]]\n  [[hooks.Stop.hooks]]\n  type = \"command\"\n  command = ${command("grok-stop-hook.js")}\n  timeout = 60\n\n` +
-      `[mcp_servers.hindsight]\ncommand = \"node\"\nargs = [${tomlString(join(c.dist, "mcp-server.js"))}]\n` +
-      `env = { HINDSIGHT_MCP_HARNESS = \"grok-build\" }\n${GROK_MARKER_END}\n`;
-    if (existsSync(path) && !existsSync(`${path}.hindsight-backup`))
-      copyFileSync(path, `${path}.hindsight-backup`);
+      `[mcp_servers.dumemory]\ncommand = \"node\"\nargs = [${tomlString(join(c.dist, "mcp-server.js"))}]\n` +
+      `env = { DUMEMORY_MCP_HARNESS = \"grok-build\" }\n${GROK_MARKER_END}\n`;
+    if (existsSync(path) && !existsSync(`${path}.dumemory-backup`))
+      copyFileSync(path, `${path}.dumemory-backup`);
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, `${withoutOurs.replace(/\n*$/, "\n")}${block}`);
     installSkill(c, "grok-build");
@@ -1178,9 +1147,9 @@ const grok: HarnessInstaller = {
   },
 };
 
-const CLINE_HOOK_MARKER = "HINDSIGHT_CODING_AGENTS_CLINE";
+const CLINE_HOOK_MARKER = "DUMEMORY_CODING_AGENTS_CLINE";
 const CLINE_OLD_HOOK_EVENTS = ["TaskStart", "UserPromptSubmit", "TaskComplete"];
-const CLINE_PLUGIN_NAME = "@vectorize-io/hindsight-coding-agents";
+const CLINE_PLUGIN_NAME = "@baiducloud/dumemory-coding-agents";
 
 /** Remove only wrappers from the short-lived file-hook implementation. Cline file hooks cannot
  * mutate a prompt; keeping them would falsely imply that old installs still inject memory. */
@@ -1209,7 +1178,7 @@ const cline: HarnessInstaller = {
     const mcp = readJson(mcpPath);
     mcp.mcpServers = {
       ...(mcp.mcpServers ?? {}),
-      hindsight: mcpServerEntry(c.dist, "cline-cli"),
+      dumemory: mcpServerEntry(c.dist, "cline-cli"),
     };
     writeJson(mcpPath, mcp);
     installSkill(c, "cline-cli");
@@ -1227,8 +1196,8 @@ const cline: HarnessInstaller = {
     const mcpPath = join(c.home, ".cline", "data", "settings", "cline_mcp_settings.json");
     if (existsSync(mcpPath)) {
       const mcp = readJson(mcpPath);
-      if (mcp.mcpServers?.hindsight) {
-        delete mcp.mcpServers.hindsight;
+      if (mcp.mcpServers?.dumemory) {
+        delete mcp.mcpServers.dumemory;
         writeJson(mcpPath, mcp);
       }
     }
@@ -1240,18 +1209,18 @@ const cline: HarnessInstaller = {
 /** Dcode's plugin manager owns its cache and enablement state. Keep this installer as a thin
  * native CLI invocation: the package's bundled marketplace points back at the staged package,
  * while Dcode performs the copy, validation, enablement, and foreign-state preservation. */
-const DCODE_MARKETPLACE = "hindsight-coding-agents";
-const DCODE_PLUGIN_ID = "hindsight-coding-agents@hindsight-coding-agents";
+const DCODE_MARKETPLACE = "dumemory-coding-agents";
+const DCODE_PLUGIN_ID = "dumemory-coding-agents@dumemory-coding-agents";
 const DCODE_MARKETPLACE_RELATIVE_PATH = join(".agents", "plugins", "marketplace.json");
-const DCODE_FALLBACK_MARKETPLACE = "hindsight-coding-agents-marketplace.json";
+const DCODE_FALLBACK_MARKETPLACE = "dumemory-coding-agents-marketplace.json";
 
 /**
  * Prepare a local marketplace without taking ownership of a foreign manifest at the conventional
- * path. A custom JSON file still has the same ~/.hindsight root, so ./coding-agents remains valid,
+ * path. A custom JSON file still has the same ~/.dumemory root, so ./coding-agents remains valid,
  * while Dcode records it as its own marketplace and the foreign top-level name is untouched.
  */
 function prepareDcodeMarketplace(c: InstallCtx): string | false {
-  const root = join(c.home, ".hindsight");
+  const root = join(c.home, ".dumemory");
   const conventionalPath = join(root, DCODE_MARKETPLACE_RELATIVE_PATH);
   let path = conventionalPath;
   let registrationSource = root;
@@ -1297,13 +1266,13 @@ function prepareDcodeMarketplace(c: InstallCtx): string | false {
     (entry: unknown) =>
       !entry ||
       typeof entry !== "object" ||
-      (entry as Record<string, unknown>).name !== "hindsight-coding-agents"
+      (entry as Record<string, unknown>).name !== "dumemory-coding-agents"
   );
   marketplace.name = DCODE_MARKETPLACE;
   marketplace.plugins = [
     ...foreign,
     {
-      name: "hindsight-coding-agents",
+      name: "dumemory-coding-agents",
       source: { source: "local", path: "./coding-agents" },
     },
   ];
@@ -1326,7 +1295,7 @@ const dcode: HarnessInstaller = {
     if (installed) {
       c.log?.(`dcode: native Agent Plugin installed (${DCODE_PLUGIN_ID})`);
     } else {
-      const source = marketplacePath === false ? join(c.home, ".hindsight") : marketplacePath;
+      const source = marketplacePath === false ? join(c.home, ".dumemory") : marketplacePath;
       c.log?.(
         `dcode: could not install the native plugin — run \
 ` + `  dcode plugin marketplace add "${source}" && dcode plugin install ${DCODE_PLUGIN_ID}`
@@ -1356,8 +1325,8 @@ const dcode: HarnessInstaller = {
   },
 };
 
-const DSH_MARKER_START = "# HINDSIGHT_CODING_AGENTS_DSH_START";
-const DSH_MARKER_END = "# HINDSIGHT_CODING_AGENTS_DSH_END";
+const DSH_MARKER_START = "# DUMEMORY_CODING_AGENTS_DSH_START";
+const DSH_MARKER_END = "# DUMEMORY_CODING_AGENTS_DSH_END";
 const DSH_BLOCK_RE = new RegExp(`\\n?${DSH_MARKER_START}[\\s\\S]*?${DSH_MARKER_END}\\n?`);
 
 /** DeepSeek Harness home — `$DSH_HOME`, else `~/.dsh` (its own `home-paths` resolution order). */
@@ -1369,7 +1338,7 @@ function dshHome(c: InstallCtx): string {
  * DeepSeek Harness — a native Cordis plugin, wired through the HOME-level patch layer
  * (`$DSH_HOME/cordis.patch.yml`), which every profile composes after its bundles.
  *
- * The alternative is `dsh plugin --profile <name> add @vectorize-io/hindsight-coding-agents`, which
+ * The alternative is `dsh plugin --profile <name> add @baiducloud/dumemory-coding-agents`, which
  * pnpm-installs the package into ONE profile and picks up the `dsh.bundle.patch` this package
  * ships. That is the right route for a published install and is what the docs recommend, but it
  * needs pnpm, a network, and a repeat per profile — so the installer takes the path that always
@@ -1392,11 +1361,11 @@ const dsh: HarnessInstaller = {
     const block =
       `${DSH_MARKER_START}\n` +
       `- insert:\n` +
-      `    - id: hindsight\n` +
+      `    - id: dumemory\n` +
       `      name: ${JSON.stringify(entry)}\n` +
       `${DSH_MARKER_END}\n`;
-    if (existsSync(path) && !existsSync(`${path}.hindsight-backup`))
-      copyFileSync(path, `${path}.hindsight-backup`);
+    if (existsSync(path) && !existsSync(`${path}.dumemory-backup`))
+      copyFileSync(path, `${path}.dumemory-backup`);
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, others ? `${others}\n\n${block}` : block);
     // dsh's skill provider scans the shared agentskills root, the same one Codex reads.
@@ -1433,7 +1402,7 @@ const qwen: HarnessInstaller = {
     const mcp = c.qwenMcp ?? defaultQwenMcp;
     // Same rationale as claude-code: `qwen mcp add` refuses a name that already exists, so a
     // re-install could never repoint a stale server. Remove first (a no-op when absent).
-    mcp(["mcp", "remove", "hindsight"]);
+    mcp(["mcp", "remove", "dumemory"]);
     if (
       mcp([
         "mcp",
@@ -1441,8 +1410,8 @@ const qwen: HarnessInstaller = {
         "-s",
         "user",
         "-e",
-        "HINDSIGHT_MCP_HARNESS=qwen-code",
-        "hindsight",
+        "DUMEMORY_MCP_HARNESS=qwen-code",
+        "dumemory",
         "node",
         join(c.dist, "mcp-server.js"),
       ])
@@ -1451,7 +1420,7 @@ const qwen: HarnessInstaller = {
     } else {
       c.log?.(
         `qwen-code: could not run \`qwen mcp add\` — register the tools manually:\n` +
-          `  qwen mcp add -s user -e HINDSIGHT_MCP_HARNESS=qwen-code hindsight node "${join(c.dist, "mcp-server.js")}"`
+          `  qwen mcp add -s user -e DUMEMORY_MCP_HARNESS=qwen-code dumemory node "${join(c.dist, "mcp-server.js")}"`
       );
     }
   },
@@ -1466,7 +1435,7 @@ const qwen: HarnessInstaller = {
       }
     }
     const mcp = c.qwenMcp ?? defaultQwenMcp;
-    mcp(["mcp", "remove", "hindsight"]);
+    mcp(["mcp", "remove", "dumemory"]);
     uninstallSkill(c, "qwen-code");
     c.log?.("qwen-code: hooks + MCP registration + skill removed");
   },
@@ -1533,7 +1502,7 @@ function importConversations(harness: string, ctx: InstallCtx): void {
     return;
   }
   const turns = found.sessions.reduce((n, s) => n + s.turns.length, 0);
-  const file = join(mkdtempSync(join(tmpdir(), "hindsight-import-")), "conversations.json");
+  const file = join(mkdtempSync(join(tmpdir(), "dumemory-import-")), "conversations.json");
   writeFileSync(file, JSON.stringify(found.sessions));
   ctx.log?.(
     `${harness}: importing ${found.sessions.length} past sessions (${turns} turns) from ${repo} — ` +
@@ -1553,12 +1522,11 @@ function importConversations(harness: string, ctx: InstallCtx): void {
 export function run(argv: string[], ctxIn: InstallCtx): number {
   let ctx = ctxIn;
   const [command, ...rawArgs] = argv;
-  // `--import-conversations` backfills this repo's PAST sessions for the harness being installed —
-  // the migration path off the older per-agent plugins, whose banks the server cannot merge into
-  // this one. Opt-in: it re-extracts history and therefore costs tokens.
+  // `--import-conversations` backfills this repo's PAST sessions for the harness being installed.
+  // Opt-in: it re-extracts history and therefore costs tokens.
   const importHistory = rawArgs.includes("--import-conversations");
-  // A flag's VALUE (`--server daemon`) is a bare word too — excluding it keeps "daemon" from being
-  // read as a harness name and rejected.
+  // A flag's VALUE (`--api-url https://…`) is a bare word too — excluding it keeps the value from
+  // being read as a harness name and rejected.
   const valueArgs = flagValueArgs(rawArgs, ["api-url", "api-token"]);
   const names = rawArgs.filter((a) => !a.startsWith("--") && !valueArgs.has(a));
   // Everything we write into a host's config is an ABSOLUTE path into this package. Run straight
@@ -1568,7 +1536,7 @@ export function run(argv: string[], ctxIn: InstallCtx): number {
   // to keep a global install of a tool whose only job is to set other tools up.
   if (command === "install" || command === "update") ctx = stageRuntime(ctx);
   // `update` is `install`'s staging half and nothing else: it replaces the runtime every wired
-  // agent already points at (~/.hindsight/coding-agents/dist, a path that is stable across
+  // agent already points at (~/.dumemory/coding-agents/dist, a path that is stable across
   // versions) and writes to NO host config. That separation is what makes it safe to run
   // unattended from `core/auto-update.ts` — an `install` would need a harness list, and choosing
   // one on the user's behalf would rewire agents they never asked us to touch.
@@ -1586,8 +1554,8 @@ export function run(argv: string[], ctxIn: InstallCtx): number {
   }
   if (command !== "install" && command !== "uninstall") {
     ctx.log?.(
-      `usage: hindsight-coding-agents <install|uninstall> <all|harness...>\n` +
-        `       hindsight-coding-agents update\n` +
+      `usage: dumemory-coding-agents <install|uninstall> <all|harness...>\n` +
+        `       dumemory-coding-agents update\n` +
         `       [--api-url <url>] [--api-token <token>]\n` +
         `       [--import-conversations]\n` +
         `  all      every agent detected on this machine\n` +
@@ -1623,23 +1591,15 @@ export function run(argv: string[], ctxIn: InstallCtx): number {
   } else {
     ctx.log?.(
       `${command}: name a harness, or "all" for every agent detected on this machine.\n` +
-        `  hindsight-coding-agents ${command} claude-code\n` +
-        `  hindsight-coding-agents ${command} all\n` +
+        `  dumemory-coding-agents ${command} claude-code\n` +
+        `  dumemory-coding-agents ${command} all\n` +
         `harnesses: ${INSTALLERS.map((i) => i.name).join(", ")} (agy aliases antigravity-cli)`
     );
     return 1;
   }
   // Which server the agents will talk to. Resolved BEFORE any harness is wired so the very first
   // session already has a config to read.
-  if (
-    command === "install" &&
-    !configureServer(
-      ctx,
-      rawArgs,
-      targets.map((t) => t.name)
-    )
-  )
-    return 1;
+  if (command === "install" && !configureServer(ctx, rawArgs)) return 1;
 
   // Preflight runs BEFORE any config is written, and only blocks the harness that failed: on
   // `install all` the other agents are still worth wiring. The non-zero exit keeps the failure
@@ -1701,7 +1661,7 @@ if (isMain || mainPath?.endsWith("installer.js")) {
     harnessNames: INSTALLERS.map((i) => i.name),
     // configureServer's messages render as their own "server" group, but don't count as an agent.
     auxNames: ["server"],
-    configPath: process.env.HINDSIGHT_CONFIG || undefined,
+    configPath: process.env.DUMEMORY_CONFIG || undefined,
   });
   ui.intro();
   const code = run(process.argv.slice(2), {

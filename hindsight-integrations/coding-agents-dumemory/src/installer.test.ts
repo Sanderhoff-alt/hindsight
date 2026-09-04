@@ -27,7 +27,7 @@ function makeCtx(): InstallCtx & {
   dcodePlugin: ReturnType<typeof vi.fn>;
   nodeSqlite: ReturnType<typeof vi.fn>;
 } {
-  const home = mkdtempSync(join(tmpdir(), "hindsight-installer-test-"));
+  const home = mkdtempSync(join(tmpdir(), "dumemory-installer-test-"));
   homes.push(home);
   const pkgRoot = join("/opt", MARKER); // contains the marker, like the real package path
   return {
@@ -42,8 +42,6 @@ function makeCtx(): InstallCtx & {
     dcodePlugin: vi.fn(() => true),
     // Stubbed like the CLI seams above, so the suite never depends on the Node running it.
     nodeSqlite: vi.fn(() => true),
-    // Never let a developer's real ~/.hindsight/claude-code.json steer the tests.
-    readLegacy: () => undefined,
   };
 }
 
@@ -56,10 +54,10 @@ function writeJsonAt(path: string, value: unknown): void {
   writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
 }
 
-// configureServer honors HINDSIGHT_CONFIG — a developer shell exporting it must not leak the
+// configureServer honors DUMEMORY_CONFIG — a developer shell exporting it must not leak the
 // suite's --server writes into their real config file ("" is falsy → the per-test home is used).
 beforeEach(() => {
-  vi.stubEnv("HINDSIGHT_CONFIG", "");
+  vi.stubEnv("DUMEMORY_CONFIG", "");
 });
 
 afterEach(() => {
@@ -71,7 +69,7 @@ afterEach(() => {
 describe("claude-code installer", () => {
   const settingsPath = (ctx: InstallCtx) => join(ctx.home, ".claude", "settings.json");
 
-  it("install writes the 3 hook events with our dist commands and timeouts 30/60/60", () => {
+  it("install writes the 3 hook events with our dist commands and timeouts 30/30/60", () => {
     const ctx = makeCtx();
     expect(run(["install", "claude-code"], ctx)).toBe(0);
     const settings = readJson(settingsPath(ctx));
@@ -82,7 +80,7 @@ describe("claude-code installer", () => {
     expect(inner("UserPromptSubmit").command).toContain(join(ctx.dist, "claude-hook.js"));
     expect(inner("Stop").command).toContain(join(ctx.dist, "claude-stop-hook.js"));
     expect(inner("SessionStart").timeout).toBe(30);
-    expect(inner("UserPromptSubmit").timeout).toBe(60);
+    expect(inner("UserPromptSubmit").timeout).toBe(30);
     expect(inner("Stop").timeout).toBe(60);
     for (const ev of ["SessionStart", "UserPromptSubmit", "Stop"]) {
       expect(inner(ev).type).toBe("command");
@@ -122,7 +120,7 @@ describe("claude-code installer", () => {
     // silently leaves a stale (possibly dead) server path registered.
     expect(removeAt).toBeGreaterThanOrEqual(0);
     expect(removeAt).toBeLessThan(addAt);
-    expect(calls[removeAt]).toEqual(["mcp", "remove", "--scope", "user", "hindsight"]);
+    expect(calls[removeAt]).toEqual(["mcp", "remove", "--scope", "user", "dumemory"]);
   });
 
   it("registers the MCP server via `claude mcp add` (user scope)", () => {
@@ -133,11 +131,11 @@ describe("claude-code installer", () => {
       "add",
       "--scope",
       "user",
-      "hindsight",
+      "dumemory",
       // Every host launches the same mcp-server.js, so the registration has to name its harness —
       // otherwise the server falls back to claude-code and mis-attributes the other hosts' writes.
       "--env",
-      "HINDSIGHT_MCP_HARNESS=claude-code",
+      "DUMEMORY_MCP_HARNESS=claude-code",
       "--",
       "node",
       join(ctx.dist, "mcp-server.js"),
@@ -166,7 +164,7 @@ describe("claude-code installer", () => {
     expect(settings.hooks.SessionStart).toBeUndefined();
     expect(settings.hooks.UserPromptSubmit).toBeUndefined();
     expect(JSON.stringify(settings)).not.toContain(MARKER);
-    expect(ctx.claudeMcp).toHaveBeenCalledWith(["mcp", "remove", "--scope", "user", "hindsight"]);
+    expect(ctx.claudeMcp).toHaveBeenCalledWith(["mcp", "remove", "--scope", "user", "dumemory"]);
   });
 
   it("uninstall removes the hooks object entirely when nothing else remains", () => {
@@ -202,7 +200,7 @@ describe("qwen-code installer", () => {
     const argv = ctx.qwenMcp.mock.calls.map((c) => c[0].join(" "));
     expect(argv.some((a) => a.startsWith("mcp remove"))).toBe(true);
     expect(
-      argv.some((a) => a.includes("mcp add") && a.includes("HINDSIGHT_MCP_HARNESS=qwen-code"))
+      argv.some((a) => a.includes("mcp add") && a.includes("DUMEMORY_MCP_HARNESS=qwen-code"))
     ).toBe(true);
   });
 
@@ -259,9 +257,9 @@ describe("codex installer", () => {
     run(["install", "codex"], ctx);
     const toml = readFileSync(tomlPath(ctx), "utf8");
     expect(toml).toContain("[features]\nhooks = true");
-    expect(toml).toContain("[mcp_servers.hindsight]");
+    expect(toml).toContain("[mcp_servers.dumemory]");
     expect(toml).toContain(join(ctx.dist, "mcp-server.js"));
-    expect(toml).toContain('env = { HINDSIGHT_MCP_HARNESS = "codex" }');
+    expect(toml).toContain('env = { DUMEMORY_MCP_HARNESS = "codex" }');
   });
 
   it("does NOT duplicate an existing [features] section (only appends mcp) and backs up the toml", () => {
@@ -273,8 +271,8 @@ describe("codex installer", () => {
     const toml = readFileSync(tomlPath(ctx), "utf8");
     expect(toml.match(/^\[features\]/gm)).toHaveLength(1);
     expect(toml).not.toContain("hooks = true"); // user is told to add it manually
-    expect(toml).toContain("[mcp_servers.hindsight]");
-    expect(readFileSync(`${tomlPath(ctx)}.hindsight-backup`, "utf8")).toBe(original);
+    expect(toml).toContain("[mcp_servers.dumemory]");
+    expect(readFileSync(`${tomlPath(ctx)}.dumemory-backup`, "utf8")).toBe(original);
   });
 
   it("appends nothing features-related when hooks is already present", () => {
@@ -285,11 +283,11 @@ describe("codex installer", () => {
     const toml = readFileSync(tomlPath(ctx), "utf8");
     expect(toml.match(/hooks/g)).toHaveLength(1);
     expect(toml.match(/^\[features\]/gm)).toHaveLength(1);
-    expect(toml).toContain("[mcp_servers.hindsight]");
+    expect(toml).toContain("[mcp_servers.dumemory]");
   });
 
   // Regression: Codex sessions ingested documents tagged `harness:claude-code`. Its registration
-  // carried no HINDSIGHT_MCP_HARNESS, and install skipped whenever a block already existed — so
+  // carried no DUMEMORY_MCP_HARNESS, and install skipped whenever a block already existed — so
   // the stale, harness-less block survived every re-install and the shared mcp-server.js kept
   // falling back to claude-code for the bank AND the retain stamp.
   it("re-install REPLACES a harness-less mcp block instead of leaving it stale", () => {
@@ -297,22 +295,22 @@ describe("codex installer", () => {
     mkdirSync(join(ctx.home, ".codex"), { recursive: true });
     writeFileSync(
       tomlPath(ctx),
-      '[features]\nhooks = true\n\n[mcp_servers.hindsight]\ncommand = "node"\n' +
+      '[features]\nhooks = true\n\n[mcp_servers.dumemory]\ncommand = "node"\n' +
         `args = ["${join(ctx.dist, "mcp-server.js")}"]\n\n[ui]\ntheme = "dark"\n`
     );
     run(["install", "codex"], ctx);
     const toml = readFileSync(tomlPath(ctx), "utf8");
-    expect(toml.match(/^\[mcp_servers\.hindsight\]/gm)).toHaveLength(1);
-    expect(toml).toContain('env = { HINDSIGHT_MCP_HARNESS = "codex" }');
+    expect(toml.match(/^\[mcp_servers\.dumemory\]/gm)).toHaveLength(1);
+    expect(toml).toContain('env = { DUMEMORY_MCP_HARNESS = "codex" }');
     expect(toml).toContain('[ui]\ntheme = "dark"'); // foreign sections survive the rewrite
   });
 
-  it("uninstall removes the mcp_servers.hindsight block and leaves the rest of the toml", () => {
+  it("uninstall removes the mcp_servers.dumemory block and leaves the rest of the toml", () => {
     const ctx = makeCtx();
     run(["install", "codex"], ctx);
     run(["uninstall", "codex"], ctx);
     const toml = readFileSync(tomlPath(ctx), "utf8");
-    expect(toml).not.toContain("[mcp_servers.hindsight]");
+    expect(toml).not.toContain("[mcp_servers.dumemory]");
     expect(toml).toContain("hooks = true"); // flag deliberately left in place
     const hooks = readJson(hooksPath(ctx)).hooks;
     expect(Object.keys(hooks)).toHaveLength(0);
@@ -328,10 +326,10 @@ describe("cline-cli installer", () => {
     const ctx = makeCtx();
     expect(run(["install", "cline-cli"], ctx)).toBe(0);
     expect(ctx.clinePlugin).toHaveBeenCalledWith(["plugin", "install", "--force", ctx.pkgRoot]);
-    expect(readJson(mcpPath(ctx)).mcpServers.hindsight).toEqual({
+    expect(readJson(mcpPath(ctx)).mcpServers.dumemory).toEqual({
       command: "node",
       args: [join(ctx.dist, "mcp-server.js")],
-      env: { HINDSIGHT_MCP_HARNESS: "cline-cli" },
+      env: { DUMEMORY_MCP_HARNESS: "cline-cli" },
     });
   });
 
@@ -341,7 +339,7 @@ describe("cline-cli installer", () => {
     mkdirSync(dirname(foreign), { recursive: true });
     writeFileSync(foreign, "#!/usr/bin/env sh\necho foreign\n");
     const legacy = join(hooksDir(ctx), "UserPromptSubmit");
-    writeFileSync(legacy, "#!/usr/bin/env sh\n# HINDSIGHT_CODING_AGENTS_CLINE\n");
+    writeFileSync(legacy, "#!/usr/bin/env sh\n# DUMEMORY_CODING_AGENTS_CLINE\n");
     run(["install", "cline-cli"], ctx);
     expect(readFileSync(foreign, "utf8")).toContain("foreign");
     expect(existsSync(legacy)).toBe(false);
@@ -350,9 +348,9 @@ describe("cline-cli installer", () => {
     expect(ctx.clinePlugin).toHaveBeenLastCalledWith([
       "plugin",
       "uninstall",
-      "@vectorize-io/hindsight-coding-agents",
+      "@baiducloud/dumemory-coding-agents",
     ]);
-    expect(readJson(mcpPath(ctx)).mcpServers.hindsight).toBeUndefined();
+    expect(readJson(mcpPath(ctx)).mcpServers.dumemory).toBeUndefined();
   });
 });
 
@@ -371,7 +369,7 @@ describe("dsh installer", () => {
     // A bare absolute path is not a module specifier: Cordis would fail to resolve it and skip
     // the plugin silently, which is exactly the Kilo trap this asserts against.
     expect(patch).toContain(`name: "${pathToFileURL(join(ctx.dist, "dsh.js")).href}"`);
-    expect(patch).toContain("- id: hindsight");
+    expect(patch).toContain("- id: dumemory");
   });
 
   it("replaces its own block on re-install and preserves the user's other patches", () => {
@@ -382,7 +380,7 @@ describe("dsh installer", () => {
     run(["install", "dsh"], ctx);
     const patch = readFileSync(patchPath(ctx), "utf8");
     expect(patch).toContain("provider: deepseek");
-    expect(patch.match(/- id: hindsight/g)).toHaveLength(1);
+    expect(patch.match(/- id: dumemory/g)).toHaveLength(1);
   });
 
   it("uninstall leaves a valid empty patch list rather than an unparsable file", () => {
@@ -402,7 +400,7 @@ describe("dsh installer", () => {
     run(["uninstall", "dsh"], ctx);
     const patch = readFileSync(patchPath(ctx), "utf8");
     expect(patch).toContain("provider: deepseek");
-    expect(patch).not.toContain("hindsight");
+    expect(patch).not.toContain("dumemory");
   });
 });
 
@@ -412,7 +410,7 @@ describe("antigravity-cli installer", () => {
     const hooksPath = join(ctx.home, ".gemini", "config", "hooks.json");
     // Exactly what a marker rename produced: our old namespace, still pointing at a stale path.
     writeJsonAt(hooksPath, {
-      "hindsight-coding-agents": {
+      "dumemory-coding-agents": {
         PreInvocation: [{ command: 'node "/old/path/coding-agents/dist/antigravity-hook.js"' }],
       },
       "someone-elses-bundle": { PreInvocation: [{ command: "echo other" }] },
@@ -421,7 +419,7 @@ describe("antigravity-cli installer", () => {
 
     const hooks = readJson(hooksPath);
     // The stale namespace is gone — otherwise Antigravity fires every hook twice.
-    expect(hooks["hindsight-coding-agents"]).toBeUndefined();
+    expect(hooks["dumemory-coding-agents"]).toBeUndefined();
     expect(hooks[MARKER]).toBeDefined();
     expect(JSON.stringify(hooks)).not.toContain("/old/path/");
     // An unrelated bundle is untouched.
@@ -433,7 +431,7 @@ describe("antigravity-cli installer", () => {
   const settingsPath = (ctx: InstallCtx) =>
     join(ctx.home, ".gemini", "antigravity-cli", "settings.json");
 
-  it("installs PreInvocation and Stop hooks plus mcpServers.hindsight", () => {
+  it("installs PreInvocation and Stop hooks plus mcpServers.dumemory", () => {
     const ctx = makeCtx();
     expect(run(["install", "antigravity-cli"], ctx)).toBe(0);
     const hooks = readJson(hooksPath(ctx));
@@ -441,10 +439,10 @@ describe("antigravity-cli installer", () => {
     expect(hooks[MARKER].PreInvocation[0].timeout).toBe(30);
     expect(hooks[MARKER].Stop[0].command).toContain("antigravity-stop-hook.js");
     expect(hooks[MARKER].Stop[0].timeout).toBe(30);
-    expect(readJson(mcpPath(ctx)).mcpServers.hindsight).toEqual({
+    expect(readJson(mcpPath(ctx)).mcpServers.dumemory).toEqual({
       command: "node",
       args: [join(ctx.dist, "mcp-server.js")],
-      env: { HINDSIGHT_MCP_HARNESS: "antigravity-cli" },
+      env: { DUMEMORY_MCP_HARNESS: "antigravity-cli" },
     });
     expect(readJson(settingsPath(ctx)).statusLine).toEqual({
       type: "command",
@@ -455,7 +453,7 @@ describe("antigravity-cli installer", () => {
   it("accepts agy as the supported CLI name", () => {
     const ctx = makeCtx();
     expect(run(["install", "agy"], ctx)).toBe(0);
-    expect(readJson(mcpPath(ctx)).mcpServers.hindsight.env.HINDSIGHT_MCP_HARNESS).toBe(
+    expect(readJson(mcpPath(ctx)).mcpServers.dumemory.env.DUMEMORY_MCP_HARNESS).toBe(
       "antigravity-cli"
     );
   });
@@ -483,7 +481,7 @@ describe("antigravity-cli installer", () => {
     run(["uninstall", "antigravity-cli"], ctx);
     expect(readJson(hooksPath(ctx))).toEqual({});
     const mcp = readJson(mcpPath(ctx));
-    expect(mcp.mcpServers.hindsight).toBeUndefined();
+    expect(mcp.mcpServers.dumemory).toBeUndefined();
     expect(mcp.mcpServers.other).toEqual({ command: "other-tool" });
     expect(JSON.stringify(mcp)).not.toContain(MARKER);
     expect(readJson(settingsPath(ctx)).statusLine).toBeUndefined();
@@ -810,7 +808,7 @@ describe("pi-family companion skill", () => {
     mkdirSync(join(pkgRoot, "skill"), { recursive: true });
     writeFileSync(
       join(pkgRoot, "skill", "SKILL.md"),
-      "---\nname: hindsight-coding-agent\n---\nbody"
+      "---\nname: dumemory-coding-agent\n---\nbody"
     );
     return { home, pkgRoot, dist: join(pkgRoot, "dist"), claudeMcp: vi.fn(() => true) };
   }
@@ -821,9 +819,9 @@ describe("pi-family companion skill", () => {
       const ctx = ctxWithSkill();
       const base = join(ctx.home, ...dir);
       run(["install", harness], ctx);
-      expect(existsSync(join(base, "hindsight-coding-agent", "SKILL.md"))).toBe(true);
+      expect(existsSync(join(base, "dumemory-coding-agent", "SKILL.md"))).toBe(true);
       run(["uninstall", harness], ctx);
-      expect(existsSync(join(base, "hindsight-coding-agent"))).toBe(false);
+      expect(existsSync(join(base, "dumemory-coding-agent"))).toBe(false);
     }
   );
 
@@ -832,7 +830,7 @@ describe("pi-family companion skill", () => {
     (harness) => {
       const ctx = ctxWithSkill();
       run(["install", "codex"], ctx);
-      const shared = join(ctx.home, ".agents", "skills", "hindsight-coding-agent");
+      const shared = join(ctx.home, ".agents", "skills", "dumemory-coding-agent");
       expect(existsSync(shared)).toBe(true);
 
       run(["install", harness], ctx);
@@ -847,7 +845,7 @@ describe("pi-family companion skill", () => {
     const ctx = ctxWithSkill();
     run(["install", "pi"], ctx);
     run(["install", "prime-agent"], ctx);
-    const primeSkill = join(ctx.home, ".prime", "agent", "skills", "hindsight-coding-agent");
+    const primeSkill = join(ctx.home, ".prime", "agent", "skills", "dumemory-coding-agent");
     expect(existsSync(primeSkill)).toBe(true);
 
     run(["uninstall", "pi"], ctx);
@@ -861,7 +859,7 @@ describe("pi-family companion skill", () => {
  * other's, reports the wrong harness, and stamps it on every document it retains. It named Prime
  * Agent's until pi got an entry of its own, which is exactly how pi mis-attributed.
  *
- * `hindsight-coding-agents install pi|prime-agent` is the supported route for both, so the key is
+ * `dumemory-coding-agents install pi|prime-agent` is the supported route for both, so the key is
  * gone. Re-adding it would be silent: nothing in this package reads it, the wrong attribution only
  * shows up later on retained documents, and it looks like the obvious way to support `pi install`.
  */
@@ -919,10 +917,10 @@ describe("cursor-cli installer", () => {
     expect(hooks.stop[0].command).toContain(join(ctx.dist, "cursor-stop-hook.js"));
     expect(hooks.stop[0].timeout).toBe(30);
     const mcp = readJson(mcpPath(ctx));
-    expect(mcp.mcpServers.hindsight).toEqual({
+    expect(mcp.mcpServers.dumemory).toEqual({
       command: "node",
       args: [join(ctx.dist, "mcp-server.js")],
-      env: { HINDSIGHT_MCP_HARNESS: "cursor-cli" },
+      env: { DUMEMORY_MCP_HARNESS: "cursor-cli" },
     });
   });
 
@@ -931,7 +929,7 @@ describe("cursor-cli installer", () => {
     run(["install", "cursor-cli"], ctx);
     run(["uninstall", "cursor-cli"], ctx);
     expect(readJson(hooksPath(ctx)).hooks).toBeUndefined();
-    expect(readJson(mcpPath(ctx)).mcpServers.hindsight).toBeUndefined();
+    expect(readJson(mcpPath(ctx)).mcpServers.dumemory).toBeUndefined();
   });
 });
 
@@ -950,7 +948,7 @@ describe("grok-build installer", () => {
     expect(toml).toContain(join("/opt", MARKER, "moved-dist"));
     expect(toml).not.toContain(ctx.dist); // the old path is gone, not merely appended past
     // Exactly one block — a replace, not an accumulation.
-    expect(toml.match(/HINDSIGHT_CODING_AGENTS_GROK_START/g)).toHaveLength(1);
+    expect(toml.match(/DUMEMORY_CODING_AGENTS_GROK_START/g)).toHaveLength(1);
   });
 
   it("installs native Grok lifecycle hooks and MCP without Claude configuration", () => {
@@ -963,9 +961,9 @@ describe("grok-build installer", () => {
     expect(config).toContain(join(ctx.dist, "grok-sessionstart-hook.js"));
     expect(config).toContain(join(ctx.dist, "grok-hook.js"));
     expect(config).toContain(join(ctx.dist, "grok-stop-hook.js"));
-    expect(config).toContain("[mcp_servers.hindsight]");
+    expect(config).toContain("[mcp_servers.dumemory]");
     expect(config).toContain(join(ctx.dist, "mcp-server.js"));
-    expect(config).toContain('env = { HINDSIGHT_MCP_HARNESS = "grok-build" }');
+    expect(config).toContain('env = { DUMEMORY_MCP_HARNESS = "grok-build" }');
     expect(existsSync(join(ctx.home, ".claude"))).toBe(false);
   });
 
@@ -977,8 +975,8 @@ describe("grok-build installer", () => {
     run(["uninstall", "grok-build"], ctx);
     const config = readFileSync(configPath(ctx), "utf8");
     expect(config).toContain('[ui]\ntheme = "dark"');
-    expect(config).not.toContain("HINDSIGHT_CODING_AGENTS_GROK");
-    expect(config).not.toContain("[mcp_servers.hindsight]");
+    expect(config).not.toContain("DUMEMORY_CODING_AGENTS_GROK");
+    expect(config).not.toContain("[mcp_servers.dumemory]");
   });
 });
 
@@ -986,19 +984,19 @@ describe("dcode installer", () => {
   it("uses Dcode's native marketplace and plugin commands", () => {
     const ctx = makeCtx();
     expect(run(["install", "dcode"], ctx)).toBe(0);
-    const marketplacePath = join(ctx.home, ".hindsight", ".agents", "plugins", "marketplace.json");
+    const marketplacePath = join(ctx.home, ".dumemory", ".agents", "plugins", "marketplace.json");
     expect(readJson(marketplacePath)).toMatchObject({
-      name: "hindsight-coding-agents",
+      name: "dumemory-coding-agents",
       plugins: [
         {
-          name: "hindsight-coding-agents",
+          name: "dumemory-coding-agents",
           source: { source: "local", path: "./coding-agents" },
         },
       ],
     });
     expect(ctx.dcodePlugin.mock.calls.map(([args]) => args)).toEqual([
-      ["plugin", "marketplace", "add", join(ctx.home, ".hindsight")],
-      ["plugin", "install", "hindsight-coding-agents@hindsight-coding-agents"],
+      ["plugin", "marketplace", "add", join(ctx.home, ".dumemory")],
+      ["plugin", "install", "dumemory-coding-agents@dumemory-coding-agents"],
     ]);
     expect(ctx.claudeMcp).not.toHaveBeenCalled();
     expect(existsSync(join(ctx.home, ".deepagents"))).toBe(false);
@@ -1006,19 +1004,19 @@ describe("dcode installer", () => {
 
   it("merges the marketplace without dropping foreign entries", () => {
     const ctx = makeCtx();
-    const path = join(ctx.home, ".hindsight", ".agents", "plugins", "marketplace.json");
+    const path = join(ctx.home, ".dumemory", ".agents", "plugins", "marketplace.json");
     const foreign = { name: "other-plugin", source: { source: "github", repo: "acme/other" } };
-    writeJsonAt(path, { name: "hindsight-coding-agents", plugins: [foreign] });
+    writeJsonAt(path, { name: "dumemory-coding-agents", plugins: [foreign] });
     expect(run(["install", "dcode"], ctx)).toBe(0);
     expect(readJson(path).plugins).toEqual([
       foreign,
-      { name: "hindsight-coding-agents", source: { source: "local", path: "./coding-agents" } },
+      { name: "dumemory-coding-agents", source: { source: "local", path: "./coding-agents" } },
     ]);
   });
 
   it("isolates from a foreign marketplace name instead of rewriting it", () => {
     const ctx = makeCtx();
-    const conventionalPath = join(ctx.home, ".hindsight", ".agents", "plugins", "marketplace.json");
+    const conventionalPath = join(ctx.home, ".dumemory", ".agents", "plugins", "marketplace.json");
     const foreignMarketplace = {
       name: "team-marketplace",
       plugins: [{ name: "other-plugin", source: { source: "github", repo: "acme/other" } }],
@@ -1027,12 +1025,12 @@ describe("dcode installer", () => {
 
     expect(run(["install", "dcode"], ctx)).toBe(0);
     expect(readJson(conventionalPath)).toEqual(foreignMarketplace);
-    const fallbackPath = join(ctx.home, ".hindsight", "hindsight-coding-agents-marketplace.json");
+    const fallbackPath = join(ctx.home, ".dumemory", "dumemory-coding-agents-marketplace.json");
     expect(readJson(fallbackPath)).toMatchObject({
-      name: "hindsight-coding-agents",
+      name: "dumemory-coding-agents",
       plugins: [
         {
-          name: "hindsight-coding-agents",
+          name: "dumemory-coding-agents",
           source: { source: "local", path: "./coding-agents" },
         },
       ],
@@ -1060,7 +1058,7 @@ describe("dcode installer", () => {
 
   it("continues a literal install all when Dcode fails", () => {
     const ctx = makeCtx();
-    const binDir = mkdtempSync(join(tmpdir(), "hindsight-installer-bin-"));
+    const binDir = mkdtempSync(join(tmpdir(), "dumemory-installer-bin-"));
     homes.push(binDir);
     writeFileSync(join(binDir, "dcode"), "", { mode: 0o755 });
     writeFileSync(join(binDir, "claude"), "", { mode: 0o755 });
@@ -1078,8 +1076,8 @@ describe("dcode installer", () => {
     // registered — our own leftovers in Dcode's state. Only the marketplace WE named is removed,
     // so a foreign one at the conventional path is untouched.
     expect(ctx.dcodePlugin.mock.calls.map(([args]) => args)).toEqual([
-      ["plugin", "uninstall", "hindsight-coding-agents@hindsight-coding-agents"],
-      ["plugin", "marketplace", "remove", "hindsight-coding-agents"],
+      ["plugin", "uninstall", "dumemory-coding-agents@dumemory-coding-agents"],
+      ["plugin", "marketplace", "remove", "dumemory-coding-agents"],
     ]);
   });
 
@@ -1091,7 +1089,7 @@ describe("dcode installer", () => {
     // The plugin is gone, which is what "uninstalled" means; the stale marketplace is reported
     // with the command to clear it rather than failing the whole run.
     expect(run(["uninstall", "dcode"], ctx)).toBe(0);
-    expect(logs.join("\n")).toContain("dcode plugin marketplace remove hindsight-coding-agents");
+    expect(logs.join("\n")).toContain("dcode plugin marketplace remove dumemory-coding-agents");
   });
 });
 
@@ -1127,29 +1125,29 @@ describe("run() CLI behavior", () => {
     expect(existsSync(join(ctx.home, ".config", "opencode", "opencode.json"))).toBe(true);
   });
 
-  it("first write to a pre-existing json creates <file>.hindsight-backup with the original content", () => {
+  it("first write to a pre-existing json creates <file>.dumemory-backup with the original content", () => {
     const ctx = makeCtx();
     const path = join(ctx.home, ".gemini", "config", "hooks.json");
     writeJsonAt(path, { auth: { selectedType: "oauth" } });
     const original = readFileSync(path, "utf8");
     run(["install", "antigravity-cli"], ctx);
     run(["install", "antigravity-cli"], ctx); // second write must NOT overwrite the backup
-    expect(readFileSync(`${path}.hindsight-backup`, "utf8")).toBe(original);
+    expect(readFileSync(`${path}.dumemory-backup`, "utf8")).toBe(original);
   });
 
   it("MARKER identifies our entries under BOTH the npm and repo-checkout layouts", () => {
     // Dedupe-on-reinstall and uninstall both key off this substring appearing in the package path.
-    // It silently stopped matching a checkout when the directory dropped its `hindsight-` prefix.
-    expect("/usr/lib/node_modules/@vectorize-io/hindsight-coding-agents/dist").toContain(MARKER);
-    expect("/repo/hindsight-integrations/coding-agents/dist").toContain(MARKER);
+    // It silently stopped matching a checkout when the directory dropped its `dumemory-` prefix.
+    expect("/usr/lib/node_modules/@baiducloud/dumemory-coding-agents/dist").toContain(MARKER);
+    expect("/repo/hindsight-integrations/coding-agents-dumemory/dist").toContain(MARKER);
   });
 
   it("re-install from a repo-checkout path leaves exactly one hook entry per event", () => {
     const ctx = makeCtx();
     const repoStyle = {
       ...ctx,
-      pkgRoot: "/repo/hindsight-integrations/coding-agents",
-      dist: "/repo/hindsight-integrations/coding-agents/dist",
+      pkgRoot: "/repo/hindsight-integrations/coding-agents-dumemory",
+      dist: "/repo/hindsight-integrations/coding-agents-dumemory/dist",
     };
     run(["install", "claude-code"], repoStyle);
     run(["install", "claude-code"], repoStyle);
@@ -1183,8 +1181,8 @@ describe("run() CLI behavior", () => {
 
 /**
  * Every host launches the SAME `dist/mcp-server.js`, so the command line cannot say who is calling
- * — only `HINDSIGHT_MCP_HARNESS` can. A registration that omits it silently inherits the server's
- * claude-code fallback, which is how a Codex `hindsight_ingest_document` was stored tagged
+ * — only `DUMEMORY_MCP_HARNESS` can. A registration that omits it silently inherits the server's
+ * claude-code fallback, which is how a Codex `dumemory_ingest_document` was stored tagged
  * `harness:claude-code` on a machine running both (#3603).
  *
  * Swept over INSTALLERS rather than a hand-written list of config paths: the harness that gets this
@@ -1227,7 +1225,7 @@ describe("MCP registrations name the calling harness", () => {
         .filter((text) => text.includes("mcp-server.js")),
     ];
     expect(registrations.length).toBeGreaterThan(0);
-    for (const text of registrations) expect(text).toContain(`HINDSIGHT_MCP_HARNESS`);
+    for (const text of registrations) expect(text).toContain(`DUMEMORY_MCP_HARNESS`);
     for (const text of registrations) expect(text).toContain(harness);
   });
 });
@@ -1335,7 +1333,7 @@ describe("runtime staging", () => {
     Object.assign(ctx, fakePackage(join(cache, "_npx", "abc123", "node_modules", "coding-agents")));
 
     expect(run(["install", "claude-code"], ctx)).toBe(0);
-    const staged = join(ctx.home, ".hindsight", "coding-agents");
+    const staged = join(ctx.home, ".dumemory", "coding-agents");
     const command = readJson(join(ctx.home, ".claude", "settings.json")).hooks.SessionStart[0]
       .hooks[0].command as string;
     expect(command).toContain(join(staged, "dist"));
@@ -1353,7 +1351,7 @@ describe("runtime staging", () => {
     Object.assign(ctx, fakePackage(src));
 
     run(["install", "claude-code"], ctx);
-    expect(join(ctx.home, ".hindsight", "coding-agents")).toContain(MARKER);
+    expect(join(ctx.home, ".dumemory", "coding-agents")).toContain(MARKER);
     run(["uninstall", "claude-code"], ctx);
     expect(readJson(join(ctx.home, ".claude", "settings.json")).hooks).toBeUndefined();
   });
@@ -1365,7 +1363,7 @@ describe("runtime staging", () => {
     Object.assign(ctx, fakePackage(src));
 
     run(["install", "opencode"], ctx);
-    const staged = join(ctx.home, ".hindsight", "coding-agents");
+    const staged = join(ctx.home, ".dumemory", "coding-agents");
     expect(existsSync(join(staged, "package.json"))).toBe(true);
     expect(existsSync(join(staged, "skill", "SKILL.md"))).toBe(true);
     const cfg = readJson(join(ctx.home, ".config", "opencode", "opencode.json"));
@@ -1387,7 +1385,7 @@ describe("runtime staging", () => {
     Object.assign(ctx, { pkgRoot: v2, dist: join(v2, "dist") });
     run(["install", "claude-code"], ctx);
 
-    const staged = join(ctx.home, ".hindsight", "coding-agents", "dist");
+    const staged = join(ctx.home, ".dumemory", "coding-agents", "dist");
     expect(existsSync(join(staged, "new-only.js"))).toBe(true);
     // Merging instead of replacing would leave an entry point a host config could still name.
     expect(existsSync(join(staged, "old-only.js"))).toBe(false);
@@ -1404,7 +1402,7 @@ describe("runtime staging", () => {
     Object.assign(ctx, { pkgRoot: src, dist: join(src, "dist") });
     run(["install", "claude-code"], ctx);
 
-    const staged = join(ctx.home, ".hindsight", "coding-agents");
+    const staged = join(ctx.home, ".dumemory", "coding-agents");
     Object.assign(ctx, { pkgRoot: staged, dist: join(staged, "dist") });
     expect(run(["install", "claude-code"], ctx)).toBe(0);
     expect(existsSync(join(staged, "dist", "installer.js"))).toBe(true);
@@ -1429,7 +1427,7 @@ describe("runtime staging", () => {
     Object.assign(ctx, { pkgRoot: v2, dist: join(v2, "dist") });
     expect(run(["update"], ctx)).toBe(0);
 
-    const staged = join(ctx.home, ".hindsight", "coding-agents", "dist");
+    const staged = join(ctx.home, ".dumemory", "coding-agents", "dist");
     expect(existsSync(join(staged, "new-only.js"))).toBe(true);
     // Byte-identical: the hooks already point at the staged path, so an update has no reason to
     // rewrite them — and rewriting is exactly what would let an unattended run wire agents the
@@ -1445,7 +1443,7 @@ describe("runtime staging", () => {
     Object.assign(ctx, { pkgRoot: src, dist: join(src, "dist") });
 
     expect(run(["update"], ctx)).toBe(0);
-    expect(existsSync(join(ctx.home, ".hindsight", "coding-agents", "dist"))).toBe(true);
+    expect(existsSync(join(ctx.home, ".dumemory", "coding-agents", "dist"))).toBe(true);
     expect(existsSync(join(ctx.home, ".claude", "settings.json"))).toBe(false);
   });
 
@@ -1460,7 +1458,7 @@ describe("runtime staging", () => {
 
     run(["install", "claude-code"], ctx);
     const origin = readJson(
-      join(ctx.home, ".hindsight", "coding-agents", ".install-origin.json")
+      join(ctx.home, ".dumemory", "coding-agents", ".install-origin.json")
     ) as { source: string };
     expect(origin.source).toBe(src);
   });
@@ -1473,7 +1471,7 @@ describe("runtime staging", () => {
     const command = readJson(join(ctx.home, ".claude", "settings.json")).hooks.SessionStart[0]
       .hooks[0].command as string;
     expect(command).toContain(ctx.dist);
-    expect(existsSync(join(ctx.home, ".hindsight", "coding-agents", "dist"))).toBe(false);
+    expect(existsSync(join(ctx.home, ".dumemory", "coding-agents", "dist"))).toBe(false);
   });
 });
 
@@ -1484,7 +1482,7 @@ describe("skill install across skills-capable hosts", () => {
     mkdirSync(join(pkgRoot, "skill"), { recursive: true });
     writeFileSync(
       join(pkgRoot, "skill", "SKILL.md"),
-      "---\nname: hindsight-coding-agent\n---\nbody"
+      "---\nname: dumemory-coding-agent\n---\nbody"
     );
     const ctx = {
       home,
@@ -1505,11 +1503,11 @@ describe("skill install across skills-capable hosts", () => {
     ];
     run(["install", ...targets.map(([h]) => h)], ctx);
     for (const [, base] of targets) {
-      expect(existsSync(join(base, "hindsight-coding-agent", "SKILL.md"))).toBe(true);
+      expect(existsSync(join(base, "dumemory-coding-agent", "SKILL.md"))).toBe(true);
     }
     run(["uninstall", ...targets.map(([h]) => h)], ctx);
     for (const [, base] of targets) {
-      expect(existsSync(join(base, "hindsight-coding-agent"))).toBe(false);
+      expect(existsSync(join(base, "dumemory-coding-agent"))).toBe(false);
     }
     rmSync(home, { recursive: true, force: true });
     rmSync(pkgRoot, { recursive: true, force: true });
@@ -1523,7 +1521,7 @@ describe("skill install across skills-capable hosts", () => {
     mkdirSync(join(pkgRoot, "skill"), { recursive: true });
     writeFileSync(
       join(pkgRoot, "skill", "SKILL.md"),
-      "---\nname: hindsight-coding-agent\n---\nbody"
+      "---\nname: dumemory-coding-agent\n---\nbody"
     );
     const ctx = {
       home,
@@ -1536,10 +1534,10 @@ describe("skill install across skills-capable hosts", () => {
     run(["install", "codex", "prime-agent"], ctx);
     run(["uninstall", "prime-agent"], ctx);
 
-    expect(existsSync(join(home, ".agents", "skills", "hindsight-coding-agent", "SKILL.md"))).toBe(
+    expect(existsSync(join(home, ".agents", "skills", "dumemory-coding-agent", "SKILL.md"))).toBe(
       true
     );
-    expect(existsSync(join(home, ".prime", "agent", "skills", "hindsight-coding-agent"))).toBe(
+    expect(existsSync(join(home, ".prime", "agent", "skills", "dumemory-coding-agent"))).toBe(
       false
     );
     rmSync(home, { recursive: true, force: true });
@@ -1598,7 +1596,7 @@ describe("devin-cli preflight", () => {
 
 /** Cloud is the only server mode; its token may come from argv or an interactive prompt. */
 describe("Cloud-only server setup", () => {
-  const configPath = (ctx: InstallCtx) => join(ctx.home, ".hindsight", "coding-agent.json");
+  const configPath = (ctx: InstallCtx) => join(ctx.home, ".dumemory", "coding-agent.json");
 
   it("installs Cloud with an API token", () => {
     const ctx = makeCtx();
@@ -1646,7 +1644,7 @@ describe("Cloud-only server setup", () => {
  * the skill actually landed, and require that the self-update refreshes that same copy.
  */
 describe("every installed companion skill is kept current by the session-start self-update", () => {
-  const SKILL_NAME = "hindsight-coding-agent";
+  const SKILL_NAME = "dumemory-coding-agent";
 
   /** makeCtx's pkgRoot is a synthetic /opt path, so the packaged skill can't be staged in it.
    *  Build a real temp package root holding a SKILL.md the installer can copy. */
@@ -1659,7 +1657,7 @@ describe("every installed companion skill is kept current by the session-start s
     return { ...ctx, pkgRoot, dist: join(pkgRoot, "dist") };
   }
 
-  /** Every directory named `hindsight-coding-agent` under `root`, home-relative. */
+  /** Every directory named `dumemory-coding-agent` under `root`, home-relative. */
   function findSkillCopies(root: string, prefix: string[] = []): string[][] {
     return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
       if (!entry.isDirectory()) return [];

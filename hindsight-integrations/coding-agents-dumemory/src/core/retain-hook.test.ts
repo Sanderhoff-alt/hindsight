@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deriveBankId } from "./bank";
 import { type RawConfig, resolveConfig } from "./config";
-import type { HindsightClient } from "./hindsight";
+import type { DuMemoryClient } from "./dumemory";
 import { buildRetain, runRetainHook } from "./retain-hook";
 import { memoryCursorStore, type RetainCursorStore } from "./retain-cursor";
 import { dcodeAssistantText } from "./transcript-dcode";
@@ -47,7 +47,7 @@ describe("buildRetain", () => {
     args: Parameters<typeof buildRetain>[0] & { retainSpy: ReturnType<typeof vi.fn> }
   ): Promise<Array<{ role: string; content: string }>> {
     const { retainSpy, ...rest } = args;
-    await buildRetain({ ...rest, client: { retain: retainSpy } as unknown as HindsightClient });
+    await buildRetain({ ...rest, client: { retain: retainSpy } as unknown as DuMemoryClient });
     const [content] = retainSpy.mock.calls[0];
     return (content as string).split("\n").map((line) => JSON.parse(line));
   }
@@ -61,7 +61,7 @@ describe("buildRetain", () => {
       client: undefined as never,
       retainSpy: vi.fn().mockResolvedValue(undefined),
       readTranscript: () => [{ role: "user", content: "make the change" }],
-      lastAssistantMessage: "done <hindsight_memories>injected</hindsight_memories>",
+      lastAssistantMessage: "done <dumemory_memory>injected</dumemory_memory>",
     });
     expect(parsed.at(-1)).toMatchObject({ role: "assistant", content: "done" });
   });
@@ -141,7 +141,7 @@ describe("buildRetain", () => {
     writeFileSync(file, lines.join("\n"));
 
     const retainSpy = vi.fn().mockResolvedValue(undefined);
-    const client = { retain: retainSpy } as unknown as HindsightClient;
+    const client = { retain: retainSpy } as unknown as DuMemoryClient;
 
     await buildRetain({
       harness: "claude-code",
@@ -180,7 +180,7 @@ describe("buildRetain", () => {
     writeFileSync(file, lines.join("\n"));
 
     const retainSpy = vi.fn().mockResolvedValue(undefined);
-    const client = { retain: retainSpy } as unknown as HindsightClient;
+    const client = { retain: retainSpy } as unknown as DuMemoryClient;
 
     await buildRetain({
       harness: "claude-code",
@@ -203,7 +203,7 @@ describe("buildRetain", () => {
     );
 
     const retainSpy = vi.fn().mockRejectedValue(new Error("boom"));
-    const client = { retain: retainSpy } as unknown as HindsightClient;
+    const client = { retain: retainSpy } as unknown as DuMemoryClient;
 
     await expect(
       buildRetain({
@@ -217,15 +217,15 @@ describe("buildRetain", () => {
 });
 
 describe("runRetainHook anti-recursion guard", () => {
-  const ORIGINAL = process.env.HINDSIGHT_DISABLE_HOOKS;
+  const ORIGINAL = process.env.DUMEMORY_DISABLE_HOOKS;
 
   afterEach(() => {
-    if (ORIGINAL === undefined) delete process.env.HINDSIGHT_DISABLE_HOOKS;
-    else process.env.HINDSIGHT_DISABLE_HOOKS = ORIGINAL;
+    if (ORIGINAL === undefined) delete process.env.DUMEMORY_DISABLE_HOOKS;
+    else process.env.DUMEMORY_DISABLE_HOOKS = ORIGINAL;
   });
 
-  it("HINDSIGHT_DISABLE_HOOKS set -> returns immediately, never reads stdin or builds a client", async () => {
-    process.env.HINDSIGHT_DISABLE_HOOKS = "1";
+  it("DUMEMORY_DISABLE_HOOKS set -> returns immediately, never reads stdin or builds a client", async () => {
+    process.env.DUMEMORY_DISABLE_HOOKS = "1";
     const makeClient = vi.fn();
     // No stdin is provided/mocked here — if the guard didn't return before `readFileSync(0, ...)`,
     // this call would attempt to read the real process stdin. Resolving without calling makeClient
@@ -248,7 +248,7 @@ describe("buildRetain — incremental write-back across Stop hooks", () => {
 
   /** One Stop-hook invocation over the transcript as it stands. Each hook run is a fresh process in
    *  production, so only the cursor store carries state between these calls. */
-  const stop = async (client: HindsightClient, cursors: RetainCursorStore) =>
+  const stop = async (client: DuMemoryClient, cursors: RetainCursorStore) =>
     buildRetain({
       harness: "codex",
       sessionId: "sess-append",
@@ -265,7 +265,7 @@ describe("buildRetain — incremental write-back across Stop hooks", () => {
         retain,
         bank: "coding-agent::repo",
         supportsIdempotentRetain: async () => true,
-      } as unknown as HindsightClient,
+      } as unknown as DuMemoryClient,
     };
   };
 
@@ -371,7 +371,7 @@ describe("runRetainHook honors retainSessions", () => {
   };
 
   beforeEach(() => {
-    vi.stubEnv("HINDSIGHT_DIAG_FILE", join(root, "diag.log"));
+    vi.stubEnv("DUMEMORY_DIAG_FILE", join(root, "diag.log"));
     rawConfig = {};
     writeFileSync(
       file,
@@ -434,8 +434,8 @@ describe("runRetainHook honors retainSessions", () => {
 });
 
 /**
- * Family-wide guard, in the shape of `daemon.test.ts`'s "every harness entrypoint reaches a
- * daemon". #3596 was not a broken line of code but a MISSING one: the persistent-plugin path
+ * Family-wide guard: enumerate the siblings and assert each satisfies the contract, because
+ * #3596 was not a broken line of code but a MISSING one — the persistent-plugin path
  * honored `retainSessions` and the hook path silently didn't, and no test failed because the path
  * that forgot is by definition the one nobody wrote a test for. So assert over the whole family:
  * every module that puts a conversation in the bank must consult the flag — the live write-back

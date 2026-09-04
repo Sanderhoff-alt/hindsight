@@ -7,7 +7,7 @@
  *   - seedIfCold(repoPath)          : plugin load -> cold-check auto-seed + compute the page preamble
  *   - onPrompt(sessionId, prompt)   : each user turn -> recall + build this turn's injection
  *   - getInjection(sessionId)       : the system-prompt text to inject this turn (or undefined)
- *   - toolSpecs()                   : the hindsight_* knowledge/recall tools to register natively
+ *   - toolSpecs()                   : the dumemory_* knowledge/recall tools to register natively
  *   - onTranscript(sessionId, turns): full transcript -> write back every N turns (on by default)
  *   - onSessionIdle(sessionId)      : assistant finished -> refetch + write back the completed
  *                                     exchange (the Stop-equivalent these hosts lack)
@@ -15,10 +15,9 @@
  */
 import type { Config } from "./config";
 import { maybeAutoUpdate } from "./auto-update";
-import { DAEMON_WAIT_RETAIN_MS, DAEMON_WAIT_SESSION_START_MS, ensureDaemon } from "./daemon";
 import { diag } from "./diag";
 import { describeError, log, setLogLevel } from "./log";
-import type { HindsightClient } from "./hindsight";
+import type { DuMemoryClient } from "./dumemory";
 import { buildKnowledgeTools, type ToolSpec } from "./knowledge-tools";
 import { buildPageTrigger } from "./missions";
 import { retainLiveSession, type TransportTurn } from "./chat";
@@ -45,7 +44,7 @@ export class RuntimeCore {
   private preamble = ""; // SessionStart-equivalent knowledge preamble, computed once at seedIfCold
 
   constructor(
-    private readonly client: HindsightClient,
+    private readonly client: DuMemoryClient,
     private readonly bankId: string,
     private readonly cfg: Config,
     /**
@@ -74,7 +73,7 @@ export class RuntimeCore {
     this.fetchTranscript = fetch;
   }
 
-  /** The hindsight_* knowledge + recall tools, bound to this bank, for the harness to register natively. */
+  /** The dumemory_* knowledge + recall tools, bound to this bank, for the harness to register natively. */
   toolSpecs(): ToolSpec[] {
     return buildKnowledgeTools(this.client, this.bankId, {
       repoDir: this.projectDir,
@@ -103,19 +102,13 @@ export class RuntimeCore {
    */
   async seedIfCold(repoPath: string | undefined): Promise<void> {
     // Anti-recursion: a headless survey session runs the agent (which loads this plugin) with
-    // HINDSIGHT_DISABLE_HOOKS=1 — the tools stay registered (toolSpecs, so the survey can ingest),
+    // DUMEMORY_DISABLE_HOOKS=1 — the tools stay registered (toolSpecs, so the survey can ingest),
     // but seeding/recall/write-back must no-op or the survey would re-seed itself (see core/survey.ts).
-    if (process.env.HINDSIGHT_DISABLE_HOOKS) return;
-    // Daemon mode: this is the SessionStart of a persistent-plugin host, so it owns the same
-    // warm-up the hook harnesses do in `runSessionStartHook` — start it before the user has typed
-    // anything, wait only briefly, and let a cold one keep coming up in the background. Without it
-    // these hosts never started a daemon at all and every request failed with ECONNREFUSED (#3524);
-    // `runSessionStartHook` is a hook-only wrapper, so calling `buildSessionStartContext` directly
-    // (as every plugin harness does) skipped the ensure entirely.
-    await ensureDaemon(this.cfg, this.harness, { waitMs: DAEMON_WAIT_SESSION_START_MS });
+    if (process.env.DUMEMORY_DISABLE_HOOKS) return;
     // Same session-start housekeeping the hook harnesses do in `runSessionStartHook`: a persistent
     // plugin host is a session start too, and leaving it out would mean opencode/Kilo/Cline users
-    // never got an update — the parity gap `ensureDaemon` above already had to be fixed for.
+    // never got an update (the #3524 parity shape — a step that lived only in the hook-only
+    // wrapper, so every plugin harness silently skipped it).
     void maybeAutoUpdate(this.cfg);
     try {
       const out = await buildSessionStartContext({
@@ -131,7 +124,7 @@ export class RuntimeCore {
       if (out.systemMessage) {
         const plain = out.systemMessage.replace(/\x1b\[[0-9;]*m/g, "");
         log.info(this.harness, plain);
-        this.notify?.("Hindsight", plain.replace(/^Hindsight is /, "Is "));
+        this.notify?.("DuMemory", plain.replace(/^DuMemory is /, "Is "));
       }
       this.preamble = out.additionalContext ?? "";
       this.deferInitialReflect = out.deferInitialReflect === true;
@@ -146,7 +139,7 @@ export class RuntimeCore {
    * identical across hosts while this adapter retains only delivery-specific state.
    */
   async onPrompt(sessionId: string | undefined, prompt: string): Promise<void> {
-    if (process.env.HINDSIGHT_DISABLE_HOOKS) return; // anti-recursion (see seedIfCold)
+    if (process.env.DUMEMORY_DISABLE_HOOKS) return; // anti-recursion (see seedIfCold)
     if (!sessionId || !prompt.trim()) return;
     const turns = (this.turnCount.get(sessionId) ?? 0) + 1;
     this.turnCount.set(sessionId, turns);
@@ -177,7 +170,7 @@ export class RuntimeCore {
     if (output.notice) {
       const preview = output.notice.replace(/\s+/g, " ").trim().slice(0, 140);
       log.info(this.harness, "reflect goal", { preview });
-      this.notify?.("Hindsight · recalled past decisions", preview);
+      this.notify?.("DuMemory · recalled past decisions", preview);
     }
     const block = blocks.filter(Boolean).join("\n\n");
     this.injection.set(sessionId, block);
@@ -209,7 +202,7 @@ export class RuntimeCore {
    * nothing is ever held somewhere it can be lost.
    */
   async onTranscript(sessionId: string, turns: TransportTurn[]): Promise<void> {
-    if (process.env.HINDSIGHT_DISABLE_HOOKS) return; // anti-recursion (see seedIfCold)
+    if (process.env.DUMEMORY_DISABLE_HOOKS) return; // anti-recursion (see seedIfCold)
     if (!this.writeBackEnabled || !sessionId || !turns.length) return;
     const st = this.stateFor(sessionId);
     this.retain(sessionId, turns, st.startTs);
@@ -228,7 +221,7 @@ export class RuntimeCore {
    * turn must not wait for a threshold it will never reach.
    */
   async onSessionIdle(sessionId: string): Promise<void> {
-    if (process.env.HINDSIGHT_DISABLE_HOOKS) return; // anti-recursion (see seedIfCold)
+    if (process.env.DUMEMORY_DISABLE_HOOKS) return; // anti-recursion (see seedIfCold)
     if (!this.writeBackEnabled || !sessionId || !this.fetchTranscript) return;
     let turns: TransportTurn[];
     try {
@@ -269,24 +262,17 @@ export class RuntimeCore {
     trigger = "turn"
   ): void {
     const t0 = Date.now();
-    // Daemon mode: the write path is the last chance to get a daemon up — the Stop-hook role, for
-    // hosts that have no Stop hook. A daemon that died mid-session would otherwise take the whole
-    // exchange with it. The wait sits INSIDE the fire-and-forget chain, so
-    // unlike the Stop hook it costs the host nothing: this call already returns before the retain
-    // does. Deliberately not gated on the result — retain proceeds either way, so an unreachable
-    // daemon produces the same `retain_failed` diagnostic as an unreachable Cloud server.
-    void ensureDaemon(this.cfg, this.harness, { waitMs: DAEMON_WAIT_RETAIN_MS })
-      .then(() =>
-        retainLiveSession(this.client, sessionId, turns, startTs, this.harness, {
-          cursors: this.cursors,
-          stamp: buildRetainStamp(this.cfg, {
-            directory: this.projectDir,
-            harness: this.harness,
-            bankId: this.bankId,
-            sessionId,
-          }),
-        })
-      )
+    // Fire-and-forget: the host's stop handler awaits onSessionIdle, so blocking here would freeze
+    // its UI for the length of a retain.
+    void retainLiveSession(this.client, sessionId, turns, startTs, this.harness, {
+      cursors: this.cursors,
+      stamp: buildRetainStamp(this.cfg, {
+        directory: this.projectDir,
+        harness: this.harness,
+        bankId: this.bankId,
+        sessionId,
+      }),
+    })
       .then(() =>
         diag(this.harness, "retain_ok", {
           ms: Date.now() - t0,

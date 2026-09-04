@@ -4,14 +4,14 @@
  *
  * `src/mcp-server.ts` is the only file with a runtime MCP SDK import; this module uses only its
  * `ToolAnnotations` type. The server wires the specs returned here into an `McpServer`. Each tool
- * wraps one `HindsightClient` knowledge-page/recall method: it never throws — a thrown client error
+ * wraps one `DuMemoryClient` knowledge-page/recall method: it never throws — a thrown client error
  * is caught and turned into an `isError:true` text result so the calling LLM sees the failure
  * instead of the process crashing.
  *
  * The agent-facing surface is intentionally curated: grounding + capture only. Raw page CRUD
  * (create/update/delete) is deliberately NOT exposed — agents never author page structure; they
- * capture initiatives (`hindsight_capture_initiative`) and pages are synthesized/maintained by the
- * server. `hindsight_ingest_document` (raw-content retain) also backs the codebase survey
+ * capture initiatives (`dumemory_capture_initiative`) and pages are synthesized/maintained by the
+ * server. `dumemory_ingest_document` (raw-content retain) also backs the codebase survey
  * (core/survey.ts).
  */
 import { z } from "zod";
@@ -20,7 +20,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import type { ZodRawShape } from "zod";
-import type { HindsightClient } from "./hindsight";
+import type { DuMemoryClient } from "./dumemory";
 import { syncStatus } from "./status";
 import { applyBankConfig, DEFAULT_REFLECT_TOOL_TIMEOUT_MS, loadConfig } from "./config";
 import { describeError } from "./log";
@@ -94,25 +94,25 @@ function guarded(fn: (args: any) => Promise<unknown>): (args: any) => Promise<To
 
 /** Build the knowledge-page + recall MCP tool specs, bound to one client/bank. */
 export function buildKnowledgeTools(
-  client: HindsightClient,
+  client: DuMemoryClient,
   bankId: string,
   opts: {
     repoDir?: string;
     harness?: string;
     stampFor?: () => RetainStamp;
-    /** Refresh policy for a page `hindsight_capture_initiative` creates (core/missions.ts). */
+    /** Refresh policy for a page `dumemory_capture_initiative` creates (core/missions.ts). */
     pageTrigger?: PageTrigger;
-    /** How long `hindsight_reflect` waits on the server (cfg.reflectToolTimeoutMs). Must be
+    /** How long `dumemory_reflect` waits on the server (cfg.reflectToolTimeoutMs). Must be
      *  threaded in by every caller: left unset, the client falls back to a 120s deadline that
      *  aborts high-budget synthesis on a populated bank mid-flight (#3590). */
     reflectTimeoutMs?: number;
-    /** Reflect budget for `hindsight_reflect` (cfg.reflectBudget, default "high"). */
+    /** Reflect budget for `dumemory_reflect` (cfg.reflectBudget, default "high"). */
     reflectBudget?: "low" | "mid" | "high";
   } = {}
 ): ToolSpec[] {
   return [
     {
-      name: "hindsight_sync_status",
+      name: "dumemory_sync_status",
       description:
         "Report whether this repo's memory bank is in sync: gitlog seed present, how much recent " +
         "history has been deepened with full diffs, conversations ingested, knowledge pages " +
@@ -130,9 +130,9 @@ export function buildKnowledgeTools(
       },
     },
     {
-      name: "hindsight_diagnose",
+      name: "dumemory_diagnose",
       description:
-        "Report safe Hindsight runtime diagnostics for this coding-agent session: resolved bank, " +
+        "Report safe DuMemory runtime diagnostics for this coding-agent session: resolved bank, " +
         "workspace, harness, config location, API endpoint, and non-secret environment overrides. " +
         "Use this when memory, hooks, MCP tools, or configuration appear not to work. Tokens and " +
         "other secret values are never returned.",
@@ -140,7 +140,7 @@ export function buildKnowledgeTools(
       annotations: READ_ONLY_ANNOTATIONS,
       handler: async (_args: Record<string, never>) => {
         const configPath =
-          process.env.HINDSIGHT_CONFIG || join(homedir(), ".hindsight", "coding-agent.json");
+          process.env.DUMEMORY_CONFIG || join(homedir(), ".dumemory", "coding-agent.json");
         const harness = opts.harness ?? "unknown";
         // Resolve through the SAME pipeline the host used — including the `banks.<id>` section for
         // the bank this client is bound to, which may carry its own apiToken/apiUrl. A bare
@@ -170,26 +170,26 @@ export function buildKnowledgeTools(
             api_token_matches_config: client.apiToken === cfg.apiToken,
           },
           environment: {
-            config_override: Boolean(process.env.HINDSIGHT_CONFIG),
-            hooks_disabled: Boolean(process.env.HINDSIGHT_DISABLE_HOOKS),
-            log_level: process.env.HINDSIGHT_LOG_LEVEL ?? null,
-            diagnostics_file: process.env.HINDSIGHT_DIAG_FILE ?? "/tmp/hindsight-plugin.log",
-            channel_id_configured: Boolean(process.env.HINDSIGHT_CHANNEL_ID),
-            user_id_configured: Boolean(process.env.HINDSIGHT_USER_ID),
+            config_override: Boolean(process.env.DUMEMORY_CONFIG),
+            hooks_disabled: Boolean(process.env.DUMEMORY_DISABLE_HOOKS),
+            log_level: process.env.DUMEMORY_LOG_LEVEL ?? null,
+            diagnostics_file: process.env.DUMEMORY_DIAG_FILE ?? "/tmp/dumemory-plugin.log",
+            channel_id_configured: Boolean(process.env.DUMEMORY_CHANNEL_ID),
+            user_id_configured: Boolean(process.env.DUMEMORY_USER_ID),
           },
         });
       },
     },
     {
-      name: "hindsight_search_knowledge_pages",
+      name: "dumemory_search_knowledge_pages",
       description:
-        "Search this repository's Hindsight knowledge pages for content relevant to a query — " +
+        "Search this repository's DuMemory knowledge pages for content relevant to a query — " +
         "hybrid full-text + semantic search, server-side. Call this when the user's question may " +
         "be answered by the project's accumulated knowledge (architecture, conventions, decisions, " +
         "initiatives) rather than by reading code. Returns ranked pages with a relevance snippet; " +
-        "read a full page with hindsight_read_knowledge_page. When a result informs your answer, " +
+        "read a full page with dumemory_read_knowledge_page. When a result informs your answer, " +
         "credit it visibly: start that part with a markdown blockquote header " +
-        '"> 🧠 **From Hindsight memory (<page name>)** — <the facts you drew on>".',
+        '"> 🧠 **From DuMemory (<page name>)** — <the facts you drew on>".',
       inputSchema: { query: z.string().describe("what to look for") },
       annotations: READ_ONLY_ANNOTATIONS,
       handler: async (args: { query: string }) => {
@@ -209,9 +209,9 @@ export function buildKnowledgeTools(
       },
     },
     {
-      name: "hindsight_list_knowledge_pages",
+      name: "dumemory_list_knowledge_pages",
       description:
-        "List this repository's Hindsight knowledge pages — curated, continuously-updated " +
+        "List this repository's DuMemory knowledge pages — curated, continuously-updated " +
         "summaries of the project's durable knowledge (architecture, components, conventions, key " +
         "decisions, and in-flight initiatives). Returns each page's id, title, and a one-line " +
         "description of what it covers. Call this at the start of any non-trivial task, and again " +
@@ -222,10 +222,10 @@ export function buildKnowledgeTools(
       handler: guarded(async () => client.listPages()),
     },
     {
-      name: "hindsight_read_knowledge_page",
+      name: "dumemory_read_knowledge_page",
       description:
         "Read the full content of one knowledge page by its id (from " +
-        "hindsight_list_knowledge_pages). Call this whenever a listed page is relevant to what " +
+        "dumemory_list_knowledge_pages). Call this whenever a listed page is relevant to what " +
         "you're about to do — e.g. read Conventions before writing new code, Component map before " +
         "changing a subsystem, or an initiative's page before continuing that feature. A page may " +
         "contain [[page:<id>]] links to related pages; follow one by calling this tool again with " +
@@ -235,14 +235,14 @@ export function buildKnowledgeTools(
       handler: guarded(async ({ page_id }) => client.getPage(page_id)),
     },
     {
-      name: "hindsight_reflect",
+      name: "dumemory_reflect",
       description:
         "Deep memory reasoning: an agentic synthesis over this repository's FULL memory (git " +
         "decisions, past sessions, ingested knowledge) that answers WHY questions — the past " +
         "decision and exact rule/values that explain a behavior, bug, or convention. Slower than " +
-        "hindsight_search_knowledge_pages (several seconds): reach for it when pages are too " +
+        "dumemory_search_knowledge_pages (several seconds): reach for it when pages are too " +
         "shallow and you need the root cause or the decided literals. When the answer informs " +
-        'your reply, credit it visibly with a blockquote header: "> 🧠 **From Hindsight memory** — <summary>".',
+        'your reply, credit it visibly with a blockquote header: "> 🧠 **From DuMemory** — <summary>".',
       inputSchema: { query: z.string().describe("the question to reason over memory about") },
       annotations: READ_ONLY_ANNOTATIONS,
       handler: guarded(async ({ query }: { query: string }) =>
@@ -253,7 +253,7 @@ export function buildKnowledgeTools(
       ),
     },
     {
-      name: "hindsight_capture_initiative",
+      name: "dumemory_capture_initiative",
       description:
         "Record a new feature or initiative as a tracked knowledge page, so future sessions know it " +
         "exists and can build on it — and keep that page tracking the plan as it moves.\n\n" +
@@ -273,7 +273,7 @@ export function buildKnowledgeTools(
         "- summary: 2-3 sentences on what you're building and why — the CURRENT intent, not the " +
         "originally approved plan (on a recapture, say what changed and why).\n" +
         "- relates_to_page_id: leave empty for a new initiative. Set it to an existing initiative's page " +
-        "id — from hindsight_list_knowledge_pages, or the id this tool returned earlier — to record a " +
+        "id — from dumemory_list_knowledge_pages, or the id this tool returned earlier — to record a " +
         "plan change or an enhancement to it.\n\n" +
         "Returns the page id. The page is generated for you — you never format one yourself.",
       inputSchema: {
@@ -293,7 +293,7 @@ export function buildKnowledgeTools(
       ),
     },
     {
-      name: "hindsight_ingest_document",
+      name: "dumemory_ingest_document",
       description:
         "Save an external document or a block of durable notes/findings into this repository's " +
         "memory so it informs future recall and pages. Use for design notes, research, or " +

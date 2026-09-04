@@ -1,5 +1,5 @@
 /**
- * Harness-agnostic Hindsight missions, retain strategies, and knowledge-page taxonomy.
+ * Harness-agnostic DuMemory missions, retain strategies, and knowledge-page taxonomy.
  *
  * These describe HOW a coding project's memory is extracted and reasoned over. They are independent
  * of which agent harness produced the sessions, so they live in the shared core and are reused by
@@ -102,7 +102,7 @@ export const RETAIN_STRATEGIES = {
   survey: {
     retain_extraction_mode: "custom",
     retain_custom_instructions:
-      "This document belongs to the Hindsight codebase-survey lifecycle. Apply ONE of two rules: " +
+      "This document belongs to the DuMemory codebase-survey lifecycle. Apply ONE of two rules: " +
       "(1) If the content is an internal status marker — it says it is an internal marker, or " +
       "merely announces that a survey started/completed at some commit — extract NOTHING: return " +
       "an empty list of facts. (2) Otherwise the content is survey FINDINGS about the codebase: " +
@@ -138,7 +138,7 @@ export const KNOWLEDGE_LABELS: EntityLabelGroup = {
   optional: true,
   tag: true, // emits knowledge:<value> onto the fact's tags
   description:
-    "Routing labels for this project's Hindsight KNOWLEDGE PAGES — curated, human-readable summaries " +
+    "Routing labels for this project's DuMemory KNOWLEDGE PAGES — curated, human-readable summaries " +
     "of the repo's DURABLE engineering knowledge (architecture, key decisions, conventions, ongoing " +
     "initiatives), each page rebuilt automatically from the facts labeled for it. Mark a fact only when " +
     "it is durable, reusable knowledge a developer would still want surfaced in future sessions. " +
@@ -362,7 +362,7 @@ export function buildPageTrigger(cfg: PageTriggerConfig = {}): PageTrigger {
 // The seeded pages are NOT part of this manifest: the template's `mental_models` key creates bare
 // mental models with no knowledge-base node, which leaves them invisible to page search (it joins
 // through `knowledge_pages`) and unreadable by node id. Pages are seeded separately, through the
-// knowledge-base API, by `HindsightClient.seedPages()`.
+// knowledge-base API, by `DuMemoryClient.seedPages()`.
 export const CODING_BANK_TEMPLATE = {
   version: "1",
   bank: {

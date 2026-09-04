@@ -4,7 +4,7 @@
  * Cline's external file hooks are intentionally not used here: their TaskStart and
  * UserPromptSubmit commands are observational and cannot alter the model request. The in-process
  * `beforeModel` hook can, so it is the only path that can provide the same reflect/page injection
- * guarantee as every other Hindsight harness. The memory behaviour itself stays in RuntimeCore.
+ * guarantee as every other DuMemory harness. The memory behaviour itself stays in RuntimeCore.
  */
 import { resolveHostMemory } from "./core/host-client";
 import { RuntimeCore } from "./core/runtime";
@@ -12,7 +12,7 @@ import type { TransportTurn } from "./core/chat";
 import { diag } from "./core/diag";
 
 const HARNESS = "cline-cli";
-const INJECTION_METADATA_KEY = "hindsight_coding_agents_injection";
+const INJECTION_METADATA_KEY = "dumemory_coding_agents_injection";
 // Cline CLI 3.0.48 runs plugins in a sandbox and aborts every hook RPC at 3 seconds. Leave room
 // for sandbox IPC/serialization; a reflect may take longer, but must never make Cline abort a run.
 export const CLINE_HOOK_BUDGET_MS = 2_200;
@@ -111,7 +111,7 @@ async function settleWithinHookBudget(work: Promise<void>): Promise<boolean> {
 /**
  * Make the host-specific Cline hooks testable without importing Cline's SDK into this package.
  * RuntimeCore is the shared lifecycle implementation; this adapter only converts Cline messages
- * at its boundary and never calls Hindsight directly.
+ * at its boundary and never calls DuMemory directly.
  */
 export function createClineHooks(
   core: Pick<RuntimeCore, "onPrompt" | "getInjection" | "onTranscript">,
@@ -130,9 +130,9 @@ export function createClineHooks(
         // `seedIfCold` sets the shared new-bank marker before the first prompt. Awaiting it here,
         // rather than racing plugin setup, preserves the invariant that a brand-new bank skips its
         // first auto-reflect instead of spending that one synthesis before it has any knowledge.
-        // Bounded by the same budget as onPrompt below: seedIfCold now also waits for a cold local
-        // daemon (up to DAEMON_WAIT_SESSION_START_MS), and this is the one host that awaits it
-        // inside an RPC the sandbox aborts at 3s. It stays running either way, so a start that
+        // Bounded by the same budget as onPrompt below: seedIfCold does network I/O (the cold-bank
+        // probe and page listing) plus a git-log seed, and this is the one host that awaits it
+        // inside an RPC the sandbox aborts at 3s. It keeps running either way, so a seed that
         // outlasts the budget just lands for a later turn.
         await settleWithinHookBudget(sessionStart ?? Promise.resolve());
       }
@@ -166,7 +166,7 @@ export function createClineHooks(
         messages: [
           ...request.messages,
           {
-            id: `hindsight:${user.id}`,
+            id: `dumemory:${user.id}`,
             role: "user",
             content: [{ type: "text", text: context }],
             createdAt: Date.now(),
@@ -192,7 +192,7 @@ function createRuntime(workspaceRoot: string | undefined): RuntimeCore | undefin
 }
 
 const plugin: ClinePlugin = {
-  name: "hindsight-coding-agents",
+  name: "dumemory-coding-agents",
   manifest: { capabilities: ["hooks"] },
   setup(_api, ctx) {
     const core = createRuntime(ctx.workspaceInfo?.rootPath);

@@ -51,7 +51,7 @@ describe("readAntigravityTranscript", () => {
       file,
       JSON.stringify({
         role: "user",
-        text: "<hindsight_memory>old</hindsight_memory>\nWhat changed?",
+        text: "<dumemory_memory>old</dumemory_memory>\nWhat changed?",
       })
     );
     expect(readAntigravityTranscript(file)).toEqual([{ role: "user", content: "What changed?" }]);

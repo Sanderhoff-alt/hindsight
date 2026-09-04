@@ -28,7 +28,7 @@ import { actionLine, stripInjectedMemory } from "./transcript-util";
  * integration injects — so an injected block is identifiable in a session log even though the
  * `kind: 'user'` filter below already keeps it (and every other plugin's context) out of a retain.
  */
-export const HINDSIGHT_PLUGIN = "hindsight";
+export const DUMEMORY_PLUGIN = "dumemory";
 
 /** Structural subset of a dsh ContentBlock (text is the only kind that carries prose). */
 interface DshContentBlock {

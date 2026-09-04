@@ -152,7 +152,7 @@ const copilotPrompt: HookSpec = {
   }),
   emit: (context, _notice, ev) => ({
     // Copilot's userPromptTransformed hook replaces model-facing content rather than appending
-    // hook context. Preserve its transformed prompt and add the shared Hindsight injection.
+    // hook context. Preserve its transformed prompt and add the shared DuMemory injection.
     modifiedTransformedPrompt:
       `${(ev?.transformedPrompt as string | undefined) ?? ""}\n\n${context}`.trim(),
   }),
@@ -192,7 +192,7 @@ export const HOOK_HARNESSES: Record<HookHarnessName, HookHarnessSpec> = {
     configStyle: "nested",
     install: {
       sessionStart: { event: "SessionStart", entry: "claude-sessionstart-hook.js", timeout: 30 },
-      prompt: { event: "UserPromptSubmit", entry: "claude-hook.js", timeout: 60 },
+      prompt: { event: "UserPromptSubmit", entry: "claude-hook.js", timeout: 30 },
       stop: { event: "Stop", entry: "claude-stop-hook.js", timeout: 60 },
     },
     sessionStart: standardSessionStart("claude-code"),
@@ -231,7 +231,7 @@ export const HOOK_HARNESSES: Record<HookHarnessName, HookHarnessSpec> = {
     configStyle: "nested",
     install: {
       sessionStart: { event: "SessionStart", entry: "dcode-sessionstart-hook.js", timeout: 30 },
-      prompt: { event: "UserPromptSubmit", entry: "dcode-hook.js", timeout: 60 },
+      prompt: { event: "UserPromptSubmit", entry: "dcode-hook.js", timeout: 30 },
       stop: { event: "Stop", entry: "dcode-stop-hook.js", timeout: 60 },
     },
     sessionStart: standardSessionStart("dcode"),
@@ -313,7 +313,7 @@ export const HOOK_HARNESSES: Record<HookHarnessName, HookHarnessSpec> = {
     configStyle: "flat",
     install: {
       sessionStart: { event: "sessionStart", entry: "copilot-sessionstart-hook.js", timeout: 30 },
-      prompt: { event: "userPromptTransformed", entry: "copilot-hook.js", timeout: 60 },
+      prompt: { event: "userPromptTransformed", entry: "copilot-hook.js", timeout: 30 },
       stop: { event: "agentStop", entry: "copilot-stop-hook.js", timeout: 60 },
     },
     sessionStart: {
@@ -425,7 +425,7 @@ export const HOOK_HARNESSES: Record<HookHarnessName, HookHarnessSpec> = {
     // `detached` and terminates the whole process TREE on timeout, so the retain is genuinely lost
     // rather than merely orphaned. `retain.hostTimeoutSec` below stays SECONDS, as its name says;
     // these two numbers are the same budget in different units for this harness alone.
-    // The prompt timeout must also stay above core/hook.ts's HOOK_REFLECT_CAP_MS (25_000).
+    // The prompt timeout must also stay above config.ts's DEFAULT_REFLECT_TIMEOUT_MS.
     install: {
       sessionStart: { event: "SessionStart", entry: "qwen-sessionstart-hook.js", timeout: 30_000 },
       prompt: { event: "UserPromptSubmit", entry: "qwen-hook.js", timeout: 30_000 },

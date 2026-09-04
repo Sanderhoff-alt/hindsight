@@ -2,7 +2,7 @@
  * Docker E2E setups for every supported CLI harness.
  *
  * Each entry is small and declarative: where the host keeps that CLI's SUBSCRIPTION credentials,
- * where the CLI expects them inside the container, how to wire Hindsight into it, and how to drive
+ * where the CLI expects them inside the container, how to wire DuMemory into it, and how to drive
  * it non-interactively. Everything else — the seeded bank, the git fixture, the assertions — is
  * shared in ./harness.
  *
@@ -30,11 +30,11 @@ const authPath = (envVar: string, ...parts: string[]) => process.env[envVar] || 
  */
 export const opencodeDockerSetup: HarnessDockerSetup = {
   name: "opencode",
-  hindsightHarness: "opencode",
+  dumemoryHarness: "opencode",
   credentialPath: () =>
     authPath("OPENCODE_E2E_AUTH_PATH", ".local", "share", "opencode", "auth.json"),
   credentialTarget: "/root/.local/share/opencode/auth.json",
-  installCommand: "hindsight-coding-agents install opencode",
+  installCommand: "dumemory-coding-agents install opencode",
   command: (prompt) => ["opencode", "run", prompt],
 };
 
@@ -47,11 +47,11 @@ export const opencodeDockerSetup: HarnessDockerSetup = {
  */
 export const opencode2DockerSetup: HarnessDockerSetup = {
   name: "opencode2",
-  hindsightHarness: "opencode2",
+  dumemoryHarness: "opencode2",
   credentialPath: () =>
     authPath("OPENCODE_E2E_AUTH_PATH", ".local", "share", "opencode", "auth.json"),
   credentialTarget: "/root/.local/share/opencode/auth.json",
-  installCommand: "hindsight-coding-agents install opencode2",
+  installCommand: "dumemory-coding-agents install opencode2",
   command: (prompt) => ["opencode2", "run", prompt],
 };
 
@@ -65,10 +65,10 @@ export const opencode2DockerSetup: HarnessDockerSetup = {
  */
 export const kiloDockerSetup: HarnessDockerSetup = {
   name: "kilo",
-  hindsightHarness: "kilo",
+  dumemoryHarness: "kilo",
   credentialPath: () => authPath("KILO_E2E_AUTH_PATH", ".local", "share", "opencode", "auth.json"),
   credentialTarget: "/root/.local/share/kilo/auth.json",
-  installCommand: "hindsight-coding-agents install kilo",
+  installCommand: "dumemory-coding-agents install kilo",
   command: (prompt) => ["kilo", "run", prompt],
 };
 
@@ -85,11 +85,11 @@ export const kiloDockerSetup: HarnessDockerSetup = {
  */
 export const claudeCodeDockerSetup: HarnessDockerSetup = {
   name: "claude-code",
-  hindsightHarness: "claude-code",
-  installCommand: "hindsight-coding-agents install claude-code",
+  dumemoryHarness: "claude-code",
+  installCommand: "dumemory-coding-agents install claude-code",
   stubModelEnv: (baseUrl) => ({
     ANTHROPIC_BASE_URL: baseUrl,
-    ANTHROPIC_API_KEY: "hindsight-e2e",
+    ANTHROPIC_API_KEY: "dumemory-e2e",
   }),
   command: (prompt) => ["claude", "--print", prompt],
 };
@@ -104,20 +104,20 @@ export const claudeCodeDockerSetup: HarnessDockerSetup = {
  */
 export const cursorDockerSetup: HarnessDockerSetup = {
   name: "cursor-cli",
-  hindsightHarness: "cursor-cli",
-  installCommand: "hindsight-coding-agents install cursor-cli",
+  dumemoryHarness: "cursor-cli",
+  installCommand: "dumemory-coding-agents install cursor-cli",
   unsupported:
     "cursor-agent never contacts a custom endpoint — the stub served 0 requests via both " +
     "CURSOR_API_ENDPOINT and the --endpoint/--api-key flags, and the run hangs to the timeout " +
     "instead. It appears to authenticate against Cursor's own service before any model call. " +
     "Its account session is also machine-bound, so mounting cli-config.json yields " +
     '"Authentication required". Re-enable by clearing this field once either path works.',
-  stubModelEnv: (baseUrl) => ({ CURSOR_API_ENDPOINT: baseUrl, CURSOR_API_KEY: "hindsight-e2e" }),
+  stubModelEnv: (baseUrl) => ({ CURSOR_API_ENDPOINT: baseUrl, CURSOR_API_KEY: "dumemory-e2e" }),
   command: (prompt, { stubUrl }) => [
     "cursor-agent",
     "-p",
     "--force",
-    ...(stubUrl ? ["--endpoint", stubUrl, "--api-key", "hindsight-e2e"] : []),
+    ...(stubUrl ? ["--endpoint", stubUrl, "--api-key", "dumemory-e2e"] : []),
     prompt,
   ],
 };
@@ -132,13 +132,13 @@ export const cursorDockerSetup: HarnessDockerSetup = {
  */
 export const copilotDockerSetup: HarnessDockerSetup = {
   name: "copilot-cli",
-  hindsightHarness: "copilot-cli",
-  installCommand: "hindsight-coding-agents install copilot-cli",
+  dumemoryHarness: "copilot-cli",
+  installCommand: "dumemory-coding-agents install copilot-cli",
   stubModelEnv: (baseUrl) => ({
     COPILOT_PROVIDER_BASE_URL: `${baseUrl}/v1`,
     COPILOT_PROVIDER_TYPE: "openai",
-    COPILOT_PROVIDER_API_KEY: "hindsight-e2e",
-    COPILOT_MODEL: "hindsight-e2e-stub",
+    COPILOT_PROVIDER_API_KEY: "dumemory-e2e",
+    COPILOT_MODEL: "dumemory-e2e-stub",
   }),
   command: (prompt) => ["copilot", "-p", prompt, "--allow-all-tools"],
 };
@@ -152,10 +152,10 @@ export const copilotDockerSetup: HarnessDockerSetup = {
  */
 export const grokDockerSetup: HarnessDockerSetup = {
   name: "grok-build",
-  hindsightHarness: "grok-build",
+  dumemoryHarness: "grok-build",
   credentialPath: () => authPath("GROK_E2E_AUTH_PATH", ".grok", "auth.json"),
   credentialTarget: "/root/.grok/auth.json",
-  installCommand: "hindsight-coding-agents install grok-build",
+  installCommand: "dumemory-coding-agents install grok-build",
   injectsIntoModel: false,
   command: (prompt) => ["grok", "-p", prompt],
 };
@@ -184,12 +184,12 @@ export const grokDockerSetup: HarnessDockerSetup = {
  */
 export const qwenDockerSetup: HarnessDockerSetup = {
   name: "qwen-code",
-  hindsightHarness: "qwen-code",
-  installCommand: "hindsight-coding-agents install qwen-code",
+  dumemoryHarness: "qwen-code",
+  installCommand: "dumemory-coding-agents install qwen-code",
   stubModelEnv: (baseUrl) => ({
     OPENAI_BASE_URL: `${baseUrl}/v1`,
-    OPENAI_API_KEY: "hindsight-e2e",
-    OPENAI_MODEL: "hindsight-e2e-stub",
+    OPENAI_API_KEY: "dumemory-e2e",
+    OPENAI_MODEL: "dumemory-e2e-stub",
     APPROVAL_MODE: "yolo",
   }),
   injectsIntoModel: false,
@@ -204,7 +204,7 @@ export const qwenDockerSetup: HarnessDockerSetup = {
  */
 export const devinDockerSetup: HarnessDockerSetup = {
   name: "devin-cli",
-  hindsightHarness: "devin-cli",
+  dumemoryHarness: "devin-cli",
   unsupported:
     "authenticates and runs cleanly (✓ Organization, no trust error) but its reply never reaches " +
     "us: the captured stdout holds only the runner's npm output, and it writes no " +
@@ -213,7 +213,7 @@ export const devinDockerSetup: HarnessDockerSetup = {
   credentialPath: () =>
     authPath("DEVIN_E2E_AUTH_PATH", ".local", "share", "devin", "credentials.toml"),
   credentialTarget: "/root/.local/share/devin/credentials.toml",
-  installCommand: "hindsight-coding-agents install devin-cli",
+  installCommand: "dumemory-coding-agents install devin-cli",
   // A fresh container has never trusted the workspace, and Devin's own help is explicit that
   // non-interactive mode "cannot show the trust prompt and fails in an untrusted directory".
   command: (prompt) => ["devin", "-p", prompt, "--respect-workspace-trust", "false"],
@@ -225,10 +225,10 @@ export const devinDockerSetup: HarnessDockerSetup = {
  */
 export const clineDockerSetup: HarnessDockerSetup = {
   name: "cline-cli",
-  hindsightHarness: "cline-cli",
+  dumemoryHarness: "cline-cli",
   credentialPath: () => authPath("CLINE_E2E_AUTH_PATH", ".cline"),
   credentialTarget: "/root/.cline",
-  installCommand: "hindsight-coding-agents install cline-cli",
+  installCommand: "dumemory-coding-agents install cline-cli",
   command: (prompt) => ["cline", "--auto-approve", "true", "--cwd", "/workspace", prompt],
 };
 
@@ -239,10 +239,10 @@ export const clineDockerSetup: HarnessDockerSetup = {
  */
 export const piDockerSetup: HarnessDockerSetup = {
   name: "pi",
-  hindsightHarness: "pi",
+  dumemoryHarness: "pi",
   credentialPath: () => authPath("PI_E2E_AUTH_PATH", ".pi", "agent", "auth.json"),
   credentialTarget: "/root/.pi/agent/auth.json",
-  installCommand: "hindsight-coding-agents install pi",
+  installCommand: "dumemory-coding-agents install pi",
   command: (prompt) => ["pi", "-p", prompt],
 };
 
@@ -253,10 +253,10 @@ export const piDockerSetup: HarnessDockerSetup = {
  */
 export const primeAgentDockerSetup: HarnessDockerSetup = {
   name: "prime-agent",
-  hindsightHarness: "prime-agent",
+  dumemoryHarness: "prime-agent",
   credentialPath: () => authPath("PRIME_AGENT_E2E_AUTH_PATH", ".prime", "agent", "auth.json"),
   credentialTarget: "/root/.prime/agent/auth.json",
-  installCommand: "hindsight-coding-agents install prime-agent",
+  installCommand: "dumemory-coding-agents install prime-agent",
   command: (prompt) => ["prime-agent", "-p", prompt],
 };
 
@@ -272,11 +272,11 @@ export const primeAgentDockerSetup: HarnessDockerSetup = {
  */
 export const dshDockerSetup: HarnessDockerSetup = {
   name: "dsh",
-  hindsightHarness: "dsh",
-  installCommand: "hindsight-coding-agents install dsh",
+  dumemoryHarness: "dsh",
+  installCommand: "dumemory-coding-agents install dsh",
   stubModelEnv: (baseUrl) => ({
-    HINDSIGHT_STUB_BASE_URL: `${baseUrl}/v1`,
-    HINDSIGHT_STUB_KEY: "hindsight-e2e",
+    DUMEMORY_STUB_BASE_URL: `${baseUrl}/v1`,
+    DUMEMORY_STUB_KEY: "dumemory-e2e",
   }),
   command: (prompt) => [
     "dsh",

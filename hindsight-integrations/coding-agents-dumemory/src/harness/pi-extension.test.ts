@@ -8,7 +8,7 @@ describe("pi extension adapter", () => {
     const onPrompt = vi.fn(async () => {});
     const core = {
       onPrompt,
-      getInjection: vi.fn(() => "<hindsight_memories>remember this</hindsight_memories>"),
+      getInjection: vi.fn(() => "<dumemory_memory>remember this</dumemory_memory>"),
       onTranscript: vi.fn(async () => {}),
     };
     const hooks = createPiHooks(core as never, "pi");
@@ -21,7 +21,7 @@ describe("pi extension adapter", () => {
     expect(onPrompt).toHaveBeenCalledOnce();
     expect(onPrompt).toHaveBeenCalledWith("session-1", "plan the change");
     expect(result?.systemPrompt).toBe(
-      "You are pi.\n\n<hindsight_memories>remember this</hindsight_memories>"
+      "You are pi.\n\n<dumemory_memory>remember this</dumemory_memory>"
     );
   });
 
@@ -105,7 +105,7 @@ describe("pi extension adapter", () => {
 
   it("adapts a knowledge ToolSpec into a pi native tool with a JSON-Schema parameters object", async () => {
     const spec: ToolSpec = {
-      name: "hindsight_search_knowledge_pages",
+      name: "dumemory_search_knowledge_pages",
       description: "Search the knowledge pages",
       inputSchema: { query: z.string(), limit: z.number().optional() },
       annotations: {
@@ -118,8 +118,8 @@ describe("pi extension adapter", () => {
     };
 
     const def = toPiTool(spec);
-    expect(def.name).toBe("hindsight_search_knowledge_pages");
-    expect(def.label).toBe("hindsight_search_knowledge_pages");
+    expect(def.name).toBe("dumemory_search_knowledge_pages");
+    expect(def.label).toBe("dumemory_search_knowledge_pages");
     expect(def.parameters.type).toBe("object");
     expect((def.parameters.properties as Record<string, unknown>).query).toBeDefined();
 

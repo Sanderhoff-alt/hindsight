@@ -13,7 +13,7 @@ describe("Cline native plugin adapter", () => {
     const onPrompt = vi.fn(async () => {});
     const core = {
       onPrompt,
-      getInjection: vi.fn(() => "<hindsight_memories>remember this</hindsight_memories>"),
+      getInjection: vi.fn(() => "<dumemory_memory>remember this</dumemory_memory>"),
       onTranscript: vi.fn(async () => {}),
     };
     const hooks = createClineHooks(core as never, "session-1");
@@ -27,8 +27,8 @@ describe("Cline native plugin adapter", () => {
     expect(onPrompt).toHaveBeenCalledWith("session-1", "plan the change");
     expect(first?.messages.at(-1)).toMatchObject({
       role: "user",
-      content: [{ type: "text", text: "<hindsight_memories>remember this</hindsight_memories>" }],
-      metadata: { hindsight_coding_agents_injection: true },
+      content: [{ type: "text", text: "<dumemory_memory>remember this</dumemory_memory>" }],
+      metadata: { dumemory_coding_agents_injection: true },
     });
     expect(second?.messages).toHaveLength(2);
   });
@@ -76,10 +76,10 @@ describe("Cline native plugin adapter", () => {
     CLINE_HOOK_BUDGET_MS + 1_000
   );
 
-  // seedIfCold waits on a cold local daemon (#3524), which outlasts the sandbox's 3s RPC abort by
-  // design — so the SessionStart await has to be bounded exactly like the reflect above.
+  // seedIfCold does network I/O and can outlast the sandbox's 3s RPC abort — so the SessionStart
+  // await has to be bounded exactly like the reflect above.
   it(
-    "does not let a cold daemon start exceed Cline's sandbox hook budget",
+    "does not let a slow seedIfCold exceed Cline's sandbox hook budget",
     async () => {
       const core = {
         onPrompt: vi.fn(async () => {}),
@@ -90,8 +90,8 @@ describe("Cline native plugin adapter", () => {
 
       await expect(
         hooks.beforeModel({
-          snapshot: { agentId: "agent-1", messages: [message("u-1", "user", "cold daemon")] },
-          request: { messages: [message("u-1", "user", "cold daemon")] },
+          snapshot: { agentId: "agent-1", messages: [message("u-1", "user", "cold seed")] },
+          request: { messages: [message("u-1", "user", "cold seed")] },
         })
       ).resolves.toBeUndefined();
     },

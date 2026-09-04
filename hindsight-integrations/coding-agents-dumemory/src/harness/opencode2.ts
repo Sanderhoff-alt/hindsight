@@ -14,11 +14,11 @@
  *
  * Everything behind those five seams is the harness-agnostic RuntimeCore, exactly as for v1, so
  * opencode2 gets the same surface: per-turn recall + attribution/user-feedback injection, the
- * hindsight_* knowledge tools, cold-check auto-seed and rich write-back.
+ * dumemory_* knowledge tools, cold-check auto-seed and rich write-back.
  *
  * Two deliberate differences from the v1 adapter, both forced by the host:
  *
- *  - NO survey agent. v1 taught the host about a read-only `hindsight-survey` agent through its
+ *  - NO survey agent. v1 taught the host about a read-only `dumemory-survey` agent through its
  *    `config` hook (see core/survey.ts). v2's `ctx.agent.transform` draft exposes only
  *    list/get/default/update/remove — a plugin cannot DEFINE an agent — and an agent declared in
  *    the config file is not a sandbox either: the user's own global `permissions` are appended
@@ -93,7 +93,7 @@ interface Oc2Event {
  *    them here: the host asks the user about tool calls through its own permission rules.
  *  - `options.codemode: false` is REQUIRED, not decoration. A tool left on the default is offered
  *    to the model only through v2's `execute` code-execution tool, so a model that calls it by
- *    name gets "Unknown tool: hindsight_…" — which is exactly how every hindsight_* tool behaves
+ *    name gets "Unknown tool: dumemory_…" — which is exactly how every dumemory_* tool behaves
  *    without this flag, since the skill and the injected preamble both tell the model to call them
  *    by name.
  */
@@ -129,7 +129,7 @@ export async function wireOpencode2Runtime(
     readOpencode2Messages((await ctx.session.context({ sessionID })) as Oc2Message[])
   );
 
-  // Register the full hindsight_* knowledge + recall suite natively (no MCP server needed).
+  // Register the full dumemory_* knowledge + recall suite natively (no MCP server needed).
   await ctx.tool.transform((draft) => {
     for (const spec of core.toolSpecs()) draft.add(toOpencode2Tool(spec));
   });
@@ -191,7 +191,7 @@ export async function wireOpencode2Runtime(
  */
 export function createOpencode2PluginEntry(harness: string): Opencode2Plugin {
   return {
-    id: `hindsight-${harness}`,
+    id: `dumemory-${harness}`,
     async setup(ctx) {
       // v2 splits v1's single `{worktree, directory}` into a session cwd plus the project root;
       // `location.directory` is the worktree analogue, so it keeps precedence (and the same

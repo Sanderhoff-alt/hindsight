@@ -29,7 +29,7 @@ import { applyBankConfig, loadConfig } from "./core/config";
 import { commitsSince, repoNameOf, retainCommit, syncGitLog } from "./core/git";
 import { SURVEY_DOC_IDS } from "./core/survey";
 import { buildPageTrigger } from "./core/missions";
-import { HindsightClient } from "./core/hindsight";
+import { DuMemoryClient } from "./core/dumemory";
 import { DEEPEN_DIFF_TARGET } from "./core/status";
 import type { ChatSession } from "./core/types";
 import { pool } from "./core/util";
@@ -90,8 +90,8 @@ const log = (m: string) => {
 
 // ── per-bank lock: concurrent session starts must not double-ingest ─────────────
 // Scratch, not state: the lock only guards against concurrent double-ingest cost. In the OS
-// temp dir so ~/.hindsight holds ONLY the config file (a reboot clearing it is harmless).
-const LOCK_DIR = join(tmpdir(), "hindsight-coding-agent");
+// temp dir so ~/.dumemory holds ONLY the config file (a reboot clearing it is harmless).
+const LOCK_DIR = join(tmpdir(), "dumemory-coding-agent");
 const LOCK = join(LOCK_DIR, `deepen-${encodeURIComponent(FINAL_BANK ?? "")}.lock`);
 
 function acquireLock(): boolean {
@@ -132,7 +132,7 @@ async function main() {
   diag("deepen", "deepen_started", { bank: FINAL_BANK });
   try {
     const harness = await getHarness(HARNESS);
-    const client = new HindsightClient({
+    const client = new DuMemoryClient({
       apiUrl: API_URL,
       apiToken: API_TOKEN,
       bank: FINAL_BANK!,
@@ -266,7 +266,7 @@ async function main() {
           const tags = [...new Set([...stamp.tags, "source:survey-baseline", "survey-state:done"])];
           await client.retain(
             content,
-            "hindsight codebase-survey baseline",
+            "dumemory codebase-survey baseline",
             best.id,
             tags,
             "survey",

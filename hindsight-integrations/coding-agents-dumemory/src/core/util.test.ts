@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MIN_IDEMPOTENT_RETAIN_VERSION } from "./hindsight";
+import { MIN_IDEMPOTENT_RETAIN_VERSION } from "./dumemory";
 import { semverGte } from "./util";
 
 describe("semverGte", () => {

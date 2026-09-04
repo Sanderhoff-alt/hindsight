@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-: "${HINDSIGHT_E2E_INSTALL_COMMAND:?missing harness install command}"
-: "${HINDSIGHT_CONFIG:?missing Hindsight config path}"
+: "${DUMEMORY_E2E_INSTALL_COMMAND:?missing harness install command}"
+: "${DUMEMORY_CONFIG:?missing DuMemory config path}"
 
 # The tarball is produced from the checkout under test. Installing it here, instead of bind-mounting
 # its source, verifies the published-package surface: bins, bundled hooks, MCP server, and skill.
@@ -14,13 +14,13 @@ npm install --global /plugin/*.tgz
 # a single file (codex, cursor, grok) but others keep a whole directory with live SQLite session
 # stores (copilot, cline) that the CLI opens read-write — a read-only mount there fails at startup.
 # Copying also guarantees a test run can never modify the host's real subscription credentials.
-if [ -n "${HINDSIGHT_E2E_CREDENTIAL_TARGET:-}" ] && [ -e /hindsight-credentials/source ]; then
-  mkdir -p "$(dirname "$HINDSIGHT_E2E_CREDENTIAL_TARGET")"
-  cp -a /hindsight-credentials/source "$HINDSIGHT_E2E_CREDENTIAL_TARGET"
+if [ -n "${DUMEMORY_E2E_CREDENTIAL_TARGET:-}" ] && [ -e /dumemory-credentials/source ]; then
+  mkdir -p "$(dirname "$DUMEMORY_E2E_CREDENTIAL_TARGET")"
+  cp -a /dumemory-credentials/source "$DUMEMORY_E2E_CREDENTIAL_TARGET"
 fi
 
 # Each adapter owns this small, static command. It is intentionally an environment value so this
 # runner stays harness-neutral as more CLI adapters are added.
-sh -ceu "$HINDSIGHT_E2E_INSTALL_COMMAND"
+sh -ceu "$DUMEMORY_E2E_INSTALL_COMMAND"
 
 exec "$@"

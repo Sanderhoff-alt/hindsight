@@ -13,7 +13,7 @@
  *   {gitProject} worktree-aware repo name      {project}  working-directory basename
  *   {harness}    the agent that wrote it       {bankId}   the bank being written to
  *   {sessionId}  the agent session             {timestamp} ISO-8601, resolved at retain time
- *   {channel}    $HINDSIGHT_CHANNEL_ID         {user}     $HINDSIGHT_USER_ID
+ *   {channel}    $DUMEMORY_CHANNEL_ID         {user}     $DUMEMORY_USER_ID
  *
  * The built-in tags and metadata always win over configured ones. `harness` in particular is load-
  * bearing: the control plane resolves a document's agent logo from `metadata.harness` and the
@@ -60,8 +60,8 @@ function resolversFor(ctx: RetainStampContext): Resolvers {
     bankId: () => ctx.bankId,
     sessionId: () => ctx.sessionId ?? "unknown",
     timestamp: () => new Date().toISOString(),
-    channel: () => process.env.HINDSIGHT_CHANNEL_ID || "default",
-    user: () => process.env.HINDSIGHT_USER_ID || "anonymous",
+    channel: () => process.env.DUMEMORY_CHANNEL_ID || "default",
+    user: () => process.env.DUMEMORY_USER_ID || "anonymous",
   };
 }
 

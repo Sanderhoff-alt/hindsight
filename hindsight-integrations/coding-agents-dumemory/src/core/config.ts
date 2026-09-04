@@ -1,5 +1,5 @@
 /**
- * ONE config file: ~/.hindsight/coding-agent.json.
+ * ONE config file: ~/.dumemory/coding-agent.json.
  *
  * Layering, later wins per field:
  *   1. built-in defaults
@@ -17,43 +17,24 @@ import { join } from "node:path";
 import { DEFAULT_SEED_LIMIT } from "./seed";
 import { isOptedIn } from "./bank";
 import { log } from "./log";
-import { DEFAULT_OBSERVATION_SCOPES, type ObservationScopes } from "./hindsight";
+import { DEFAULT_OBSERVATION_SCOPES, type ObservationScopes } from "./dumemory";
 
-/** Default config-file path: ~/.hindsight/coding-agent.json */
-export // HINDSIGHT_CONFIG joins the two env exceptions (diag/log files): it points at THE config file,
+/** Default config-file path: ~/.dumemory/coding-agent.json */
+export // DUMEMORY_CONFIG joins the two env exceptions (diag/log files): it points at THE config file,
 // for containers and test harnesses where $HOME isn't the right anchor. Still one file.
 const CONFIG_PATH =
-  process.env.HINDSIGHT_CONFIG || join(homedir(), ".hindsight", "coding-agent.json");
-
-/** Retained for backwards-compatible config parsing; Cloud mode does not use local daemon fields. */
-export const DEFAULT_DAEMON_PORT = 9077;
-export const DEFAULT_DAEMON_PROFILE = "coding-agent";
+  process.env.DUMEMORY_CONFIG || join(homedir(), ".dumemory", "coding-agent.json");
 
 /** Incremental git-sync settings (see core/sync.ts). */
 /** The config file's shape — every field optional; omitted fields take the documented default. */
 export interface RawConfig {
-  /** Hindsight Cloud is the only supported server mode. */
+  /** Cloud is the only server mode. Written by `install` and read back to detect "already
+   *  configured"; a self-hosted deployment is Cloud with `apiUrl` pointed at it. */
   serverMode?: "cloud";
-  apiUrl?: string; // Ignored; Cloud uses the built-in API URL.
-  apiToken?: string; // Hindsight Cloud bearer token
-  /** Daemon mode: port the local daemon listens on (default 9077).
-   *  NOT 8888 — that is the conventional port for a server you run yourself, and a daemon must
-   *  never squat on it. A healthy server already on this port is adopted rather than restarted. */
-  apiPort?: number;
-  /** Daemon mode: seconds of inactivity before the daemon exits. Unset means it never exits on
-   *  its own — `hindsight-embed`'s own default, which every other Hindsight integration also
-   *  ships. This used to default to 300 here, which made the plugin the only thing on the machine
-   *  opting a shared daemon into an auto-exit nobody asked for. There is deliberately no
-   *  stop-on-session-end either: one daemon is shared by every agent and repo on the machine, so
-   *  ending one session must not cut memory out from under another. */
-  daemonIdleTimeout?: number;
-  /** Daemon mode: `hindsight-embed` profile name, i.e. which local database is used (default
-   *  "coding-agent"). Separate profiles keep unrelated setups from sharing memory. */
-  daemonProfile?: string;
-  /** Daemon mode: which `hindsight-embed` release to run via uvx (default "latest"). */
-  embedVersion?: string;
-  /** Daemon mode: local `hindsight-embed` checkout to run instead of a published release (dev). */
-  embedPackagePath?: string;
+  /** Base API URL. Defaults to Baidu AI Cloud; set it (or pass `--api-url`) to reach your own
+   *  deployment of the same API. */
+  apiUrl?: string;
+  apiToken?: string; // Baidu AI Cloud bearer token
   bankId?: string; // EXPLICIT memory bank id — set = static bank; unset = per-repo dynamic (core/bank.ts)
   dynamicBankId?: boolean; // force dynamic resolution even when bankId is set (default: dynamic iff no bankId)
   bankIdTemplate?: string; // dynamic bank id format (default "coding-agent::{gitProject}" — harness-neutral) —
@@ -80,8 +61,13 @@ export interface RawConfig {
    *  200 while bursts get 429s means the server is rate-limiting concurrency, not total volume —
    *  lower this rather than raising it. */
   maxParallelRetains?: number;
-  reflectTimeoutMs?: number; // session-start reflect timeout (default 120000; hooks cap lower internally)
-  /** Timeout for the agent-invoked `hindsight_reflect` tool (default 330000). Deliberately its own
+  /** Timeout for the automatic once-per-session reflect (default DEFAULT_REFLECT_TIMEOUT_MS).
+   *  Honoured verbatim by every harness — there is no per-harness cap. The default is chosen to fit
+   *  inside the tightest hook window this package installs (30s), so raising it on a hook harness
+   *  can let the host kill the hook mid-reflect; on a persistent-plugin host there is no such
+   *  window. See also `reflectToolTimeoutMs` for the agent-invoked tool. */
+  reflectTimeoutMs?: number;
+  /** Timeout for the agent-invoked `dumemory_reflect` tool (default 330000). Deliberately its own
    *  knob and much larger than `reflectTimeoutMs`: that one bounds an automatic hook that must fit
    *  the host's 25s window, whereas this one bounds a call the agent made on purpose and waits on,
    *  whose `budget: "high"` synthesis on a populated bank can run for minutes. The default sits
@@ -89,7 +75,7 @@ export interface RawConfig {
    *  server decides when to give up, not an arbitrary client deadline (#3590). Unset, it inherits
    *  an explicitly-raised `reflectTimeoutMs` — a user who raised that meant "let reflect run". */
   reflectToolTimeoutMs?: number;
-  /** Reflect budget for the `hindsight_reflect` tool: "low" | "mid" | "high" (default "high").
+  /** Reflect budget for the `dumemory_reflect` tool: "low" | "mid" | "high" (default "high").
    *  Drop to "mid"/"low" on a large bank where high-budget synthesis exceeds the server's wall
    *  timeout. The automatic session-start reflect is NOT affected — it always uses "low" to fit
    *  its hook window. */
@@ -115,14 +101,15 @@ export interface RawConfig {
   surveyModel?: string; // model passed to the headless survey's `claude -p --model` (default "haiku")
   surveyBudgetUsd?: number; // spend cap passed to the headless survey's `claude -p --max-budget-usd` (default 2)
   /** Plugin log verbosity ("debug" | "info" | "warn" | "error", default "info");
-   *  HINDSIGHT_LOG_LEVEL overrides for ad-hoc debugging. */
+   *  DUMEMORY_LOG_LEVEL overrides for ad-hoc debugging. */
   logLevel?: "debug" | "info" | "warn" | "error";
   /** Keep the installed runtime current by itself (default true). Once a day a session start asks
-   *  npm for the published version and, when it is newer, re-stages ~/.hindsight/coding-agents in
-   *  the background — the copy every wired agent's hooks already point at. It rewires no host
+   *  the registry npm is CONFIGURED to use (via `npm view`, so a mirror or a private registry is
+   *  honoured) for the published version and, when it is newer, re-stages ~/.dumemory/coding-agents
+   *  in the background — the copy every wired agent's hooks already point at. It rewires no host
    *  config, so a release that adds a NEW hook entry point still needs a manual `install`.
    *  Set false to pin the installed version (air-gapped machines, or a deliberate downgrade);
-   *  updating is then `npx @vectorize-io/hindsight-coding-agents install` again, as before. */
+   *  updating is then `npx @baiducloud/dumemory-coding-agents install` again, as before. */
   autoUpdate?: boolean;
   surveyRefreshCommits?: number; // re-run the survey at SessionStart once this many commits have accrued since the last one, so structural pages track an evolving architecture (default 20; 0 = cold-seed only)
   /** How git history feeds memory — seeding AND keeping current use the same engine:
@@ -172,17 +159,10 @@ export interface RawConfig {
 
 /** Fully-resolved config: every field present. */
 export interface Config {
-  serverMode: "cloud" | "self-hosted" | "daemon";
-  /** The EFFECTIVE base URL. In daemon mode this is already 127.0.0.1:{apiPort}, so every caller
-   *  that builds a client keeps working without knowing which mode is active. */
+  serverMode: "cloud";
+  /** The EFFECTIVE base URL — Baidu AI Cloud unless `apiUrl` names another deployment. */
   apiUrl: string;
   apiToken?: string;
-  apiPort: number;
-  /** Undefined = never told the daemon to auto-exit; see RawConfig above. */
-  daemonIdleTimeout?: number;
-  daemonProfile: string;
-  embedVersion?: string;
-  embedPackagePath?: string;
   bankId?: string; // resolved per-directory via deriveBankIdOrSkip — see core/bank.ts
   dynamicBankId?: boolean;
   bankIdTemplate?: string;
@@ -237,13 +217,22 @@ function resolvePageTriggerType(raw: RawConfig): "auto-refresh" | "cron" | "manu
   return "auto-refresh";
 }
 
-/** Default timeout for the agent-invoked `hindsight_reflect` tool — see RawConfig.reflectToolTimeoutMs. */
+/**
+ * Default timeout for the AUTOMATIC once-per-session reflect.
+ *
+ * Sized to fit the tightest prompt-hook window this package installs (30s) with headroom for the
+ * rest of the hook's work, so the default never risks the host killing a hook mid-reflect. It is a
+ * plain default, not a cap: a config or `DUMEMORY_REFLECT_TIMEOUT_MS` value is used verbatim.
+ */
+export const DEFAULT_REFLECT_TIMEOUT_MS = 28_000;
+
+/** Default timeout for the agent-invoked `dumemory_reflect` tool — see RawConfig.reflectToolTimeoutMs. */
 export const DEFAULT_REFLECT_TOOL_TIMEOUT_MS = 330_000;
 
 const REFLECT_BUDGETS = ["low", "mid", "high"] as const;
 
 /**
- * Which reflect budget the `hindsight_reflect` tool should ask for.
+ * Which reflect budget the `dumemory_reflect` tool should ask for.
  *
  * An unrecognized value takes the default rather than travelling: the API rejects an unknown budget
  * outright, which would turn a typo here into a hard tool failure on every call.
@@ -296,17 +285,10 @@ function resolveObservationScopes(raw: RawConfig["observationScopes"]): Observat
 
 /** Apply defaults to a raw (file) config. Pure — the single place the defaults live. */
 export function resolveConfig(raw: RawConfig = {}): Config {
-  const serverMode = "cloud" as const;
-  const apiPort = raw.apiPort || DEFAULT_DAEMON_PORT;
   return {
-    serverMode,
+    serverMode: "cloud",
     apiUrl: raw.apiUrl || "https://cloud.memory.bj.baidubce.com/api",
     apiToken: raw.apiToken || undefined,
-    apiPort,
-    daemonIdleTimeout: raw.daemonIdleTimeout,
-    daemonProfile: raw.daemonProfile || DEFAULT_DAEMON_PROFILE,
-    embedVersion: raw.embedVersion || undefined,
-    embedPackagePath: raw.embedPackagePath || undefined,
     bankId: raw.bankId,
     dynamicBankId: raw.dynamicBankId,
     bankIdTemplate: raw.bankIdTemplate,
@@ -322,7 +304,7 @@ export function resolveConfig(raw: RawConfig = {}): Config {
     retainSessions: raw.retainSessions ?? true, // write sessions back by default, every harness
     manageBankConfig: raw.manageBankConfig ?? true,
     maxParallelRetains: raw.maxParallelRetains || 10,
-    reflectTimeoutMs: raw.reflectTimeoutMs || 120000,
+    reflectTimeoutMs: raw.reflectTimeoutMs || DEFAULT_REFLECT_TIMEOUT_MS,
     // Inherit an explicitly-raised reflectTimeoutMs (that is what users reaching for a longer
     // reflect already set), but never let it LOWER the tool below the default — a short window is
     // set to bound the automatic hook, not to cut off a call the agent is waiting on.
@@ -368,7 +350,7 @@ function readRaw(path: string): RawConfig {
     return JSON.parse(readFileSync(path, "utf8")) as RawConfig;
   } catch (e) {
     if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") {
-      console.error(`hindsight: ignoring invalid config at ${path}: ${(e as Error)?.message || e}`);
+      console.error(`dumemory: ignoring invalid config at ${path}: ${(e as Error)?.message || e}`);
     }
     return {};
   }
@@ -390,7 +372,7 @@ function mergeRaw(a: RawConfig, b: RawConfig): RawConfig {
 export interface LoadOptions {
   /** Which harness is asking ("opencode", "claude-code", ...) — applies its `harnesses.<name>` overrides. */
   harness?: string;
-  /** Explicit global-config path (default ~/.hindsight/coding-agent.json). */
+  /** Explicit global-config path (default ~/.dumemory/coding-agent.json). */
   path?: string;
 }
 
@@ -403,11 +385,11 @@ function applyLayer(raw: RawConfig, layer: RawConfig, harness?: string): RawConf
 }
 
 /**
- * Env var backing each scalar setting: `HINDSIGHT_` + the field in SCREAMING_SNAKE.
+ * Env var backing each scalar setting: `DUMEMORY_` + the field in SCREAMING_SNAKE.
  *
  * These are a FALLBACK, not an override — the config file still wins wherever it sets a value, so
  * an existing file behaves exactly as before. They exist for the places a file is awkward:
- * containers, CI, and secret managers that inject `HINDSIGHT_API_TOKEN` rather than writing a
+ * containers, CI, and secret managers that inject `DUMEMORY_API_TOKEN` rather than writing a
  * credential to disk.
  *
  * The map-valued settings (mapPathToBank, harnesses, banks, retainMetadata) are deliberately
@@ -415,49 +397,42 @@ function applyLayer(raw: RawConfig, layer: RawConfig, harness?: string): RawConf
  * does not survive flattening into one env var. They stay file-only.
  */
 const ENV_KEYS = {
-  serverMode: "HINDSIGHT_SERVER_MODE",
-  apiUrl: "HINDSIGHT_API_URL",
-  apiToken: "HINDSIGHT_API_TOKEN",
-  // These four keep the names the old per-agent Claude Code plugin used, so a user migrating from
-  // it can carry their existing environment over unchanged.
-  apiPort: "HINDSIGHT_API_PORT",
-  daemonIdleTimeout: "HINDSIGHT_DAEMON_IDLE_TIMEOUT",
-  embedVersion: "HINDSIGHT_EMBED_VERSION",
-  embedPackagePath: "HINDSIGHT_EMBED_PACKAGE_PATH",
-  daemonProfile: "HINDSIGHT_DAEMON_PROFILE",
-  bankId: "HINDSIGHT_BANK_ID",
-  dynamicBankId: "HINDSIGHT_DYNAMIC_BANK_ID",
-  bankIdTemplate: "HINDSIGHT_BANK_ID_TEMPLATE",
-  resolveWorktrees: "HINDSIGHT_RESOLVE_WORKTREES",
-  optInOnly: "HINDSIGHT_OPT_IN_ONLY",
-  optInPaths: "HINDSIGHT_OPT_IN_PATHS",
-  harness: "HINDSIGHT_HARNESS",
-  disabled: "HINDSIGHT_DISABLED",
-  retainSessions: "HINDSIGHT_RETAIN_SESSIONS",
-  maxParallelRetains: "HINDSIGHT_MAX_PARALLEL_RETAINS",
-  reflectTimeoutMs: "HINDSIGHT_REFLECT_TIMEOUT_MS",
-  reflectToolTimeoutMs: "HINDSIGHT_REFLECT_TOOL_TIMEOUT_MS",
-  reflectBudget: "HINDSIGHT_REFLECT_BUDGET",
-  autoReflect: "HINDSIGHT_AUTO_REFLECT",
-  pageRefreshEveryTurns: "HINDSIGHT_PAGE_REFRESH_EVERY_TURNS",
-  pageTriggerType: "HINDSIGHT_PAGE_TRIGGER_TYPE",
-  pageTriggerCron: "HINDSIGHT_PAGE_TRIGGER_CRON",
-  autoSeed: "HINDSIGHT_AUTO_SEED",
-  seedLimit: "HINDSIGHT_SEED_LIMIT",
-  codebaseSurvey: "HINDSIGHT_CODEBASE_SURVEY",
-  surveyModel: "HINDSIGHT_SURVEY_MODEL",
-  surveyBudgetUsd: "HINDSIGHT_SURVEY_BUDGET_USD",
-  surveyRefreshCommits: "HINDSIGHT_SURVEY_REFRESH_COMMITS",
-  logLevel: "HINDSIGHT_LOG_LEVEL",
-  autoUpdate: "HINDSIGHT_AUTO_UPDATE",
-  gitIngest: "HINDSIGHT_GIT_INGEST",
+  serverMode: "DUMEMORY_SERVER_MODE",
+  apiUrl: "DUMEMORY_API_URL",
+  apiToken: "DUMEMORY_API_TOKEN",
+  bankId: "DUMEMORY_BANK_ID",
+  dynamicBankId: "DUMEMORY_DYNAMIC_BANK_ID",
+  bankIdTemplate: "DUMEMORY_BANK_ID_TEMPLATE",
+  resolveWorktrees: "DUMEMORY_RESOLVE_WORKTREES",
+  optInOnly: "DUMEMORY_OPT_IN_ONLY",
+  optInPaths: "DUMEMORY_OPT_IN_PATHS",
+  harness: "DUMEMORY_HARNESS",
+  disabled: "DUMEMORY_DISABLED",
+  retainSessions: "DUMEMORY_RETAIN_SESSIONS",
+  maxParallelRetains: "DUMEMORY_MAX_PARALLEL_RETAINS",
+  reflectTimeoutMs: "DUMEMORY_REFLECT_TIMEOUT_MS",
+  reflectToolTimeoutMs: "DUMEMORY_REFLECT_TOOL_TIMEOUT_MS",
+  reflectBudget: "DUMEMORY_REFLECT_BUDGET",
+  autoReflect: "DUMEMORY_AUTO_REFLECT",
+  pageRefreshEveryTurns: "DUMEMORY_PAGE_REFRESH_EVERY_TURNS",
+  pageTriggerType: "DUMEMORY_PAGE_TRIGGER_TYPE",
+  pageTriggerCron: "DUMEMORY_PAGE_TRIGGER_CRON",
+  autoSeed: "DUMEMORY_AUTO_SEED",
+  seedLimit: "DUMEMORY_SEED_LIMIT",
+  codebaseSurvey: "DUMEMORY_CODEBASE_SURVEY",
+  surveyModel: "DUMEMORY_SURVEY_MODEL",
+  surveyBudgetUsd: "DUMEMORY_SURVEY_BUDGET_USD",
+  surveyRefreshCommits: "DUMEMORY_SURVEY_REFRESH_COMMITS",
+  logLevel: "DUMEMORY_LOG_LEVEL",
+  autoUpdate: "DUMEMORY_AUTO_UPDATE",
+  gitIngest: "DUMEMORY_GIT_INGEST",
   // Scalar modes only ("shared", "combined", "per_tag", "all_combinations"). An explicit scope
   // list is a list OF lists, which does not survive flattening into one variable — file-only.
-  observationScopes: "HINDSIGHT_OBSERVATION_SCOPES",
-  // Comma-separated, e.g. HINDSIGHT_RETAIN_TAGS="project:{gitProject},env:work". A LIST rather than
+  observationScopes: "DUMEMORY_OBSERVATION_SCOPES",
+  // Comma-separated, e.g. DUMEMORY_RETAIN_TAGS="project:{gitProject},env:work". A LIST rather than
   // a map, so it flattens cleanly; its sibling retainMetadata stays file-only for the reason above.
-  retainTags: "HINDSIGHT_RETAIN_TAGS",
-  manageBankConfig: "HINDSIGHT_MANAGE_BANK_CONFIG",
+  retainTags: "DUMEMORY_RETAIN_TAGS",
+  manageBankConfig: "DUMEMORY_MANAGE_BANK_CONFIG",
 } as const satisfies Partial<Record<keyof RawConfig, string>>;
 
 /** Fields parsed as booleans/numbers/comma-separated lists; everything else is taken as a string. */
@@ -475,8 +450,6 @@ const ENV_BOOLEANS = new Set<keyof RawConfig>([
 ]);
 const ENV_LISTS = new Set<keyof RawConfig>(["retainTags", "optInPaths"]);
 const ENV_NUMBERS = new Set<keyof RawConfig>([
-  "apiPort",
-  "daemonIdleTimeout",
   "maxParallelRetains",
   "reflectTimeoutMs",
   "reflectToolTimeoutMs",
@@ -508,7 +481,7 @@ export function readEnvConfig(env: NodeJS.ProcessEnv = process.env): RawConfig {
     } else if (ENV_NUMBERS.has(key)) {
       const n = Number(value);
       if (Number.isFinite(n)) out[key] = n;
-      else console.error(`hindsight: ignoring ${name}=${value} — not a number`);
+      else console.error(`dumemory: ignoring ${name}=${value} — not a number`);
     } else {
       out[key] = value;
     }

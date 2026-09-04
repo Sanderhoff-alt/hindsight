@@ -5,9 +5,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_MAX_PARALLEL_RETAINS,
   DEFAULT_OBSERVATION_SCOPES,
-  HindsightClient,
+  DuMemoryClient,
   retryAfterMs,
-} from "./hindsight";
+} from "./dumemory";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -21,21 +21,21 @@ function jsonResponse(status: number, body: unknown, headers?: Record<string, st
   });
 }
 
-describe("HindsightClient.maxParallelRetains", () => {
+describe("DuMemoryClient.maxParallelRetains", () => {
   it("defaults to 10 when not provided", () => {
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "b" });
+    const c = new DuMemoryClient({ apiUrl: "http://x", bank: "b" });
     expect(c.maxParallelRetains).toBe(DEFAULT_MAX_PARALLEL_RETAINS);
   });
 
   it("honours the configured cap", () => {
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "b", maxParallelRetains: 3 });
+    const c = new DuMemoryClient({ apiUrl: "http://x", bank: "b", maxParallelRetains: 3 });
     expect(c.maxParallelRetains).toBe(3);
   });
 });
 
-describe("HindsightClient document-list safety", () => {
+describe("DuMemoryClient document-list safety", () => {
   it("uses strict strategy-tag matching on every page", async () => {
-    const client = new HindsightClient({ apiUrl: "http://x", bank: "shared-bank" });
+    const client = new DuMemoryClient({ apiUrl: "http://x", bank: "shared-bank" });
     const firstPage = Array.from({ length: 500 }, (_, i) => ({ id: `git:${i}` }));
     const fetchMock = vi.fn(async (_url: string | URL | Request) => {
       const offset = String(_url).includes("offset=500") ? 500 : 0;
@@ -59,7 +59,7 @@ describe("HindsightClient document-list safety", () => {
   });
 
   it("preserves the inclusive all mode for existing callers that do not opt into strict matching", async () => {
-    const client = new HindsightClient({ apiUrl: "http://x", bank: "shared-bank" });
+    const client = new DuMemoryClient({ apiUrl: "http://x", bank: "shared-bank" });
     const fetchMock = vi.fn(async (_url: string | URL | Request) =>
       jsonResponse(200, { items: [], total: 0 })
     );
@@ -73,10 +73,10 @@ describe("HindsightClient document-list safety", () => {
   });
 });
 
-describe("HindsightClient.drain", () => {
+describe("DuMemoryClient.drain", () => {
   it("polls at most maxParallelRetains ops concurrently", async () => {
     const cap = 2;
-    const client = new HindsightClient({ apiUrl: "http://x", bank: "b", maxParallelRetains: cap });
+    const client = new DuMemoryClient({ apiUrl: "http://x", bank: "b", maxParallelRetains: cap });
     let inFlight = 0;
     let maxInFlight = 0;
     const fetchMock = vi.fn(async () => {
@@ -97,7 +97,7 @@ describe("HindsightClient.drain", () => {
 
   it("backs off by Retry-After when it exceeds the 10s floor", async () => {
     vi.useFakeTimers();
-    const client = new HindsightClient({ apiUrl: "http://x", bank: "b" });
+    const client = new DuMemoryClient({ apiUrl: "http://x", bank: "b" });
     const fetchMock = vi.fn(async () => jsonResponse(429, {}, { "Retry-After": "30" }));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -116,7 +116,7 @@ describe("HindsightClient.drain", () => {
     // The header is a hint, not a budget we owe the server: an hour-long value would otherwise
     // park the drain — and the background seed behind it — for that hour.
     vi.useFakeTimers();
-    const client = new HindsightClient({ apiUrl: "http://x", bank: "b" });
+    const client = new DuMemoryClient({ apiUrl: "http://x", bank: "b" });
     const fetchMock = vi.fn(async () => jsonResponse(429, {}, { "Retry-After": "3600" }));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -131,7 +131,7 @@ describe("HindsightClient.drain", () => {
 
   it("uses the 10s floor when Retry-After is shorter than it", async () => {
     vi.useFakeTimers();
-    const client = new HindsightClient({ apiUrl: "http://x", bank: "b" });
+    const client = new DuMemoryClient({ apiUrl: "http://x", bank: "b" });
     const fetchMock = vi.fn(async () => jsonResponse(429, {}, { "Retry-After": "2" }));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -148,7 +148,7 @@ describe("HindsightClient.drain", () => {
 
   it("backs off 10s on a 429 that carries no Retry-After", async () => {
     vi.useFakeTimers();
-    const client = new HindsightClient({ apiUrl: "http://x", bank: "b" });
+    const client = new DuMemoryClient({ apiUrl: "http://x", bank: "b" });
     const fetchMock = vi.fn(async () => jsonResponse(429, {}));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -165,7 +165,7 @@ describe("HindsightClient.drain", () => {
 
   it("keeps the 5s cycle when ops stay pending without a 429", async () => {
     vi.useFakeTimers();
-    const client = new HindsightClient({ apiUrl: "http://x", bank: "b" });
+    const client = new DuMemoryClient({ apiUrl: "http://x", bank: "b" });
     const fetchMock = vi.fn(async () => jsonResponse(200, { status: "running" }));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -179,7 +179,7 @@ describe("HindsightClient.drain", () => {
   });
 
   it("marks non-completed terminal ops as failed and drops them from polling", async () => {
-    const client = new HindsightClient({ apiUrl: "http://x", bank: "b" });
+    const client = new DuMemoryClient({ apiUrl: "http://x", bank: "b" });
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       const id = String(url).split("/").pop();
       return id === "1"
@@ -188,7 +188,7 @@ describe("HindsightClient.drain", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     const log = vi.fn();
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "b", log });
+    const c = new DuMemoryClient({ apiUrl: "http://x", bank: "b", log });
 
     await c.drain(["1", "2"], "test", 10_000);
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -217,9 +217,9 @@ describe("retryAfterMs", () => {
   });
 });
 
-describe("HindsightClient.retain — observation scoping", () => {
+describe("DuMemoryClient.retain — observation scoping", () => {
   async function retainItem(
-    client: HindsightClient,
+    client: DuMemoryClient,
     tags: string[] = ["source:chat", "harness:claude-code"]
   ): Promise<Record<string, unknown>> {
     let sent: string | undefined;
@@ -237,7 +237,7 @@ describe("HindsightClient.retain — observation scoping", () => {
 
   it("defaults every retain to the single global scope, so two agents on one repo build ONE set of observations (#3564)", async () => {
     expect(DEFAULT_OBSERVATION_SCOPES).toBe("shared");
-    const item = await retainItem(new HindsightClient({ apiUrl: "http://x", bank: "b" }));
+    const item = await retainItem(new DuMemoryClient({ apiUrl: "http://x", bank: "b" }));
     expect(item.observation_scopes).toBe("shared");
     // The harness tag still travels: it is what the documents list filters and draws its logo from.
     expect(item.tags).toEqual(["source:chat", "harness:claude-code"]);
@@ -245,11 +245,11 @@ describe("HindsightClient.retain — observation scoping", () => {
 
   it("sends a configured scoping instead, including the server's own default", async () => {
     const combined = await retainItem(
-      new HindsightClient({ apiUrl: "http://x", bank: "b", observationScopes: "combined" })
+      new DuMemoryClient({ apiUrl: "http://x", bank: "b", observationScopes: "combined" })
     );
     expect(combined.observation_scopes).toBe("combined");
     const explicit = await retainItem(
-      new HindsightClient({ apiUrl: "http://x", bank: "b", observationScopes: [["project:demo"]] })
+      new DuMemoryClient({ apiUrl: "http://x", bank: "b", observationScopes: [["project:demo"]] })
     );
     expect(explicit.observation_scopes).toEqual([["project:demo"]]);
   });
@@ -266,9 +266,9 @@ describe("HindsightClient.retain — observation scoping", () => {
  * It reads ONLY `source:`, so volatile provenance tags (a session id in `retainTags`) can never
  * become a scope — the failure mode `per_tag` would reintroduce.
  */
-describe("HindsightClient.retain — per_source scoping", () => {
+describe("DuMemoryClient.retain — per_source scoping", () => {
   async function retainItem(
-    client: HindsightClient,
+    client: DuMemoryClient,
     tags: string[]
   ): Promise<Record<string, unknown>> {
     let sent: string | undefined;
@@ -285,7 +285,7 @@ describe("HindsightClient.retain — per_source scoping", () => {
   }
 
   const perSource = () =>
-    new HindsightClient({ apiUrl: "http://x", bank: "b", observationScopes: "per_source" });
+    new DuMemoryClient({ apiUrl: "http://x", bank: "b", observationScopes: "per_source" });
 
   it("keeps the global scope and adds the document's own source scope", async () => {
     const item = await retainItem(perSource(), ["source:chat", "harness:claude-code"]);
@@ -331,15 +331,15 @@ describe("HindsightClient.retain — per_source scoping", () => {
  * The scoping default lives in the client, so an entrypoint that forgets to forward the config
  * fails SOFTLY — it keeps writing correct memories and just ignores the user's `observationScopes`.
  * Nothing would notice, and the next harness added would copy the site that forgot. So assert it
- * over the whole family instead of per entrypoint, the way daemon.test.ts guards `ensureDaemon`.
+ * over the whole family instead of per entrypoint.
  */
 /**
  * #3600: the client captured `apiToken` at construction, so a long-lived host (dsh, Cline, Kilo,
  * Prime Agent, the MCP server) kept signing with a credential the operator had already replaced —
- * every call 401'd until the whole host restarted, while `hindsight_diagnose` read the file and
+ * every call 401'd until the whole host restarted, while `dumemory_diagnose` read the file and
  * called it healthy.
  */
-describe("HindsightClient credential refresh", () => {
+describe("DuMemoryClient credential refresh", () => {
   /** Stub fetch that only accepts one bearer token, and records what it was asked. */
   function server(accepted: () => string | undefined) {
     const calls: { auth: string | null; body: string | null }[] = [];
@@ -358,7 +358,7 @@ describe("HindsightClient credential refresh", () => {
   it("recovers from a rotated credential without restarting the host", async () => {
     const { calls } = server(() => "new-key");
     let onDisk = "old-key";
-    const client = new HindsightClient({
+    const client = new DuMemoryClient({
       apiUrl: "http://x",
       bank: "b",
       apiToken: onDisk,
@@ -374,7 +374,7 @@ describe("HindsightClient credential refresh", () => {
 
   it("does not retry when the credential is unchanged — a wrong key stays one 401, not two", async () => {
     const { calls } = server(() => "right-key");
-    const client = new HindsightClient({
+    const client = new DuMemoryClient({
       apiUrl: "http://x",
       bank: "b",
       apiToken: "wrong-key",
@@ -387,7 +387,7 @@ describe("HindsightClient credential refresh", () => {
 
   it("keeps the last credential that worked when the provider throws", async () => {
     const { calls } = server(() => "any");
-    const client = new HindsightClient({
+    const client = new DuMemoryClient({
       apiUrl: "http://x",
       bank: "b",
       apiToken: "good-key",
@@ -404,7 +404,7 @@ describe("HindsightClient credential refresh", () => {
 
   it("leaves a provider-less client exactly as it was", async () => {
     const { calls } = server(() => "any");
-    const client = new HindsightClient({ apiUrl: "http://x", bank: "b", apiToken: "stale" });
+    const client = new DuMemoryClient({ apiUrl: "http://x", bank: "b", apiToken: "stale" });
 
     await expect(client.req("GET", "http://x/thing")).rejects.toThrow(/401/);
     expect(calls).toHaveLength(1);
@@ -413,7 +413,7 @@ describe("HindsightClient credential refresh", () => {
   it("replays the body of a retried POST", async () => {
     const { calls } = server(() => "new-key");
     let onDisk = "old-key";
-    const client = new HindsightClient({
+    const client = new DuMemoryClient({
       apiUrl: "http://x",
       bank: "b",
       apiToken: onDisk,
@@ -434,7 +434,7 @@ describe("HindsightClient credential refresh", () => {
   it("recovers on the reflect path too, not just the generic request path", async () => {
     const { calls } = server(() => "new-key");
     let onDisk = "old-key";
-    const client = new HindsightClient({
+    const client = new DuMemoryClient({
       apiUrl: "http://x",
       bank: "b",
       apiToken: onDisk,
@@ -448,10 +448,10 @@ describe("HindsightClient credential refresh", () => {
 
   it("says whether a credential was even sent, which the server's 401 cannot", async () => {
     server(() => "needed");
-    const none = new HindsightClient({ apiUrl: "http://x", bank: "b" });
+    const none = new DuMemoryClient({ apiUrl: "http://x", bank: "b" });
     await expect(none.req("GET", "http://x/thing")).rejects.toThrow(/no apiToken is configured/);
 
-    const wrong = new HindsightClient({ apiUrl: "http://x", bank: "b", apiToken: "nope" });
+    const wrong = new DuMemoryClient({ apiUrl: "http://x", bank: "b", apiToken: "nope" });
     await expect(wrong.req("GET", "http://x/thing")).rejects.toThrow(/was rejected/);
   });
 });
@@ -480,11 +480,11 @@ describe("every memory write goes through the one call site that scopes it", () 
     const writers = sourceFiles(SRC).filter((rel) =>
       readFileSync(join(SRC, rel), "utf8").includes('"/memories')
     );
-    expect(writers).toEqual(["core/hindsight.ts"]);
+    expect(writers).toEqual(["core/dumemory.ts"]);
   });
 
   it("keeps that call site inside retain(), with the scoping on the item it posts", () => {
-    const src = readFileSync(join(SRC, "core/hindsight.ts"), "utf8");
+    const src = readFileSync(join(SRC, "core/dumemory.ts"), "utf8");
     expect(src.match(/bankUrl\("\/memories"\)/g)).toHaveLength(1);
     // Everything between retain()'s signature and the POST is the body it builds; the scoping
     // has to be set in there, not left to whatever the server defaults to.
@@ -512,7 +512,7 @@ describe("every client-building entrypoint forwards observationScopes", () => {
       const src = readFileSync(join(SRC, rel), "utf8");
       // `makeClient({` is the hook/session-start seam: the ClientOpts are built there even though
       // the constructor call itself is the injected default further up the file.
-      const buildsClient = src.includes("new HindsightClient({") || src.includes("makeClient({");
+      const buildsClient = src.includes("new DuMemoryClient({") || src.includes("makeClient({");
       return buildsClient && !src.includes("observationScopes:");
     });
     expect(dropped).toEqual([]);

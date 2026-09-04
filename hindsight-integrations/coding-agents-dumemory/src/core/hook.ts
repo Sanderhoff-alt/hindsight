@@ -24,8 +24,8 @@ import { applyBankConfig, loadConfig } from "./config";
 import { diag, diagFilePath } from "./diag";
 import { describeError, log, setLogLevel } from "./log";
 import { startBackgroundSeed } from "./seed";
-import type { ClientOpts } from "./hindsight";
-import { HindsightClient } from "./hindsight";
+import type { ClientOpts } from "./dumemory";
+import { DuMemoryClient } from "./dumemory";
 import { brandWord } from "./brand";
 import { buildReflectQuery, buildSystemInjection } from "./inject";
 import type { PageRef } from "./knowledge-injection";
@@ -57,37 +57,12 @@ export interface HookSpec {
   emit(context: string, notice?: string, event?: Record<string, unknown>): unknown;
 }
 
-/** Minimal client shape `buildHookOutput` needs — `HindsightClient` satisfies it structurally. */
+/** Minimal client shape `buildHookOutput` needs — `DuMemoryClient` satisfies it structurally. */
 interface HookClient {
   reflect(query: string, opts: { budget?: string; timeoutMs: number }): Promise<string>;
   listPages(): Promise<unknown>;
   knowledgePagesSupported?: boolean;
 }
-
-/**
- * Cap on the once-per-session reflect. INVARIANT: this MUST stay below every harness's
- * UserPromptSubmit/PreInvocation hook timeout (currently 30s in the supported hook harnesses) —
- * otherwise the host kills the hook mid-reflect before the
- * result is cached, so the injection is discarded AND the reflect re-fires (uncached) every turn.
- */
-/**
- * Reflect timeout caps per harness.
- * For CLI hook harnesses with strict host timeouts (e.g. 30s in Claude Code), cap reflection at 28s
- * to leave headroom before the host terminates the process.
- * For harnesses with a 60s hook window (dcode), allow up to 55s.
- * Plugin harnesses not listed here (dsh, opencode, cline, etc.) use cfg.reflectTimeoutMs directly.
- */
-const HARNESS_REFLECT_CAP_MS: Record<string, number> = {
-  "claude-code": 55_000,
-  codex: 28_000,
-  "antigravity-cli": 28_000,
-  "cursor-cli": 28_000,
-  "copilot-cli": 55_000,
-  "devin-cli": 28_000,
-  "grok-build": 28_000,
-  "qwen-code": 28_000,
-  dcode: 55_000,
-};
 
 export interface HookOutput {
   /** The model-facing injection block, or undefined when there's nothing to inject. */
@@ -133,14 +108,17 @@ export async function buildHookOutput(args: {
     const t0 = Date.now();
     try {
       reflectAnswer = await client.reflect(buildReflectQuery(prompt), {
-        // Automatic reflection runs inside a hard 25s hook window. Hindsight's low budget is the
-        // supported default for bounded reflect calls; callers that explicitly invoke the MCP
-        // tool still get the deeper high-budget path.
+        // `budget: "low"` is the supported default for a bounded, automatic reflect; a caller that
+        // explicitly invokes the MCP tool still gets the deeper high-budget path.
+        //
+        // `reflectTimeoutMs` is honoured verbatim for EVERY harness. There used to be a per-harness
+        // cap here, keeping the automatic reflect below each host's hook timeout — it was dropped
+        // because the default (DEFAULT_REFLECT_TIMEOUT_MS) already fits the tightest of those
+        // windows, so the cap only ever silently overrode someone who had raised the knob on
+        // purpose. Raising it past the host's hook timeout now means the host kills the hook
+        // mid-reflect, which is the caller's call to make.
         budget: "low",
-        timeoutMs:
-          HARNESS_REFLECT_CAP_MS[harness] !== undefined
-            ? Math.min(cfg.reflectTimeoutMs, HARNESS_REFLECT_CAP_MS[harness])
-            : cfg.reflectTimeoutMs,
+        timeoutMs: cfg.reflectTimeoutMs,
       });
       diag(harness, reflectAnswer ? "reflect_ok" : "reflect_empty", {
         ms: Date.now() - t0,
@@ -195,11 +173,11 @@ export async function buildHookOutput(args: {
   // Hook-injected context lands in the USER MESSAGE and persists in the transcript — unlike a
   // system prompt, it accumulates. The reflect block is injected exactly ONCE, the turn reflect
   // ran. No cadence re-injection: replaying the turn-1 synthesis at arbitrary later turns reads
-  // as random noise once the session drifts, and the agent holds hindsight_reflect for a FRESH
+  // as random noise once the session drifts, and the agent holds dumemory_reflect for a FRESH
   // pass if compaction or drift makes it need memory again.
   if (reflectAnswer && reflectRanThisTurn) blocks.push(buildSystemInjection(reflectAnswer));
   // Knowledge pages are NOT auto-injected: the agent pulls them through
-  // hindsight_search_knowledge_pages when a question warrants it — an unprompted injection on
+  // dumemory_search_knowledge_pages when a question warrants it — an unprompted injection on
   // every turn (even a plain "yes") read as phantom research. The roster below keeps the tool
   // and the page names in front of the agent.
   if (cadence > 0 && turns % cadence === 0) {
@@ -209,7 +187,7 @@ export async function buildHookOutput(args: {
 
   // User-facing notice ONLY on the turn reflect actually ran (showing its assigned goal and a
   // preview of what came back). Ordinary turns stay silent — page knowledge is now pulled via
-  // the hindsight_search_knowledge_pages tool, which is visible as a real tool call.
+  // the dumemory_search_knowledge_pages tool, which is visible as a real tool call.
   let notice: string | undefined;
   if (reflectRanThisTurn && reflectAnswer) {
     const q = prompt.replace(/\s+/g, " ").trim();
@@ -232,10 +210,10 @@ export async function buildHookOutput(args: {
 /** Run one hook invocation: stdin event in, (maybe) an injection object on stdout. */
 export async function runHook(
   spec: HookSpec,
-  makeClient: (opts: ClientOpts) => HookClient = (o) => new HindsightClient(o)
+  makeClient: (opts: ClientOpts) => HookClient = (o) => new DuMemoryClient(o)
 ): Promise<void> {
   // Anti-recursion: the codebase survey's own headless session sets this so its hooks are a no-op.
-  if (process.env.HINDSIGHT_DISABLE_HOOKS) return;
+  if (process.env.DUMEMORY_DISABLE_HOOKS) return;
 
   let ev: Record<string, unknown> = {};
   try {

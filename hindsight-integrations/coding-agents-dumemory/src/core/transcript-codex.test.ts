@@ -34,7 +34,7 @@ describe("readCodexTranscript", () => {
         content: [
           {
             type: "input_text",
-            text: "<hindsight_memories>\nsecret recalled fact\n</hindsight_memories>",
+            text: "<dumemory_memory>\nsecret recalled fact\n</dumemory_memory>",
           },
         ],
       }),
@@ -109,7 +109,7 @@ describe("readCodexTranscript", () => {
         content: [
           {
             type: "input_text",
-            text: "<hindsight_memories>\nleak\n</hindsight_memories>\nWhy retry?",
+            text: "<dumemory_memory>\nleak\n</dumemory_memory>\nWhy retry?",
           },
         ],
       })

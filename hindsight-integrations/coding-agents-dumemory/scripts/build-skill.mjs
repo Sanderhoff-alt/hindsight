@@ -4,7 +4,7 @@
  *
  * The companion skill and the README documented the same configuration in two different files, and
  * they drifted apart in BOTH directions: the skill never named `bankIdTemplate`, `optInOnly`,
- * `retainTags` or the daemon settings and claimed outright that "no environment variables" exist
+ * `retainTags` and claimed outright that "no environment variables" exist
  * (there are 30-odd, see core/config.ts ENV_KEYS), while the README's reference table had lost
  * `autoReflect` and `surveyRefreshCommits`, which only the skill had. Issue #3735 was filed against
  * the half of that drift that faces users.

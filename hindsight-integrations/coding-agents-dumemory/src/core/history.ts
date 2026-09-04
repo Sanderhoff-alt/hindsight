@@ -1,13 +1,9 @@
 /**
- * Import a harness's PAST sessions from local disk — the migration path off the older per-agent
- * plugins.
+ * Import a harness's PAST sessions from local disk.
  *
  * Day to day, conversations reach a bank through live write-back, so a fresh install starts from
- * git history alone and knows nothing of what you discussed last month. The old per-agent plugins
- * stored their memory in differently-scoped banks (`claude-code::<project>` vs this package's
- * per-repo `coding-agent::{gitProject}`), and the server's bank import restores a whole bank rather
- * than merging — so those banks cannot be folded together. Re-reading the transcripts the agent
- * already wrote to disk sidesteps that entirely: the same conversations are re-extracted into
+ * git history alone and knows nothing of what you discussed last month. Re-reading the transcripts
+ * the agent already wrote to disk closes that gap: the same conversations are re-extracted into
  * whichever bank is current.
  *
  * Scoped to ONE repo on purpose. This machine has ~14k Claude sessions; importing all of them would

@@ -2,14 +2,14 @@
  * Harness-agnostic incremental git sync — keeps a backfilled bank current with new commits.
  *
  * It diffs the commits reachable from a target ref (default `origin/main`, falling back to HEAD) against
- * the commit document_ids already in Hindsight (tag `source:git`, id `git:<sha>`) and async-retains ONLY
+ * the commit document_ids already in DuMemory (tag `source:git`, id `git:<sha>`) and async-retains ONLY
  * the missing commits, using the SAME per-commit encoding the backfill uses (see retainCommit). The check
  * is SET-BASED, so it is correct across rebases / force-push: stale commits simply remain in memory and
  * whatever the ref now points at gets ingested. Everything is best-effort and non-blocking — a sync
  * failure (offline, no remote, unconfigured bank) must never break the agent.
  */
 import { execFileSync } from "node:child_process";
-import type { HindsightClient } from "./hindsight";
+import type { DuMemoryClient } from "./dumemory";
 import { retainCommit, repoNameOf } from "./git";
 import { pool } from "./util";
 
@@ -50,7 +50,7 @@ function resolveRef(repo: string, preferred: string): string | null {
 }
 
 export async function syncGit(
-  client: HindsightClient,
+  client: DuMemoryClient,
   repo: string,
   opts: SyncOpts = {}
 ): Promise<SyncResult> {

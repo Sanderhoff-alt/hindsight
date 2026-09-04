@@ -1,15 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { resolveConfig } from "./config";
-import type { HindsightClient } from "./hindsight";
+import type { DuMemoryClient } from "./dumemory";
 import { RuntimeCore } from "./runtime";
-
-// The real ensureDaemon shells out (uvx/cargo probes) and spawns a detached process; only WHERE it
-// is called from is under test here — the deciding itself is covered in daemon.test.ts.
-const daemonSpy = vi.hoisted(() => vi.fn(async () => {}));
-vi.mock("./daemon", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./daemon")>()),
-  ensureDaemon: daemonSpy,
-}));
 
 describe("RuntimeCore", () => {
   it("uses the shared prompt lifecycle and consumes the new-bank reflect deferral once", async () => {
@@ -17,7 +9,7 @@ describe("RuntimeCore", () => {
       listDocumentIds: vi.fn(async () => new Set(["git:existing"])),
       listPages: vi.fn(async () => ({ items: [] })),
       reflect: vi.fn(async () => "shared reflect"),
-    } as unknown as HindsightClient;
+    } as unknown as DuMemoryClient;
     const runtime = new RuntimeCore(client, "bank-1", resolveConfig({}));
 
     await runtime.seedIfCold("/definitely-not-a-git-repository");
@@ -45,7 +37,7 @@ describe("RuntimeCore session-idle write-back", () => {
       retain: vi.fn(async (text: string, _ctx: string, docId: string) => {
         retained.push({ turns: text, docId });
       }),
-    } as unknown as HindsightClient;
+    } as unknown as DuMemoryClient;
     return { client, retained };
   }
 
@@ -121,69 +113,42 @@ describe("RuntimeCore session-idle write-back", () => {
 });
 
 /**
- * Daemon parity with the hook harnesses (#3524).
- *
- * A persistent-plugin host runs no hook binaries, so `runSessionStartHook`/`runRetainHook` — where
- * the hook harnesses ensure the daemon — never execute for it. dsh in daemon mode therefore never
- * started one: every `hindsight_*` call failed with ECONNREFUSED until the user ran daemon-start.js
- * by hand, and again after each idle-out. RuntimeCore is the one place all five plugin hosts
- * (opencode, Kilo, Cline, Prime Agent, dsh) share, so the two ensure points live here.
+ * The host's stop handler AWAITS onSessionIdle, so the write-back is deliberately fire-and-forget:
+ * a retain that takes seconds — or hangs on an unreachable server — must not freeze the host's UI
+ * for that long. This is the only guard on that; `await`ing the retain here would still pass every
+ * other test in this file.
  */
-describe("RuntimeCore daemon lifecycle", () => {
-  const daemonCfg = resolveConfig({ serverMode: "daemon" });
-  const client = {
-    listDocumentIds: vi.fn(async () => new Set<string>()),
-    listPages: vi.fn(async () => ({ items: [] })),
-    retain: vi.fn(async () => {}),
-  } as unknown as HindsightClient;
-
-  beforeEach(() => daemonSpy.mockClear());
-
-  it("starts the daemon at seedIfCold — the plugin hosts' SessionStart", async () => {
-    const core = new RuntimeCore(client, "bank-1", daemonCfg, "dsh", "/repos/one");
-    await core.seedIfCold("/repos/one");
-    expect(daemonSpy).toHaveBeenCalledWith(daemonCfg, "dsh", { waitMs: 12_000 });
-  });
-
-  // A daemon that is gone by write-back time — crashed, or stopped by the user between turns —
-  // would lose the whole exchange with no second chance to start one.
-  it("starts the daemon again on write-back — the Stop hook these hosts don't have", async () => {
-    const core = new RuntimeCore(client, "bank-1", daemonCfg, "dsh", "/repos/one");
+describe("RuntimeCore write-back never blocks the host", () => {
+  it("resolves onSessionIdle without waiting for the retain to finish", async () => {
+    let releaseRetain = () => {};
+    const client = {
+      retain: vi.fn(() => new Promise<void>((r) => (releaseRetain = () => r()))),
+    } as unknown as DuMemoryClient;
+    const core = new RuntimeCore(client, "bank-1", resolveConfig({}), "dsh", "/repos/one");
     core.setTranscriptSource(async () => [{ role: "user", content: "hi" }] as never);
-    await core.onSessionIdle("s1");
-    await new Promise((r) => setTimeout(r, 0)); // retain is fire-and-forget
-    expect(daemonSpy).toHaveBeenCalledWith(daemonCfg, "dsh", { waitMs: 40_000 });
+
+    await expect(core.onSessionIdle("s1")).resolves.toBeUndefined();
     expect(client.retain).toHaveBeenCalled();
-  });
-
-  // Waiting inside the fire-and-forget chain is the point: the host's stop handler awaits
-  // onSessionIdle, and a 40s block there would freeze the UI on a cold daemon.
-  it("never makes the host wait for the daemon on the write path", async () => {
-    let released = () => {};
-    daemonSpy.mockImplementationOnce(() => new Promise<void>((r) => (released = r)));
-    const core = new RuntimeCore(client, "bank-1", daemonCfg, "dsh", "/repos/one");
-    core.setTranscriptSource(async () => [{ role: "user", content: "hi" }] as never);
-    await expect(core.onSessionIdle("s2")).resolves.toBeUndefined();
-    released();
+    releaseRetain();
   });
 });
 
 /**
  * The plugin harnesses (opencode, kilo, cline, dsh, ...) register the tools through toolSpecs()
  * rather than the MCP server, so they hit the same #3590 bug: without these forwarded, every
- * hindsight_reflect on those hosts aborts at the client's hardcoded 120s.
+ * dumemory_reflect on those hosts aborts at the client's hardcoded 120s.
  */
 describe("RuntimeCore reflect tool settings", () => {
-  it("forwards the resolved reflect timeout and budget into hindsight_reflect", async () => {
+  it("forwards the resolved reflect timeout and budget into dumemory_reflect", async () => {
     const reflect = vi.fn(async () => "answer");
-    const client = { reflect } as unknown as HindsightClient;
+    const client = { reflect } as unknown as DuMemoryClient;
     const core = new RuntimeCore(
       client,
       "bank-1",
       resolveConfig({ reflectToolTimeoutMs: 660_000, reflectBudget: "mid" })
     );
 
-    const tool = core.toolSpecs().find((spec) => spec.name === "hindsight_reflect")!;
+    const tool = core.toolSpecs().find((spec) => spec.name === "dumemory_reflect")!;
     await tool.handler({ query: "why?" });
     expect(reflect).toHaveBeenCalledWith("why?", { budget: "mid", timeoutMs: 660_000 });
   });
@@ -193,7 +158,7 @@ describe("RuntimeCore reflect tool settings", () => {
  * dsh serves several repositories from ONE process, launched in a directory that is routinely not
  * the session's — so it constructs a core per workspace and passes that root. Every tool that
  * answers "what does this repo's memory look like" has to be bound to it: otherwise
- * `hindsight_sync_status` runs its git checks in the launch directory and looks for THAT repo's
+ * `dumemory_sync_status` runs its git checks in the launch directory and looks for THAT repo's
  * `gitlog:<name>` document in the SESSION's bank, reporting a seeded repo as unsynced.
  */
 describe("RuntimeCore tool workspace binding", () => {
@@ -201,10 +166,10 @@ describe("RuntimeCore tool workspace binding", () => {
     listDocumentIds: vi.fn(async () => new Set<string>()),
     listPages: vi.fn(async () => ({ items: [] })),
     activeOperations: vi.fn(async () => 0),
-  } as unknown as HindsightClient;
+  } as unknown as DuMemoryClient;
 
   const workspaceOf = async (core: RuntimeCore): Promise<string> => {
-    const diagnose = core.toolSpecs().find((spec) => spec.name === "hindsight_diagnose")!;
+    const diagnose = core.toolSpecs().find((spec) => spec.name === "dumemory_diagnose")!;
     return (JSON.parse((await diagnose.handler({})).content[0].text) as { workspace: string })
       .workspace;
   };

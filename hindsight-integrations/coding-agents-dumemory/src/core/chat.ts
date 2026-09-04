@@ -3,7 +3,7 @@
  * backfill (ingest past sessions) and the live runtime write-back. A leading `system` turn carries
  * the REF-ID tracer; every turn gets an ABSOLUTE timestamp.
  */
-import { RateLimitedError, type HindsightClient } from "./hindsight";
+import { RateLimitedError, type DuMemoryClient } from "./dumemory";
 import { fingerprintTurns, planRetain, type RetainCursorStore } from "./retain-cursor";
 import type { RetainStamp } from "./retain-stamp";
 import type { ChatSession } from "./types";
@@ -36,7 +36,7 @@ export function renderSessionJsonl(refId: string, turns: TransportTurn[], baseTs
 
 /** Backfill: ingest past sessions RAW as JSON transcripts under the `conversation` strategy. */
 export async function ingestChats(
-  client: HindsightClient,
+  client: DuMemoryClient,
   sessions: ChatSession[],
   opts: {
     concurrency?: number;
@@ -101,7 +101,7 @@ export async function ingestChats(
 
 /** Capability probe for the append path. Any failure answers "no": a write-back must never be lost
  *  because we couldn't work out whether the cheaper form of it was available. */
-async function supportsAppend(client: HindsightClient): Promise<boolean> {
+async function supportsAppend(client: DuMemoryClient): Promise<boolean> {
   try {
     return await client.supportsIdempotentRetain();
   } catch {
@@ -202,7 +202,7 @@ function serialize(
  * (see core/transcript*.ts).
  */
 export async function retainLiveSession(
-  client: HindsightClient,
+  client: DuMemoryClient,
   sessionId: string,
   turns: TransportTurn[],
   startTs: string,
@@ -228,7 +228,7 @@ export async function retainLiveSession(
 }
 
 async function writeSession(
-  client: HindsightClient,
+  client: DuMemoryClient,
   sessionId: string,
   turns: TransportTurn[],
   startTs: string,

@@ -2,7 +2,13 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { loadConfig, applyBankConfig, readEnvConfig, resolveConfig } from "./config";
+import {
+  applyBankConfig,
+  DEFAULT_REFLECT_TIMEOUT_MS,
+  loadConfig,
+  readEnvConfig,
+  resolveConfig,
+} from "./config";
 
 let root: string;
 let globalCfg: string;
@@ -95,22 +101,22 @@ describe("maxParallelRetains", () => {
     process.env = { ...ENV };
   });
 
-  it("reads HINDSIGHT_MAX_PARALLEL_RETAINS as a number", () => {
+  it("reads DUMEMORY_MAX_PARALLEL_RETAINS as a number", () => {
     writeJson(globalCfg, {});
-    process.env.HINDSIGHT_MAX_PARALLEL_RETAINS = "6";
+    process.env.DUMEMORY_MAX_PARALLEL_RETAINS = "6";
     expect(loadConfig({ path: globalCfg }).maxParallelRetains).toBe(6);
   });
 
   it("ignores a malformed env value and falls back to the default", () => {
     writeJson(globalCfg, {});
     vi.spyOn(console, "error").mockImplementation(() => {});
-    process.env.HINDSIGHT_MAX_PARALLEL_RETAINS = "lots";
+    process.env.DUMEMORY_MAX_PARALLEL_RETAINS = "lots";
     expect(loadConfig({ path: globalCfg }).maxParallelRetains).toBe(10);
   });
 });
 
 /**
- * #3590: the hindsight_reflect tool aborted at a hardcoded 120s. The tool's window is now its own
+ * #3590: the dumemory_reflect tool aborted at a hardcoded 120s. The tool's window is now its own
  * knob, defaulting ABOVE the server's 300s reflect wall timeout — and it inherits an explicitly
  * raised reflectTimeoutMs, because that is the field users reaching for a longer reflect set.
  */
@@ -118,7 +124,7 @@ describe("reflectToolTimeoutMs / reflectBudget", () => {
   it("defaults above the server's reflect wall timeout, leaving the hook window untouched", () => {
     const cfg = resolveConfig({});
     expect(cfg.reflectToolTimeoutMs).toBe(330000);
-    expect(cfg.reflectTimeoutMs).toBe(120000);
+    expect(cfg.reflectTimeoutMs).toBe(DEFAULT_REFLECT_TIMEOUT_MS);
     expect(cfg.reflectBudget).toBe("high");
   });
 
@@ -145,8 +151,8 @@ describe("reflectToolTimeoutMs / reflectBudget", () => {
 
   it("reads the env fallbacks", () => {
     writeJson(globalCfg, {});
-    process.env.HINDSIGHT_REFLECT_TOOL_TIMEOUT_MS = "600000";
-    process.env.HINDSIGHT_REFLECT_BUDGET = "mid";
+    process.env.DUMEMORY_REFLECT_TOOL_TIMEOUT_MS = "600000";
+    process.env.DUMEMORY_REFLECT_BUDGET = "mid";
     const cfg = loadConfig({ path: globalCfg });
     expect(cfg.reflectToolTimeoutMs).toBe(600000);
     expect(cfg.reflectBudget).toBe("mid");
@@ -158,7 +164,7 @@ describe("reflectToolTimeoutMs / reflectBudget", () => {
   });
 });
 
-// A project-local .hindsight/coding-agent.json comes from the (untrusted) opened repo. It must not be
+// A project-local .dumemory/coding-agent.json comes from the (untrusted) opened repo. It must not be
 // able to redirect the API endpoint/token or the global bank map — otherwise a malicious repo could
 // exfiltrate the user's token + prompts to its own server just by being opened.
 describe("loadConfig — untrusted project-local layer is sanitized (security)", () => {
@@ -262,8 +268,8 @@ describe("environment fallback", () => {
 
   it("supplies apiUrl and apiToken when the file omits them", () => {
     writeJson(globalCfg, { bankId: "b" }); // no apiUrl/apiToken
-    process.env.HINDSIGHT_API_URL = "http://localhost:8888";
-    process.env.HINDSIGHT_API_TOKEN = "tok-from-env";
+    process.env.DUMEMORY_API_URL = "http://localhost:8888";
+    process.env.DUMEMORY_API_TOKEN = "tok-from-env";
     const cfg = loadConfig({ path: globalCfg });
     expect(cfg.apiUrl).toBe("http://localhost:8888");
     expect(cfg.apiToken).toBe("tok-from-env");
@@ -271,8 +277,8 @@ describe("environment fallback", () => {
 
   it("the FILE wins over env — env is a fallback, not an override", () => {
     writeJson(globalCfg, { apiUrl: "https://from-file", apiToken: "tok-from-file" });
-    process.env.HINDSIGHT_API_URL = "https://from-env";
-    process.env.HINDSIGHT_API_TOKEN = "tok-from-env";
+    process.env.DUMEMORY_API_URL = "https://from-env";
+    process.env.DUMEMORY_API_TOKEN = "tok-from-env";
     const cfg = loadConfig({ path: globalCfg });
     expect(cfg.apiUrl).toBe("https://from-file");
     expect(cfg.apiToken).toBe("tok-from-file");
@@ -280,10 +286,10 @@ describe("environment fallback", () => {
 
   it("parses booleans and numbers rather than passing strings through", () => {
     writeJson(globalCfg, {});
-    process.env.HINDSIGHT_AUTO_REFLECT = "false";
-    process.env.HINDSIGHT_MANAGE_BANK_CONFIG = "false";
-    process.env.HINDSIGHT_DISABLED = "1";
-    process.env.HINDSIGHT_SEED_LIMIT = "5";
+    process.env.DUMEMORY_AUTO_REFLECT = "false";
+    process.env.DUMEMORY_MANAGE_BANK_CONFIG = "false";
+    process.env.DUMEMORY_DISABLED = "1";
+    process.env.DUMEMORY_SEED_LIMIT = "5";
     const cfg = loadConfig({ path: globalCfg });
     expect(cfg.autoReflect).toBe(false);
     expect(cfg.manageBankConfig).toBe(false);
@@ -294,15 +300,15 @@ describe("environment fallback", () => {
   it("ignores a malformed number instead of resolving it to NaN", () => {
     writeJson(globalCfg, {});
     vi.spyOn(console, "error").mockImplementation(() => {});
-    process.env.HINDSIGHT_REFLECT_TIMEOUT_MS = "soon";
+    process.env.DUMEMORY_REFLECT_TIMEOUT_MS = "soon";
     // NaN here would silently break the reflect timeout in a way that is very hard to trace.
-    expect(loadConfig({ path: globalCfg }).reflectTimeoutMs).toBe(120000);
+    expect(loadConfig({ path: globalCfg }).reflectTimeoutMs).toBe(DEFAULT_REFLECT_TIMEOUT_MS);
   });
 
   it("an empty env var does not mask the file or the default", () => {
     writeJson(globalCfg, { apiUrl: "https://from-file" });
-    process.env.HINDSIGHT_API_URL = "";
-    process.env.HINDSIGHT_SURVEY_MODEL = "   ";
+    process.env.DUMEMORY_API_URL = "";
+    process.env.DUMEMORY_SURVEY_MODEL = "   ";
     const cfg = loadConfig({ path: globalCfg });
     expect(cfg.apiUrl).toBe("https://from-file");
     expect(cfg.surveyModel).toBe("haiku");
@@ -336,25 +342,25 @@ describe("retainTags / retainMetadata", () => {
   });
 });
 
-describe("HINDSIGHT_RETAIN_TAGS", () => {
+describe("DUMEMORY_RETAIN_TAGS", () => {
   it("reads a comma-separated list — the env form of retainTags (#2896)", () => {
     expect(
-      readEnvConfig({ HINDSIGHT_RETAIN_TAGS: "project:{gitProject},env:work" }).retainTags
+      readEnvConfig({ DUMEMORY_RETAIN_TAGS: "project:{gitProject},env:work" }).retainTags
     ).toEqual(["project:{gitProject}", "env:work"]);
   });
 
   it("trims entries and drops empties, so a trailing comma is not an empty tag", () => {
-    expect(readEnvConfig({ HINDSIGHT_RETAIN_TAGS: " a , ,b, " }).retainTags).toEqual(["a", "b"]);
+    expect(readEnvConfig({ DUMEMORY_RETAIN_TAGS: " a , ,b, " }).retainTags).toEqual(["a", "b"]);
   });
 
   it("is absent when unset or empty, leaving the file value alone", () => {
     expect(readEnvConfig({}).retainTags).toBeUndefined();
-    expect(readEnvConfig({ HINDSIGHT_RETAIN_TAGS: "" }).retainTags).toBeUndefined();
-    expect(readEnvConfig({ HINDSIGHT_RETAIN_TAGS: " , " }).retainTags).toBeUndefined();
+    expect(readEnvConfig({ DUMEMORY_RETAIN_TAGS: "" }).retainTags).toBeUndefined();
+    expect(readEnvConfig({ DUMEMORY_RETAIN_TAGS: " , " }).retainTags).toBeUndefined();
   });
 
   it("has no retainMetadata counterpart — map-valued settings stay file-only", () => {
-    expect(readEnvConfig({ HINDSIGHT_RETAIN_METADATA: "repo=x" }).retainMetadata).toBeUndefined();
+    expect(readEnvConfig({ DUMEMORY_RETAIN_METADATA: "repo=x" }).retainMetadata).toBeUndefined();
   });
 });
 
@@ -402,8 +408,8 @@ describe("observationScopes", () => {
     expect(applyBankConfig(cfg, "coding-agent::other").cfg.observationScopes).toBe("shared");
   });
 
-  it("reads HINDSIGHT_OBSERVATION_SCOPES for the scalar modes; a scope LIST stays file-only", () => {
-    expect(readEnvConfig({ HINDSIGHT_OBSERVATION_SCOPES: "per_tag" }).observationScopes).toBe(
+  it("reads DUMEMORY_OBSERVATION_SCOPES for the scalar modes; a scope LIST stays file-only", () => {
+    expect(readEnvConfig({ DUMEMORY_OBSERVATION_SCOPES: "per_tag" }).observationScopes).toBe(
       "per_tag"
     );
     expect(readEnvConfig({}).observationScopes).toBeUndefined();

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HindsightClient } from "./hindsight";
+import { DuMemoryClient } from "./dumemory";
 import {
   buildPageTrigger,
   KNOWLEDGE_LABELS,
@@ -31,7 +31,7 @@ function stubFetch(calls: any[], jsonImpl: () => Promise<unknown> = async () => 
 /** The knowledge-base surface is the ONLY page surface: nothing here may touch /mental-models,
  *  or ids stop resolving (search returns kp-… node ids) and seeded pages fall out of the search
  *  corpus (it joins through knowledge_pages). */
-describe("HindsightClient knowledge-page reads", () => {
+describe("DuMemoryClient knowledge-page reads", () => {
   it("recognizes an older server and exposes the missing capability", async () => {
     vi.stubGlobal(
       "fetch",
@@ -41,7 +41,7 @@ describe("HindsightClient knowledge-page reads", () => {
         json: async () => ({ detail: "not found" }),
       })) as any
     );
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    const c = new DuMemoryClient({ apiUrl: "http://x", bank: "repo-a" });
     await expect(c.listPages()).rejects.toMatchObject({ code: "knowledge_pages_unavailable" });
     expect(c.knowledgePagesSupported).toBe(false);
     await expect(c.searchKnowledgePages("architecture")).rejects.toMatchObject({
@@ -52,7 +52,7 @@ describe("HindsightClient knowledge-page reads", () => {
   it("listPages reads the knowledge-base tree — never /mental-models", async () => {
     const calls: any[] = [];
     stubFetch(calls, async () => ({ roots: [] }));
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    const c = new DuMemoryClient({ apiUrl: "http://x", bank: "repo-a" });
     await c.listPages();
     expect(calls).toHaveLength(1);
     expect(calls[0].method).toBe("GET");
@@ -73,7 +73,7 @@ describe("HindsightClient knowledge-page reads", () => {
         },
       ],
     }));
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    const c = new DuMemoryClient({ apiUrl: "http://x", bank: "repo-a" });
     expect(await c.listPages()).toEqual({
       items: [
         { id: "kp-1", name: "Component map", description: "what are the parts?" },
@@ -93,14 +93,14 @@ describe("HindsightClient knowledge-page reads", () => {
         },
       })) as any
     );
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    const c = new DuMemoryClient({ apiUrl: "http://x", bank: "repo-a" });
     expect(await c.listPages()).toEqual({ items: [] });
   });
 
   it("getPage GETs knowledge-base/pages/{id}", async () => {
     const calls: any[] = [];
     stubFetch(calls, async () => ({ id: "kp-1" }));
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    const c = new DuMemoryClient({ apiUrl: "http://x", bank: "repo-a" });
     const result = await c.getPage("kp-1");
     expect(result).toEqual({ id: "kp-1" });
     expect(calls[0].method).toBe("GET");
@@ -119,7 +119,7 @@ describe("HindsightClient knowledge-page reads", () => {
         json: { id: "kp-abc" },
       },
     ]);
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    const c = new DuMemoryClient({ apiUrl: "http://x", bank: "repo-a" });
     const [hit] = await c.searchKnowledgePages("components");
     await c.getPage(hit.id);
     // The read must land on the page endpoint for the very id search returned — the old
@@ -130,7 +130,7 @@ describe("HindsightClient knowledge-page reads", () => {
   it("URL-encodes pageId in the getPage suffix", async () => {
     const calls: any[] = [];
     stubFetch(calls, async () => ({ ok: true }));
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    const c = new DuMemoryClient({ apiUrl: "http://x", bank: "repo-a" });
     await c.getPage("p 1/x");
     expect(calls[0].url).toContain(`/knowledge-base/pages/${encodeURIComponent("p 1/x")}`);
   });
@@ -142,12 +142,12 @@ describe("HindsightClient knowledge-page reads", () => {
         async () => ({ ok: false, status: 404, json: async () => ({ detail: "not found" }) }) as any
       )
     );
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    const c = new DuMemoryClient({ apiUrl: "http://x", bank: "repo-a" });
     await expect(c.getPage("missing")).rejects.toThrow("knowledge page not found: missing");
   });
 });
 
-describe("HindsightClient.seedPages", () => {
+describe("DuMemoryClient.seedPages", () => {
   it("skips page writes when the server has no knowledge-pages API", async () => {
     const calls: any[] = [];
     vi.stubGlobal(
@@ -159,7 +159,7 @@ describe("HindsightClient.seedPages", () => {
         return { ok: true, status: 200, json: async () => ({}) } as any;
       }) as any
     );
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    const c = new DuMemoryClient({ apiUrl: "http://x", bank: "repo-a" });
     await expect(c.configureBank()).resolves.toBeUndefined();
     expect(c.knowledgePagesSupported).toBe(false);
     expect(calls.some((x) => x.url.endsWith("/import"))).toBe(true);
@@ -171,7 +171,7 @@ describe("HindsightClient.seedPages", () => {
     stubFetchRouted(calls, [
       { match: (m, u) => m === "GET" && u.endsWith("/knowledge-base/tree"), json: { roots: [] } },
     ]);
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    const c = new DuMemoryClient({ apiUrl: "http://x", bank: "repo-a" });
     await c.seedPages();
 
     const posts = calls.filter(
@@ -202,7 +202,7 @@ describe("HindsightClient.seedPages", () => {
     stubFetchRouted(calls, [
       { match: (m, u) => m === "GET" && u.endsWith("/knowledge-base/tree"), json: { roots: [] } },
     ]);
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    const c = new DuMemoryClient({ apiUrl: "http://x", bank: "repo-a" });
     await c.configureBank({
       pageTrigger: buildPageTrigger(
         resolveConfig({ pageTriggerType: "cron", pageTriggerCron: "0 3 * * *" })
@@ -235,7 +235,7 @@ describe("HindsightClient.seedPages", () => {
         },
       },
     ]);
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    const c = new DuMemoryClient({ apiUrl: "http://x", bank: "repo-a" });
     await c.seedPages();
     expect(calls).toHaveLength(1); // the tree GET only
     expect(calls.every((k) => k.method === "GET")).toBe(true);
@@ -256,7 +256,7 @@ describe("HindsightClient.seedPages", () => {
         } as any;
       })
     );
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    const c = new DuMemoryClient({ apiUrl: "http://x", bank: "repo-a" });
     // A losing race must not fail the deepen run — the page exists either way.
     await expect(c.seedPages()).resolves.toBeUndefined();
     expect(
@@ -281,7 +281,7 @@ describe("HindsightClient.seedPages", () => {
         },
       },
     ]);
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    const c = new DuMemoryClient({ apiUrl: "http://x", bank: "repo-a" });
     await c.seedPages();
 
     // Case difference alone must NOT look like a missing page.
@@ -314,7 +314,7 @@ describe("HindsightClient.seedPages", () => {
         },
       },
     ]);
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    const c = new DuMemoryClient({ apiUrl: "http://x", bank: "repo-a" });
     await c.seedPages();
 
     const patches = calls.filter((k) => k.method === "PATCH");
@@ -343,7 +343,7 @@ describe("HindsightClient.seedPages", () => {
         },
       },
     ]);
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    const c = new DuMemoryClient({ apiUrl: "http://x", bank: "repo-a" });
     await c.seedPages();
 
     expect(calls).toHaveLength(1); // the tree GET only
@@ -366,7 +366,7 @@ describe("HindsightClient.seedPages", () => {
         },
       },
     ]);
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    const c = new DuMemoryClient({ apiUrl: "http://x", bank: "repo-a" });
     await c.seedPages();
 
     const patches = calls.filter((k) => k.method === "PATCH");
@@ -382,7 +382,7 @@ describe("HindsightClient.seedPages", () => {
     stubFetchRouted(calls, [
       { match: (m, u) => m === "GET" && u.endsWith("/knowledge-base/tree"), json: { roots: [] } },
     ]);
-    const c = new HindsightClient({
+    const c = new DuMemoryClient({
       apiUrl: "http://x",
       bank: "coding-agent::dotfiles",
       project: "dotfiles",
@@ -407,7 +407,7 @@ describe("HindsightClient.seedPages", () => {
     stubFetchRouted(calls, [
       { match: (m, u) => m === "GET" && u.endsWith("/knowledge-base/tree"), json: { roots: [] } },
     ]);
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "coding-agent::dotfiles" });
+    const c = new DuMemoryClient({ apiUrl: "http://x", bank: "coding-agent::dotfiles" });
     await c.seedPages();
 
     for (const post of calls.filter((k) => k.method === "POST")) {
@@ -466,7 +466,7 @@ function stubFetchRouted(
   );
 }
 
-describe("HindsightClient.ensureFolder", () => {
+describe("DuMemoryClient.ensureFolder", () => {
   it("returns an existing root folder's id (case-insensitive) and does NOT POST a duplicate", async () => {
     const calls: any[] = [];
     stubFetchRouted(calls, [
@@ -475,7 +475,7 @@ describe("HindsightClient.ensureFolder", () => {
         json: { roots: [{ id: "existing-1", kind: "folder", name: "initiatives" }] },
       },
     ]);
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    const c = new DuMemoryClient({ apiUrl: "http://x", bank: "repo-a" });
     const id = await c.ensureFolder("Initiatives");
     expect(id).toBe("existing-1");
     expect(
@@ -492,7 +492,7 @@ describe("HindsightClient.ensureFolder", () => {
         json: { id: "new-folder" },
       },
     ]);
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    const c = new DuMemoryClient({ apiUrl: "http://x", bank: "repo-a" });
     const id = await c.ensureFolder("Initiatives");
     expect(id).toBe("new-folder");
     const post = calls.find(
@@ -502,7 +502,7 @@ describe("HindsightClient.ensureFolder", () => {
   });
 });
 
-describe("HindsightClient.captureInitiative", () => {
+describe("DuMemoryClient.captureInitiative", () => {
   it("new initiative: POSTs a per-initiative page + a marker retain naming the same page id", async () => {
     const calls: any[] = [];
     stubFetchRouted(calls, [
@@ -520,7 +520,7 @@ describe("HindsightClient.captureInitiative", () => {
         json: { operation_id: "op-1" },
       },
     ]);
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    const c = new DuMemoryClient({ apiUrl: "http://x", bank: "repo-a" });
     const result = await c.captureInitiative({
       title: "Retry backoff for the uploader",
       summary: "Add exponential backoff so transient upload failures retry.",
@@ -572,7 +572,7 @@ describe("HindsightClient.captureInitiative", () => {
         json: { operation_id: "op-1" },
       },
     ]);
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    const c = new DuMemoryClient({ apiUrl: "http://x", bank: "repo-a" });
     const result = await c.captureInitiative({
       title: "More backoff tuning",
       summary: "Tweak the jitter window.",
@@ -607,7 +607,7 @@ describe("HindsightClient.captureInitiative", () => {
         json: { operation_id: "op-1" },
       },
     ]);
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    const c = new DuMemoryClient({ apiUrl: "http://x", bank: "repo-a" });
     await c.captureInitiative({
       title: "Attributed initiative",
       summary: "Keep its project provenance.",
@@ -629,13 +629,13 @@ describe("HindsightClient.captureInitiative", () => {
   });
 });
 
-describe("HindsightClient.configureBank template import", () => {
+describe("DuMemoryClient.configureBank template import", () => {
   it("POSTs the CODING_BANK_TEMPLATE manifest to /import, then seeds pages via the knowledge base", async () => {
     const calls: any[] = [];
     stubFetchRouted(calls, [
       { match: (m, u) => m === "GET" && u.endsWith("/knowledge-base/tree"), json: { roots: [] } },
     ]);
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    const c = new DuMemoryClient({ apiUrl: "http://x", bank: "repo-a" });
     await c.configureBank();
 
     const importPosts = calls.filter((k) => k.method === "POST" && k.url.endsWith("/import"));
@@ -673,7 +673,7 @@ describe("HindsightClient.configureBank template import", () => {
     stubFetchRouted(calls, [
       { match: (m, u) => m === "GET" && u.endsWith("/knowledge-base/tree"), json: { roots: [] } },
     ]);
-    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    const c = new DuMemoryClient({ apiUrl: "http://x", bank: "repo-a" });
     await c.configureBank({ reset: true });
 
     expect(calls[0].method).toBe("DELETE");
@@ -683,7 +683,7 @@ describe("HindsightClient.configureBank template import", () => {
   });
 });
 
-describe("HindsightClient.configureBank — missions are seeded once (#2492)", () => {
+describe("DuMemoryClient.configureBank — missions are seeded once (#2492)", () => {
   const routes = (overrides: Record<string, unknown> | undefined, ok = true) => [
     {
       match: (m: string, u: string) => m === "GET" && u.endsWith("/knowledge-base/tree"),
@@ -710,7 +710,7 @@ describe("HindsightClient.configureBank — missions are seeded once (#2492)", (
         } as any;
       })
     );
-    await new HindsightClient({ apiUrl: "http://x", bank: "repo-a" }).configureBank();
+    await new DuMemoryClient({ apiUrl: "http://x", bank: "repo-a" }).configureBank();
     // Optional: a bank that already carries the whole structure is not imported to at all (#3927).
     return calls.find((k) => k.method === "POST" && k.url.endsWith("/import"))?.body;
   };
@@ -783,7 +783,7 @@ describe("HindsightClient.configureBank — missions are seeded once (#2492)", (
         return { ok: true, status: 200, json: async () => ({ roots: [] }) } as any;
       })
     );
-    await new HindsightClient({ apiUrl: "http://x", bank: "repo-a" }).configureBank({
+    await new DuMemoryClient({ apiUrl: "http://x", bank: "repo-a" }).configureBank({
       manage: false,
     });
     expect(calls.some((k) => k.url.endsWith("/import"))).toBe(false);
@@ -805,7 +805,7 @@ describe("HindsightClient.configureBank — missions are seeded once (#2492)", (
         return { ok: true, status: 200, json: async () => ({ roots: [] }) } as any;
       })
     );
-    await new HindsightClient({ apiUrl: "http://x", bank: "repo-a" }).configureBank({
+    await new DuMemoryClient({ apiUrl: "http://x", bank: "repo-a" }).configureBank({
       reset: true,
     });
     const body = calls.find((k) => k.method === "POST" && k.url.endsWith("/import")).body;

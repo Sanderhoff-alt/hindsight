@@ -4,7 +4,7 @@ import { dcodeAssistantText, readDcodeTranscript } from "./transcript-dcode";
 
 describe("readDcodeTranscript", () => {
   it("normalizes Dcode records and compacts tool messages", () => {
-    const path = "/tmp/hindsight-dcode-transcript-test.jsonl";
+    const path = "/tmp/dumemory-dcode-transcript-test.jsonl";
     writeFileSync(
       path,
       [
@@ -29,7 +29,7 @@ describe("readDcodeTranscript", () => {
         JSON.stringify({
           schema_version: 1,
           role: "assistant",
-          content: "before <hindsight_memories>old context</hindsight_memories> after",
+          content: "before <dumemory_memory>old context</dumemory_memory> after",
         }),
         JSON.stringify({ schema_version: 2, role: "user", content: "unknown" }),
         "not json",

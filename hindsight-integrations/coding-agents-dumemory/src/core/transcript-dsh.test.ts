@@ -58,9 +58,9 @@ describe("readDshEvents", () => {
       {
         type: "user/message",
         time: at("2026-08-14T10:00:00Z"),
-        data: userMessage("<hindsight_memory>recalled</hindsight_memory>", {
+        data: userMessage("<dumemory_memory>recalled</dumemory_memory>", {
           kind: "plugin",
-          plugin: "hindsight",
+          plugin: "dumemory",
           form: "recall",
         }),
       },

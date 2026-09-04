@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { DEFAULT_REFLECT_TIMEOUT_MS } from "../core/config";
 import { HOOK_HARNESSES, type HookHarnessName } from "./hook-lifecycle";
 
 // Derived, not hand-listed: a hand-written roster silently stops covering the newest harness, which
@@ -112,7 +113,7 @@ describe("HOOK_HARNESSES lifecycle contract", () => {
     const dcode = HOOK_HARNESSES.dcode;
     expect(dcode.install).toMatchObject({
       sessionStart: { event: "SessionStart", entry: "dcode-sessionstart-hook.js", timeout: 30 },
-      prompt: { event: "UserPromptSubmit", entry: "dcode-hook.js", timeout: 60 },
+      prompt: { event: "UserPromptSubmit", entry: "dcode-hook.js", timeout: 30 },
       stop: { event: "Stop", entry: "dcode-stop-hook.js", timeout: 60 },
     });
     expect(dcode.prompt.parse({ prompt: "hello", cwd: "/repo", session_id: "s1" })).toEqual({
@@ -147,8 +148,7 @@ describe("HOOK_HARNESSES lifecycle contract", () => {
   // SECONDS, so a bare `>= 25_000` would pass vacuously for the seven seconds-based harnesses and
   // a bare `>= 25` would pass vacuously for qwen. Normalising through the declared unit is what
   // makes this catch a mutation in EITHER direction.
-  it("gives every prompt hook a budget above the once-per-session reflect cap", () => {
-    const HOOK_REFLECT_CAP_MS = 25_000;
+  it("gives every prompt hook a budget above the default automatic reflect timeout", () => {
     for (const harness of HOOK_HARNESS_NAMES) {
       const spec = HOOK_HARNESSES[harness];
       const raw = spec.install.prompt.timeout;
@@ -157,7 +157,7 @@ describe("HOOK_HARNESSES lifecycle contract", () => {
       expect(
         ms,
         `${harness} prompt timeout (${raw} ${spec.timeoutUnit ?? "seconds"})`
-      ).toBeGreaterThan(HOOK_REFLECT_CAP_MS);
+      ).toBeGreaterThan(DEFAULT_REFLECT_TIMEOUT_MS);
     }
   });
 

@@ -16,7 +16,7 @@ export interface SessionCache {
 }
 
 export function sessionCacheFile(harness: string, sessionId: string): string {
-  return join(tmpdir(), `hindsight-${harness}`, `${sessionId}.json`);
+  return join(tmpdir(), `dumemory-${harness}`, `${sessionId}.json`);
 }
 
 export function readSessionCache(cacheFile: string): SessionCache {
@@ -62,7 +62,7 @@ export function writeSessionCache(cacheFile: string, cache: SessionCache): void 
 
 /** The session root's own file, deliberately NOT the shared session cache — see sessionRootDir. */
 function sessionRootFile(harness: string, sessionId: string): string {
-  return join(tmpdir(), `hindsight-${harness}`, `${sessionId}.root`);
+  return join(tmpdir(), `dumemory-${harness}`, `${sessionId}.root`);
 }
 
 /**
@@ -109,7 +109,7 @@ export function sessionRootDir(
 
 /** The cursor's own file, deliberately NOT the shared session cache — see fileCursorStore. */
 function cursorFile(harness: string, sessionId: string): string {
-  return join(tmpdir(), `hindsight-${harness}`, `${sessionId}.retain.json`);
+  return join(tmpdir(), `dumemory-${harness}`, `${sessionId}.retain.json`);
 }
 
 /**

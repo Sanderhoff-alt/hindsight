@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resolveConfig } from "./config";
+import { DEFAULT_REFLECT_TIMEOUT_MS, resolveConfig } from "./config";
 import { buildHookOutput, runHook } from "./hook";
 import { diagFilePath } from "./diag";
 import { buildReflectQuery } from "./inject";
@@ -20,7 +20,7 @@ afterEach(() => {
 });
 
 /** One page with a preamble and two headed sections. Pages are fetched/cached for the
- *  hindsight_search_knowledge_pages tool but are NEVER auto-injected into context. */
+ *  dumemory_search_knowledge_pages tool but are NEVER auto-injected into context. */
 const PAGE_CONTENT =
   "Preamble prose about this page.\n\n" +
   "## Retry backoff\n" +
@@ -29,7 +29,7 @@ const PAGE_CONTENT =
   "Tokens rotate daily via the auth service.\n";
 
 /** The header formatPageInjection uses — must NEVER appear in hook context anymore. */
-const PAGES_HEADER = "Project knowledge from Hindsight, this repository's long-term memory";
+const PAGES_HEADER = "Project knowledge from DuMemory, this repository's long-term memory";
 
 /** A prompt overlapping the "Retry backoff" section (pages still must not inject). */
 const MATCHING_PROMPT = "why does the upload retry backoff fail?";
@@ -62,7 +62,7 @@ describe("buildHookOutput", () => {
       client,
       cacheFile,
     });
-    expect(result.context).toContain("Automatically retrieved by Hindsight");
+    expect(result.context).toContain("Automatically retrieved by DuMemory");
     expect(result.context).toContain("REFLECT_ANSWER");
     expect(existsSync(cacheFile)).toBe(true);
     const cached = JSON.parse(readFileSync(cacheFile, "utf8"));
@@ -183,24 +183,35 @@ describe("buildHookOutput", () => {
     expect(result.context).toBeUndefined();
   });
 
-  it("uses a bounded low-budget reflect and caps its timeout at 28000ms for 30s CLI hook harnesses", async () => {
-    const cfg = resolveConfig({}); // reflectTimeoutMs default 120000
-    const client = makeClient();
-    await buildHookOutput({
-      harness: "codex",
-      prompt: "the prompt",
-      cfg,
-      client,
-      cacheFile,
-    });
-    expect(client.reflect).toHaveBeenCalledWith(buildReflectQuery("the prompt"), {
-      budget: "low",
-      timeoutMs: 28000,
-    });
+  /**
+   * `reflectTimeoutMs` reaches the client verbatim for EVERY harness — hook-based and
+   * persistent-plugin alike. There used to be a per-harness cap (`Math.min` against a table) that
+   * silently overrode a raised knob; the default now fits the tightest installed hook window
+   * instead, so the table was dropped. Driven over both harness families so a cap reintroduced for
+   * one of them fails here.
+   */
+  it.each(["codex", "claude-code", "dsh"])(
+    "passes the configured reflect timeout through unchanged for %s",
+    async (harness) => {
+      const cfg = resolveConfig({});
+      const client = makeClient();
+      await buildHookOutput({ harness, prompt: "the prompt", cfg, client, cacheFile });
+      expect(client.reflect).toHaveBeenCalledWith(buildReflectQuery("the prompt"), {
+        budget: "low",
+        timeoutMs: DEFAULT_REFLECT_TIMEOUT_MS,
+      });
+    }
+  );
+
+  // The default is what keeps a hook harness inside its host's window; a bump needs the installed
+  // prompt-hook timeouts revisited with it (hook-lifecycle.test.ts asserts that relationship).
+  it("defaults the automatic reflect to a timeout that fits the tightest installed hook window", () => {
+    expect(resolveConfig({}).reflectTimeoutMs).toBe(DEFAULT_REFLECT_TIMEOUT_MS);
+    expect(DEFAULT_REFLECT_TIMEOUT_MS).toBeLessThan(30_000);
   });
 
-  it("caps reflect timeout at 55000ms for 60s hook harnesses (claude-code, dcode)", async () => {
-    const cfg = resolveConfig({}); // reflectTimeoutMs default 120000
+  it("honours an explicitly raised reflect timeout rather than capping it", async () => {
+    const cfg = resolveConfig({ reflectTimeoutMs: 90_000 });
     const client = makeClient();
     await buildHookOutput({
       harness: "claude-code",
@@ -211,39 +222,7 @@ describe("buildHookOutput", () => {
     });
     expect(client.reflect).toHaveBeenCalledWith(buildReflectQuery("the prompt"), {
       budget: "low",
-      timeoutMs: 55000,
-    });
-  });
-
-  it("does not cap reflect timeout for in-process plugin harnesses (dsh, cline, opencode)", async () => {
-    const cfg = resolveConfig({}); // reflectTimeoutMs default 120000
-    const client = makeClient();
-    await buildHookOutput({
-      harness: "dsh",
-      prompt: "the prompt",
-      cfg,
-      client,
-      cacheFile,
-    });
-    expect(client.reflect).toHaveBeenCalledWith(buildReflectQuery("the prompt"), {
-      budget: "low",
-      timeoutMs: 120000,
-    });
-  });
-
-  it("uses the configured reflect timeout when it is below the 25s cap", async () => {
-    const cfg = resolveConfig({ reflectTimeoutMs: 5000 });
-    const client = makeClient();
-    await buildHookOutput({
-      harness: "claude-code",
-      prompt: "the prompt",
-      cfg,
-      client,
-      cacheFile,
-    });
-    expect(client.reflect).toHaveBeenCalledWith(buildReflectQuery("the prompt"), {
-      budget: "low",
-      timeoutMs: 5000,
+      timeoutMs: 90_000,
     });
   });
 
@@ -258,7 +237,7 @@ describe("buildHookOutput", () => {
       cacheFile,
     });
     expect(client.reflect).not.toHaveBeenCalled();
-    expect(out.context ?? "").not.toContain("<hindsight_memory>");
+    expect(out.context ?? "").not.toContain("<dumemory_memory>");
     // Tool-only mode's pull trigger: the roster refresh must carry the pages-first rule.
     const cfg2 = resolveConfig({ autoReflect: false, pageRefreshEveryTurns: 1 });
     const out2 = await buildHookOutput({
@@ -290,8 +269,8 @@ describe("buildHookOutput", () => {
     expect(result.context).not.toContain("Preamble prose about this page.");
     expect(result.context).not.toContain("200ms jitter window");
     expect(result.context).not.toContain("Auth tokens");
-    expect(result.context).not.toContain("hindsight_read_knowledge_page p1");
-    expect(result.context).toContain("Automatically retrieved by Hindsight");
+    expect(result.context).not.toContain("dumemory_read_knowledge_page p1");
+    expect(result.context).toContain("Automatically retrieved by DuMemory");
     expect(result.context).toContain("REFLECT_ANSWER");
     // The roster is cached for the cadence-based refresh.
     const cached = JSON.parse(readFileSync(cacheFile, "utf8"));
@@ -311,7 +290,7 @@ describe("buildHookOutput", () => {
     });
     expect(result.context).toContain("REFLECT_ANSWER"); // reflect still injected
     expect(result.context).not.toContain(PAGES_HEADER);
-    expect(result.context).not.toContain("hindsight_read_knowledge_page p1");
+    expect(result.context).not.toContain("dumemory_read_knowledge_page p1");
   });
 
   it("empty page list -> no pages block", async () => {
@@ -326,7 +305,7 @@ describe("buildHookOutput", () => {
     });
     expect(result.context).toContain("REFLECT_ANSWER"); // reflect still injected
     expect(result.context).not.toContain(PAGES_HEADER);
-    expect(result.context).not.toContain("hindsight_read_knowledge_page");
+    expect(result.context).not.toContain("dumemory_read_knowledge_page");
   });
 
   it("injects the page-roster refresh only on cadence turns", async () => {
@@ -340,7 +319,7 @@ describe("buildHookOutput", () => {
       client,
       cacheFile,
     });
-    expect(t1.context).not.toContain("hindsight_knowledge_refresh");
+    expect(t1.context).not.toContain("dumemory_knowledge_refresh");
     // turn 2: multiple of 2 -> refresh injected, listing the page roster
     const t2 = await buildHookOutput({
       harness: "claude-code",
@@ -349,7 +328,7 @@ describe("buildHookOutput", () => {
       client,
       cacheFile,
     });
-    expect(t2.context).toContain("<hindsight_knowledge_refresh>");
+    expect(t2.context).toContain("<dumemory_knowledge_refresh>");
     expect(t2.context).toContain("Uploader guide (p1)");
     // reflect block is NOT re-injected on cadence turns (injected once, on the reflect turn)
     expect(t2.context).not.toContain("REFLECT_ANSWER");
@@ -425,15 +404,15 @@ describe("buildHookOutput", () => {
 });
 
 describe("runHook anti-recursion guard", () => {
-  const ORIGINAL = process.env.HINDSIGHT_DISABLE_HOOKS;
+  const ORIGINAL = process.env.DUMEMORY_DISABLE_HOOKS;
 
   afterEach(() => {
-    if (ORIGINAL === undefined) delete process.env.HINDSIGHT_DISABLE_HOOKS;
-    else process.env.HINDSIGHT_DISABLE_HOOKS = ORIGINAL;
+    if (ORIGINAL === undefined) delete process.env.DUMEMORY_DISABLE_HOOKS;
+    else process.env.DUMEMORY_DISABLE_HOOKS = ORIGINAL;
   });
 
-  it("HINDSIGHT_DISABLE_HOOKS set -> returns immediately, never reads stdin or builds a client", async () => {
-    process.env.HINDSIGHT_DISABLE_HOOKS = "1";
+  it("DUMEMORY_DISABLE_HOOKS set -> returns immediately, never reads stdin or builds a client", async () => {
+    process.env.DUMEMORY_DISABLE_HOOKS = "1";
     const makeClient = vi.fn();
     // No stdin is provided/mocked here — if the guard didn't return before `readFileSync(0, ...)`,
     // this call would attempt to read the real process stdin. The fact this resolves at all (let

@@ -24,15 +24,15 @@ describe("parsePageList", () => {
 describe("buildKnowledgePreamble", () => {
   it("lists the pages and gives a when-to-call guide for the FULL tool suite", () => {
     const out = buildKnowledgePreamble([{ id: "p1", title: "Component map" }]);
-    expect(out).toContain("<hindsight_knowledge>");
+    expect(out).toContain("<dumemory_knowledge>");
     expect(out).toContain("Component map");
     expect(out).toContain("p1");
     // Every meaningful tool must be named with a when-to-call, not just pages.
-    expect(out).toContain("hindsight_list_knowledge_pages");
-    expect(out).toContain("hindsight_read_knowledge_page");
-    expect(out).toContain("hindsight_reflect");
-    expect(out).toContain("hindsight_capture_initiative");
-    expect(out).toContain("hindsight_ingest_document");
+    expect(out).toContain("dumemory_list_knowledge_pages");
+    expect(out).toContain("dumemory_read_knowledge_page");
+    expect(out).toContain("dumemory_reflect");
+    expect(out).toContain("dumemory_capture_initiative");
+    expect(out).toContain("dumemory_ingest_document");
   });
   it("tells the agent to recapture an initiative when the plan changes mid-work", () => {
     // Same contract as the MCP tool description (knowledge-tools.ts) — the two must not drift.
@@ -61,11 +61,11 @@ describe("buildKnowledgePreamble", () => {
       }),
     ]) {
       expect(out).toMatch(/new task or goal.*knowledge pages FIRST/is);
-      expect(out).toMatch(/hindsight_reflect only when.*pages are too shallow/is);
+      expect(out).toMatch(/dumemory_reflect only when.*pages are too shallow/is);
       // No `s` flag ON PURPOSE: this must stay a per-LINE guard against the old wording
-      // ("call hindsight_reflect with that goal FIRST"). With `s` it would span newlines and
-      // match the legitimate "hindsight_reflect ..." / "FIRST STOP" lines further down the guide.
-      expect(out).not.toMatch(/hindsight_reflect.*FIRST/);
+      // ("call dumemory_reflect with that goal FIRST"). With `s` it would span newlines and
+      // match the legitimate "dumemory_reflect ..." / "FIRST STOP" lines further down the guide.
+      expect(out).not.toMatch(/dumemory_reflect.*FIRST/);
     }
   });
 });
@@ -76,20 +76,20 @@ describe("buildRosterRefresh", () => {
     expect(out).toContain("Component map");
     expect(out).toContain("p1");
     for (const tool of [
-      "hindsight_list_knowledge_pages",
-      "hindsight_read_knowledge_page",
-      "hindsight_capture_initiative",
-      "hindsight_ingest_document",
+      "dumemory_list_knowledge_pages",
+      "dumemory_read_knowledge_page",
+      "dumemory_capture_initiative",
+      "dumemory_ingest_document",
     ]) {
       expect(out).toContain(tool);
     }
   });
   it("still emits the full tool guide when there are no pages yet (no roster, but the guide persists)", () => {
     const out = buildRosterRefresh([]);
-    expect(out).toContain("<hindsight_knowledge_refresh>");
-    expect(out).toContain("hindsight_capture_initiative");
-    expect(out).toContain("hindsight_ingest_document");
+    expect(out).toContain("<dumemory_knowledge_refresh>");
+    expect(out).toContain("dumemory_capture_initiative");
+    expect(out).toContain("dumemory_ingest_document");
     // No roster block when there are no pages.
-    expect(out).not.toContain("Current Hindsight knowledge pages");
+    expect(out).not.toContain("Current DuMemory knowledge pages");
   });
 });

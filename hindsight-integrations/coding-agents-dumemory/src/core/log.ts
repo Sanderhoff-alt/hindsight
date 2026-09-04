@@ -2,8 +2,8 @@
  * Leveled plugin logging — ONE human-readable log file for debugging, next to (not replacing) the
  * structured diag JSONL contract (core/diag.ts, which benchmarks/harnesses parse).
  *
- *   file : $TMPDIR/hindsight-coding-agent/plugin.log   (override: HINDSIGHT_LOG_FILE)
- *   level: "info" default — config `logLevel`, or HINDSIGHT_LOG_LEVEL for ad-hoc debugging
+ *   file : $TMPDIR/dumemory-coding-agent/plugin.log   (override: DUMEMORY_LOG_FILE)
+ *   level: "info" default — config `logLevel`, or DUMEMORY_LOG_LEVEL for ad-hoc debugging
  *          without touching config ("debug" | "info" | "warn" | "error")
  *
  * Line format: `<iso> LEVEL [scope] message {extra-json}` — greppable, tail-able. At "debug",
@@ -18,17 +18,16 @@ export type LogLevel = "debug" | "info" | "warn" | "error";
 const WEIGHT: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };
 
 let current: LogLevel =
-  (["debug", "info", "warn", "error"] as const).find(
-    (l) => l === process.env.HINDSIGHT_LOG_LEVEL
-  ) ?? "info";
+  (["debug", "info", "warn", "error"] as const).find((l) => l === process.env.DUMEMORY_LOG_LEVEL) ??
+  "info";
 
-/** Entry points call this after loadConfig; the HINDSIGHT_LOG_LEVEL env override still wins. */
+/** Entry points call this after loadConfig; the DUMEMORY_LOG_LEVEL env override still wins. */
 export function setLogLevel(level: LogLevel): void {
-  if (!process.env.HINDSIGHT_LOG_LEVEL) current = level;
+  if (!process.env.DUMEMORY_LOG_LEVEL) current = level;
 }
 
 export function logFilePath(): string {
-  return process.env.HINDSIGHT_LOG_FILE || join(tmpdir(), "hindsight-coding-agent", "plugin.log");
+  return process.env.DUMEMORY_LOG_FILE || join(tmpdir(), "dumemory-coding-agent", "plugin.log");
 }
 
 function write(level: LogLevel, scope: string, msg: string, extra?: Record<string, unknown>): void {

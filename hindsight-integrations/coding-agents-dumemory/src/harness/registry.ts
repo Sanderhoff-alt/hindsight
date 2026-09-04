@@ -67,15 +67,15 @@ export const HARNESS_NAMES = [
 ];
 
 const HOOK_BINS: Record<string, string> = {
-  "claude-code": "hindsight-claude-hook",
-  "cursor-cli": "hindsight-cursor-hook",
-  codex: "hindsight-codex-hook",
-  dcode: "hindsight-dcode-hook",
-  "antigravity-cli": "hindsight-antigravity-hook",
-  "devin-cli": "hindsight-devin-hook",
-  "copilot-cli": "hindsight-copilot-hook",
-  "grok-build": "hindsight-grok-hook",
-  "qwen-code": "hindsight-qwen-hook",
+  "claude-code": "dumemory-claude-hook",
+  "cursor-cli": "dumemory-cursor-hook",
+  codex: "dumemory-codex-hook",
+  dcode: "dumemory-dcode-hook",
+  "antigravity-cli": "dumemory-antigravity-hook",
+  "devin-cli": "dumemory-devin-hook",
+  "copilot-cli": "dumemory-copilot-hook",
+  "grok-build": "dumemory-grok-hook",
+  "qwen-code": "dumemory-qwen-hook",
   // more hook harnesses: add a HookSpec entry point (see src/cursor-hook.ts) + a registration here.
 };
 

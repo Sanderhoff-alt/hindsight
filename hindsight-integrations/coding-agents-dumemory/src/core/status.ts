@@ -5,7 +5,7 @@
  * so "is my memory ready?" needs an inspectable answer instead of a command exit code. `syncStatus`
  * compares the LIVE bank against the repo: gitlog seed present, how much of the recent history has
  * been deepened (per-commit diffs), chats ingested, knowledge pages present, extractions still
- * running. Agents get it as the `hindsight_sync_status` tool; harnesses (e.g. the benchmark) poll
+ * running. Agents get it as the `dumemory_sync_status` tool; harnesses (e.g. the benchmark) poll
  * the same via `dist/status.js`.
  *
  * `synced` is the completion marker for the REQUIRED memory: gitlog seeded, pages created, and no
@@ -19,7 +19,7 @@ import { commitsSince, repoNameOf } from "./git";
 import { parsePageList } from "./knowledge-injection";
 import { SURVEY_DOC_IDS } from "./survey";
 
-/** Minimal client shape (HindsightClient satisfies it structurally). */
+/** Minimal client shape (DuMemoryClient satisfies it structurally). */
 export interface StatusClient {
   listDocumentIds(tag: string, tagsMatch?: "all" | "all_strict"): Promise<Set<string>>;
   listPages(): Promise<unknown>;
@@ -114,8 +114,8 @@ export async function syncStatus(
     surveyDocs,
     surveyCommitsBehind,
     activeOps,
-    // Older Hindsight servers have no page surface. They are still fully usable for the
-    // legacy bank/retain pipeline, so page absence must not make syncStatus permanently false.
+    // Older DuMemory servers have no page surface. They are still fully usable for the
+    // raw-memory facts, so we count them as "pages satisfied" rather than permanently un-synced.
     synced:
       gitlogPresent &&
       (client.knowledgePagesSupported === false || pages.length > 0) &&

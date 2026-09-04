@@ -8,10 +8,10 @@ let root: string;
 let cfgPath: string;
 
 /** `CONFIG_PATH` is resolved from the environment when core/config is first imported, so each case
- *  points HINDSIGHT_CONFIG at its own file and re-imports the module graph. */
+ *  points DUMEMORY_CONFIG at its own file and re-imports the module graph. */
 async function loadFactory() {
   vi.resetModules();
-  process.env.HINDSIGHT_CONFIG = cfgPath;
+  process.env.DUMEMORY_CONFIG = cfgPath;
   return import("./host-client");
 }
 
@@ -139,14 +139,14 @@ describe("long-lived hosts build their client through the shared factory", () =>
   it("has no module constructing a client outside the factory without a stated reason", () => {
     const unexplained = sourceFiles(SRC).filter(
       (rel) =>
-        !(rel in DIRECT) && readFileSync(join(SRC, rel), "utf8").includes("new HindsightClient(")
+        !(rel in DIRECT) && readFileSync(join(SRC, rel), "utf8").includes("new DuMemoryClient(")
     );
     expect(unexplained).toEqual([]);
   });
 
   it("keeps no entry for a module that stopped constructing one", () => {
     const stale = Object.keys(DIRECT).filter(
-      (rel) => !readFileSync(join(SRC, rel), "utf8").includes("new HindsightClient(")
+      (rel) => !readFileSync(join(SRC, rel), "utf8").includes("new DuMemoryClient(")
     );
     expect(stale).toEqual([]);
   });

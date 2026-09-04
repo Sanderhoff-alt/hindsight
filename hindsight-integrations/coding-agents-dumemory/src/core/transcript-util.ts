@@ -6,19 +6,25 @@
 export const TOOL_TEXT_CAP = 2000;
 
 /** Injected context — stripped from retained text so a write-back never re-ingests its own
- *  injected memory (a retain→reflect feedback loop). Covers every block the hooks inject, PLUS
- *  the host's own hook-transport wrappers, which arrive as ordinary USER messages and would
- *  otherwise be extracted as things the user said (#3023):
+ *  injected memory (a retain→reflect feedback loop). Covers every block the hooks inject
+ *  (`<dumemory_memory>` from inject.ts, `<dumemory_knowledge>` / `<dumemory_knowledge_refresh>`
+ *  from knowledge-injection.ts), PLUS the host's own hook-transport wrappers, which arrive as
+ *  ordinary USER messages and would otherwise be extracted as things the user said (#3023):
  *    <hook_prompt>        codex surfaces hook stdout/errors this way
  *    <task-notification>  Claude Code reports a background task's outcome — task id, tool-use id,
  *                         status; measured at 39 of these across 400 local transcripts, each one
  *                         the entire message
  *    <system-reminder>    same class; today it only rides inside `tool_result` blocks, which the
  *                         Claude reader already drops, so this is insurance against it moving
+ *  `relevant_memories` has no producer anywhere in this repo — its first appearance was already a
+ *  stripper, so it predates the code that copied it forward. Kept conservatively: a transcript can
+ *  carry another injector's block, and an alternative that never matches costs nothing. Contrast
+ *  `user_feedback`, dropped once its producer was: this package DID inject a `<user_feedback>`
+ *  section above the memories block until raw recall was removed, and the stripper outlived it.
  *  Tag-structural, not content-guessing. The block is removed and any surrounding text KEPT — a
  *  message that is nothing but a wrapper then renders empty and is dropped as a no-content turn. */
 const MEMORY_TAG_RE =
-  /<(hook_prompt|task-notification|system-reminder|hindsight_memory|hindsight_memories|hindsight_bank|relevant_memories|user_feedback|hindsight_knowledge|hindsight_knowledge_refresh)\b[\s\S]*?<\/\1>/g;
+  /<(hook_prompt|task-notification|system-reminder|dumemory_memory|relevant_memories|dumemory_knowledge|dumemory_knowledge_refresh)\b[\s\S]*?<\/\1>/g;
 
 export function stripInjectedMemory(s: string): string {
   return s.replace(MEMORY_TAG_RE, "");

@@ -7,7 +7,7 @@ import { startStubModel, type StubModel } from "./stub-model";
 
 export interface HarnessDockerSetup {
   name: string;
-  hindsightHarness: string;
+  dumemoryHarness: string;
   installCommand: string;
   /**
    * Where the host keeps this CLI's subscription credentials, and where the CLI expects them in the
@@ -22,7 +22,7 @@ export interface HarnessDockerSetup {
    */
   stubModelEnv?(baseUrl: string): Record<string, string>;
   /**
-   * False when the host cannot put Hindsight's context in front of the model, so the E2E asserts
+   * False when the host cannot put DuMemory's context in front of the model, so the E2E asserts
    * retention only. Grok Build is the case: its prompt hook is passive — Grok ignores hook stdout,
    * so the memory block never reaches the conversation no matter what we do. Everything else about
    * the integration (bank setup, session write-back, MCP tools) still works and is still asserted.
@@ -55,13 +55,13 @@ export interface E2eRun {
 }
 
 // The symptom deliberately omits the answer. A passing harness can only produce these literals if
-// its real hook lifecycle receives Hindsight's semantic context from the seeded bank.
+// its real hook lifecycle receives DuMemory's semantic context from the seeded bank.
 export const seededDecisionStatuses = ["429", "408"];
 
-const E2E = process.env.HINDSIGHT_HARNESS_E2E === "1";
+const E2E = process.env.DUMEMORY_HARNESS_E2E === "1";
 const PACKAGE_ROOT = resolve(fileURLToPath(new URL("../..", import.meta.url)));
-const IMAGE = "hindsight-coding-agents-e2e";
-const RUN_MARKER = "HINDSIGHT_E2E_HARNESS_PROMPT";
+const IMAGE = "dumemory-coding-agents-e2e";
+const RUN_MARKER = "DUMEMORY_E2E_HARNESS_PROMPT";
 
 function required(value: string | undefined, message: string): string {
   if (!value) throw new Error(message);
@@ -76,26 +76,26 @@ function run(command: string, args: string[], options: { cwd?: string } = {}): s
   return result.stdout;
 }
 
-function loadHindsightConfig(): RawConfig {
-  const explicitPath = process.env.HINDSIGHT_E2E_CONFIG;
+function loadDuMemoryConfig(): RawConfig {
+  const explicitPath = process.env.DUMEMORY_E2E_CONFIG;
   if (explicitPath) {
     if (!existsSync(explicitPath)) {
       throw new Error(
-        `Hindsight config not found at ${explicitPath}; set HINDSIGHT_E2E_CONFIG to a local config file`
+        `DuMemory config not found at ${explicitPath}; set DUMEMORY_E2E_CONFIG to a local config file`
       );
     }
     try {
       return JSON.parse(readFileSync(explicitPath, "utf8")) as RawConfig;
     } catch {
-      throw new Error(`Hindsight config at ${explicitPath} is not valid JSON`);
+      throw new Error(`DuMemory config at ${explicitPath} is not valid JSON`);
     }
   }
-  const defaultPath = join(homedir(), ".hindsight", "coding-agent.json");
+  const defaultPath = join(homedir(), ".dumemory", "coding-agent.json");
   if (existsSync(defaultPath)) {
     try {
       return JSON.parse(readFileSync(defaultPath, "utf8")) as RawConfig;
     } catch {
-      throw new Error(`Hindsight config at ${defaultPath} is not valid JSON`);
+      throw new Error(`DuMemory config at ${defaultPath} is not valid JSON`);
     }
   }
   return {};
@@ -120,12 +120,12 @@ function makeTestConfig(bankId: string): {
     gitIngest: "none";
   };
 } {
-  const source = loadHindsightConfig();
+  const source = loadDuMemoryConfig();
   const hostApiUrl = required(
-    process.env.HINDSIGHT_E2E_API_URL || source.apiUrl,
-    "Hindsight apiUrl is required"
+    process.env.DUMEMORY_E2E_API_URL || source.apiUrl,
+    "DuMemory apiUrl is required"
   );
-  const apiToken = process.env.HINDSIGHT_E2E_API_TOKEN || source.apiToken;
+  const apiToken = process.env.DUMEMORY_E2E_API_TOKEN || source.apiToken;
   return {
     hostApiUrl,
     apiToken,
@@ -181,7 +181,7 @@ function buildImage(harness: HarnessDockerSetup): void {
 }
 
 function assertPrerequisites(harness: HarnessDockerSetup): void {
-  if (!E2E) throw new Error("HINDSIGHT_HARNESS_E2E=1 is required to run Docker harness tests");
+  if (!E2E) throw new Error("DUMEMORY_HARNESS_E2E=1 is required to run Docker harness tests");
   const credentials = harness.credentialPath?.();
   if (credentials && !existsSync(credentials)) {
     throw new Error(`Missing ${harness.name} credentials at ${credentials}`);
@@ -213,11 +213,11 @@ export function harnessCredentialStatus(harness: HarnessDockerSetup): {
 
 export async function runHarnessE2e(harness: HarnessDockerSetup): Promise<E2eRun> {
   assertPrerequisites(harness);
-  const root = mkdtempSync(join(tmpdir(), `hindsight-e2e-${harness.name}-`));
+  const root = mkdtempSync(join(tmpdir(), `dumemory-e2e-${harness.name}-`));
   const packageDir = join(root, "package");
   const workDir = join(root, "workspace");
   const resultDir = join(root, "results");
-  const configPath = join(root, "hindsight-config.json");
+  const configPath = join(root, "dumemory-config.json");
   const bankId = `e2e-${harness.name}-${basename(root)}`.replace(/[^a-zA-Z0-9:_-]/g, "-");
   let stub: StubModel | undefined;
 
@@ -225,7 +225,7 @@ export async function runHarnessE2e(harness: HarnessDockerSetup): Promise<E2eRun
     run("mkdir", ["-p", packageDir, workDir, resultDir]);
     const tarball = packageTarball(packageDir);
     run("git", ["init", "-q"], { cwd: workDir });
-    writeFileSync(join(workDir, "README.md"), "# Hindsight harness E2E fixture\n");
+    writeFileSync(join(workDir, "README.md"), "# DuMemory harness E2E fixture\n");
     run("git", ["add", "README.md"], { cwd: workDir });
     run(
       "git",
@@ -247,7 +247,7 @@ export async function runHarnessE2e(harness: HarnessDockerSetup): Promise<E2eRun
 
     const config = makeTestConfig(bankId);
     writeFileSync(configPath, JSON.stringify(config.containerConfig));
-    const hostConfigPath = join(root, "hindsight-host-config.json");
+    const hostConfigPath = join(root, "dumemory-host-config.json");
     writeFileSync(
       hostConfigPath,
       JSON.stringify({ ...config.containerConfig, apiUrl: config.hostApiUrl, gitIngest: "full" })
@@ -302,24 +302,24 @@ export async function runHarnessE2e(harness: HarnessDockerSetup): Promise<E2eRun
       ...(credentials && harness.credentialTarget
         ? [
             "--mount",
-            `type=bind,src=${credentials},dst=/hindsight-credentials/source,readonly`,
+            `type=bind,src=${credentials},dst=/dumemory-credentials/source,readonly`,
             "--env",
-            `HINDSIGHT_E2E_CREDENTIAL_TARGET=${harness.credentialTarget}`,
+            `DUMEMORY_E2E_CREDENTIAL_TARGET=${harness.credentialTarget}`,
           ]
         : []),
       ...Object.entries(stubEnv).flatMap(([key, value]) => ["--env", `${key}=${value}`]),
       "--mount",
-      `type=bind,src=${configPath},dst=/hindsight/config.json,readonly`,
+      `type=bind,src=${configPath},dst=/dumemory/config.json,readonly`,
       "--mount",
       `type=bind,src=${workDir},dst=/workspace`,
       "--mount",
       `type=bind,src=${resultDir},dst=/results`,
       "--env",
-      `HINDSIGHT_CONFIG=/hindsight/config.json`,
+      `DUMEMORY_CONFIG=/dumemory/config.json`,
       "--env",
-      "HINDSIGHT_DIAG_FILE=/results/diagnostics.jsonl",
+      "DUMEMORY_DIAG_FILE=/results/diagnostics.jsonl",
       "--env",
-      `HINDSIGHT_E2E_INSTALL_COMMAND=${harness.installCommand}`,
+      `DUMEMORY_E2E_INSTALL_COMMAND=${harness.installCommand}`,
       // Every harness operates on the fixture repo, so start there. Without this the container's
       // cwd is `/`, which makes a CLI resolve the wrong project (Devin refused to run at all).
       "--workdir",
@@ -366,7 +366,7 @@ export async function runHarnessE2e(harness: HarnessDockerSetup): Promise<E2eRun
     const output = existsSync(outputPath) ? readFileSync(outputPath, "utf8") : result.stdout;
     const diagnostics = existsSync(diagnosticsPath) ? readFileSync(diagnosticsPath, "utf8") : "";
     return {
-      harness: harness.hindsightHarness,
+      harness: harness.dumemoryHarness,
       bankId,
       apiUrl: config.hostApiUrl,
       apiToken: config.apiToken,
@@ -414,7 +414,7 @@ export async function getRetainedDocument(run: E2eRun): Promise<unknown> {
     // server that was unreachable throughout reads as a retention bug in the harness.
     const cause = lastError ? `\nLast error reaching the API: ${String(lastError)}` : "";
     throw new Error(
-      `${run.harness} did not retain a conversation document in the Hindsight bank.${cause}\nDiagnostics:\n${diagnostics}`
+      `${run.harness} did not retain a conversation document in the DuMemory bank.${cause}\nDiagnostics:\n${diagnostics}`
     );
   }
   const document = await fetch(`${bankUrl}/documents/${encodeURIComponent(id)}`, { headers });

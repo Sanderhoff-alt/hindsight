@@ -1,4 +1,4 @@
-/** Small shared helpers (no harness or Hindsight coupling). */
+/** Small shared helpers (no harness or DuMemory coupling). */
 import { accessSync, constants } from "node:fs";
 import { delimiter, join } from "node:path";
 

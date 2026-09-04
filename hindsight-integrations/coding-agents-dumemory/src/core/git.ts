@@ -8,7 +8,7 @@
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { projectNameOf } from "./bank";
-import type { HindsightClient } from "./hindsight";
+import type { DuMemoryClient } from "./dumemory";
 import type { RetainStamp } from "./retain-stamp";
 import { pool } from "./util";
 
@@ -70,7 +70,7 @@ export function hasGitHistory(dir: string): boolean {
  * both the backfill and the incremental sync so the encoding is identical across the two entry points.
  */
 export async function retainCommit(
-  client: HindsightClient,
+  client: DuMemoryClient,
   repo: string,
   sha: string,
   repoName: string,
@@ -114,7 +114,7 @@ export async function retainCommit(
 }
 
 export async function ingestGit(
-  client: HindsightClient,
+  client: DuMemoryClient,
   repo: string,
   opts: {
     limit?: number;
@@ -205,7 +205,7 @@ export function gitLogNewestAuthorDate(repo: string): string | null {
  * still sees the bank as warm after a default (message-only) seed.
  */
 export async function ingestGitLog(
-  client: HindsightClient,
+  client: DuMemoryClient,
   repo: string,
   opts: { limit: number; log?: (m: string) => void; stampFor?: () => RetainStamp } = { limit: 300 }
 ): Promise<number> {
@@ -264,7 +264,7 @@ export async function ingestGitLog(
  * already an idempotent upsert; ambiguous legacy documents are deliberately left untouched.
  */
 export async function syncGitLog(
-  client: HindsightClient,
+  client: DuMemoryClient,
   repo: string,
   opts: { limit: number; log?: (m: string) => void; stampFor?: () => RetainStamp }
 ): Promise<number> {

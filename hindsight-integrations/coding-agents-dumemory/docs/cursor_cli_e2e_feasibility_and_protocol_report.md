@@ -2,7 +2,7 @@
 
 > **报告版本**：1.0  
 > **编写日期**：2026-09-03  
-> **所属项目**：`vectorize-io/hindsight` / `coding-agents-dumemory`  
+> **所属项目**：`vectorize-io/dumemory` / `coding-agents-dumemory`  
 > **核心主题**：Cursor Agent CLI (`cursor-agent`) 内部通信协议逆向分析、Hook 生命周期实测与 E2E 自动化测试跑通可行性评估
 
 ---
@@ -19,7 +19,7 @@
    - [3.5 模型决议与元数据服务](#35-模型决议与元数据服务)
    - [3.6 执行流管道：`RunSSE` 与 Connect Envelope 编码](#36-执行流管道runsse-与-connect-envelope-编码)
    - [3.7 请求体流转：`BidiAppend` 与 Hex 载荷](#37-请求体流转bidiappend-与-hex-载荷)
-4. [Hindsight 与 Cursor CLI Hook 联动全生命周期实测](#4-hindsight-与-cursor-cli-hook-联动全生命周期实测)
+4. [DuMemory 与 Cursor CLI Hook 联动全生命周期实测](#4-dumemory-与-cursor-cli-hook-联动全生命周期实测)
    - [4.1 `sessionStart`：上下文预加载与注入成功验证](#41-sessionstart上下文预加载与注入成功验证)
    - [4.2 `beforeSubmitPrompt`：交互模式与 Headless 模式差异](#42-beforesubmitprompt交互模式与-headless-模式差异)
    - [4.3 `stop` 与 `sessionEnd`：会话终结 Hook 的真实归属](#43-stop-与-sessionend会话终结-hook-的真实归属)
@@ -43,9 +43,9 @@
 2. **本地 Stub 驱动模型执行全链路突破**：
    通过自建轻量级 ConnectRPC Mock 服务，成功实现了 `cursor-agent` 在容器内无真实订阅账号下的**正常鉴权、配置拉取、模型执行与结果输出**，进程正常退出且 exit code 为 0。
 3. **上下文注入 Hook 验证完全通过**：
-   实测证明 Cursor CLI 具备原生的 `sessionStart` Hook 执行能力，成功加载 Hindsight 注入的 `additional_context`，并在日志中确认 `[hooks] sessionStart additional_context received`。
+   实测证明 Cursor CLI 具备原生的 `sessionStart` Hook 执行能力，成功加载 DuMemory 注入的 `additional_context`，并在日志中确认 `[hooks] sessionStart additional_context received`。
 4. **完整 E2E 闭环的最终卡点**：
-   目前无法直接通过 `harness.e2e.test.ts` 的根本原因在于：**Headless 模式下的转录落盘强依赖云端下发的数据流（KV Blob 与 Checkpoint 机制）**。本地转录文件缺少交互轮次，导致 Hindsight 的 Retain 留存钩子判定为无效会话而不予存储，最终导致 `getRetainedDocument()` 断言超时。
+   目前无法直接通过 `harness.e2e.test.ts` 的根本原因在于：**Headless 模式下的转录落盘强依赖云端下发的数据流（KV Blob 与 Checkpoint 机制）**。本地转录文件缺少交互轮次，导致 DuMemory 的 Retain 留存钩子判定为无效会话而不予存储，最终导致 `getRetainedDocument()` 断言超时。
 
 ---
 
@@ -56,20 +56,20 @@
 ```typescript
 export const cursorDockerSetup: HarnessDockerSetup = {
   name: "cursor-cli",
-  hindsightHarness: "cursor-cli",
-  installCommand: "hindsight-coding-agents install cursor-cli",
+  dumemoryHarness: "cursor-cli",
+  installCommand: "dumemory-coding-agents install cursor-cli",
   unsupported:
     "cursor-agent never contacts a custom endpoint — the stub served 0 requests via both " +
     "CURSOR_API_ENDPOINT and the --endpoint/--api-key flags, and the run hangs to the timeout " +
     "instead. It appears to authenticate against Cursor's own service before any model call. " +
     "Its account session is also machine-bound, so mounting cli-config.json yields " +
     '"Authentication required". Re-enable by clearing this field once either path works.',
-  stubModelEnv: (baseUrl) => ({ CURSOR_API_ENDPOINT: baseUrl, CURSOR_API_KEY: "hindsight-e2e" }),
+  stubModelEnv: (baseUrl) => ({ CURSOR_API_ENDPOINT: baseUrl, CURSOR_API_KEY: "dumemory-e2e" }),
   command: (prompt, { stubUrl }) => [
     "cursor-agent",
     "-p",
     "--force",
-    ...(stubUrl ? ["--endpoint", stubUrl, "--api-key", "hindsight-e2e"] : []),
+    ...(stubUrl ? ["--endpoint", stubUrl, "--api-key", "dumemory-e2e"] : []),
     prompt,
   ],
 };
@@ -110,7 +110,7 @@ sequenceDiagram
     Mock-->>CLI: 200 OK (Default Model Details)
 
     Note over CLI,Mock: 阶段二：会话初始化与 Hook 执行
-    CLI->>CLI: 触发 sessionStart Hook (执行 hindsight-cursor-sessionstart-hook)
+    CLI->>CLI: 触发 sessionStart Hook (执行 dumemory-cursor-sessionstart-hook)
     CLI->>Mock: POST /aiserver.v1.BidiService/BidiAppend (Proto: Hex 编码 UserPrompt)
     Mock-->>CLI: 200 OK (Empty Buffer)
 
@@ -217,7 +217,7 @@ this.bidiClient.bidiAppend(
 
 ---
 
-## 4. Hindsight 与 Cursor CLI Hook 联动全生命周期实测
+## 4. DuMemory 与 Cursor CLI Hook 联动全生命周期实测
 
 在配置了 `~/.cursor/hooks.json` 的容器环境中，我们对 CLI 完整的执行过程进行了事件捕获。
 
@@ -252,7 +252,7 @@ if (t) {
     "workspace_roots": ["/"]
   }
   ```
-- **注入能力**：Hindsight 返回的 `{ "additional_context": "..." }` 被成功消费，作为隐式前置上下文附带至 Agent 执行会话中。实测在开启 Debug 时可明确观察到接收日志。
+- **注入能力**：DuMemory 返回的 `{ "additional_context": "..." }` 被成功消费，作为隐式前置上下文附带至 Agent 执行会话中。实测在开启 Debug 时可明确观察到接收日志。
 
 ### 4.2 `beforeSubmitPrompt`：交互模式与 Headless 模式差异
 
@@ -307,7 +307,7 @@ for (const status of injects ? seededDecisionStatuses : []) {
   expect(run.output, context).toContain(status);
 }
 
-// 断言 2：会话转录成功落库到 Hindsight Bank
+// 断言 2：会话转录成功落库到 DuMemory Bank
 expect(JSON.stringify(await getRetainedDocument(run))).toContain(e2ePromptMarker);
 ```
 
@@ -318,7 +318,7 @@ expect(JSON.stringify(await getRetainedDocument(run))).toContain(e2ePromptMarker
 
 ### 5.2 断言二：会话转录持久化留存（核心阻塞点）
 
-- **工作流**：在会话结束后，Hindsight 的 Retain Hook 需读取 `transcript_path`，解析其中的 user 与 assistant 消息，并调用 Hindsight API 将其存储到 Bank 中。随后测试套件轮询 Bank 确认包含 Marker。
+- **工作流**：在会话结束后，DuMemory 的 Retain Hook 需读取 `transcript_path`，解析其中的 user 与 assistant 消息，并调用 DuMemory API 将其存储到 Bank 中。随后测试套件轮询 Bank 确认包含 Marker。
 - **失败现象**：`getRetainedDocument()` 持续轮询 120 次（2 分钟）后抛出超时异常。
 
 ### 5.3 转录管道缺失根因：SQLite KV/Blob 与 Checkpoint 协议依赖
@@ -345,7 +345,7 @@ if (l === o && c) {
      ```json
      { "type": "turn_ended", "status": "success" }
      ```
-   - Hindsight 的 `readCursorTranscript()` 解析该文件后发现可用轮次（Turns）为 0；
+   - DuMemory 的 `readCursorTranscript()` 解析该文件后发现可用轮次（Turns）为 0；
    - `buildRetain()` 根据设计规范判定“空会话不予保留”，静默跳过写入；
    - 最终导致 Bank 中查不到该次会话的 Retained Document。
 

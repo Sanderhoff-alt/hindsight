@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * Native TS MCP (stdio) server exposing the `hindsight_*` knowledge-page + recall + capture tools.
+ * Native TS MCP (stdio) server exposing the `dumemory_*` knowledge-page + recall + capture tools.
  *
  * Bank resolution MUST mirror the hooks exactly (`resolveHostMemory`, i.e. loadConfig +
- * deriveBankId + the banks section, harness from the REQUIRED HINDSIGHT_MCP_HARNESS) so knowledge
+ * deriveBankId + the banks section, harness from the REQUIRED DUMEMORY_MCP_HARNESS) so knowledge
  * pages, recall, and retain all land in ONE per-repo bank — this is
  * why this is a native TS server and not a reuse of the Python MCP (whose bank derivation
  * differs). MCP servers launch with the project dir as cwd; the env override is an optional
@@ -15,7 +15,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { type Config } from "./core/config";
 import { resolveHostMemory } from "./core/host-client";
-import { HindsightClient } from "./core/hindsight";
+import { DuMemoryClient } from "./core/dumemory";
 import { buildKnowledgeTools, type ToolSpec } from "./core/knowledge-tools";
 import { buildPageTrigger } from "./core/missions";
 import { buildRetainStamp } from "./core/retain-stamp";
@@ -23,12 +23,12 @@ import { buildRetainStamp } from "./core/retain-stamp";
 /**
  * Which tools this server should expose for a given config. Pure + SDK-free so the
  * disabled-flag behavior is unit-testable without spinning up a real MCP host: a disabled
- * Hindsight (mirrors the hooks' `cfg.disabled` check) exposes NO tools — the server still
+ * DuMemory (mirrors the hooks' `cfg.disabled` check) exposes NO tools — the server still
  * connects, it just has nothing registered.
  */
 export function selectTools(
   cfg: Config,
-  client: HindsightClient,
+  client: DuMemoryClient,
   bankId: string,
   opts: { cwd?: string; harness?: string } = {}
 ): ToolSpec[] {
@@ -56,13 +56,13 @@ export function selectTools(
  * (#3603). A wrong answer here corrupts stored data; refusing to start is recoverable.
  */
 export function resolveHarness(env: NodeJS.ProcessEnv = process.env): string {
-  const harness = env.HINDSIGHT_MCP_HARNESS;
+  const harness = env.DUMEMORY_MCP_HARNESS;
   if (!harness) {
     throw new Error(
-      "HINDSIGHT_MCP_HARNESS is not set. Every coding agent launches this same mcp-server.js, so " +
+      "DUMEMORY_MCP_HARNESS is not set. Every coding agent launches this same mcp-server.js, so " +
         "only that variable identifies the caller — it decides the harness:<id> stamp on everything " +
         "ingested and which bank this session resolves. Re-run `npx " +
-        "@vectorize-io/hindsight-coding-agents install <harness>` to repair a registration written " +
+        "@baiducloud/dumemory-coding-agents install <harness>` to repair a registration written " +
         "before the installer set it."
     );
   }
@@ -72,12 +72,12 @@ export function resolveHarness(env: NodeJS.ProcessEnv = process.env): string {
 /**
  * Build the MCP surface for the resolved project.
  *
- * An opted-out project intentionally has no Hindsight tools, but some clients probe `tools/list`
+ * An opted-out project intentionally has no DuMemory tools, but some clients probe `tools/list`
  * without first checking the initialize capabilities. Advertising an empty, queryable tool list
  * keeps that privacy boundary intact while preventing one optional probe from failing startup.
  */
 export function buildMcpServer(tools: ToolSpec[]): McpServer {
-  const server = new McpServer({ name: "hindsight", version: "0.1.0" });
+  const server = new McpServer({ name: "dumemory", version: "0.1.0" });
   if (tools.length === 0) {
     server.server.registerCapabilities({ tools: { listChanged: false } });
     server.server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [] }));
@@ -102,7 +102,7 @@ export function buildMcpServer(tools: ToolSpec[]): McpServer {
 }
 
 async function main() {
-  const cwd = process.env.HINDSIGHT_MCP_PROJECT_CWD || process.cwd();
+  const cwd = process.env.DUMEMORY_MCP_PROJECT_CWD || process.cwd();
   // Mirrors that harness's hooks: it selects the config `harnesses.<name>` section and feeds the
   // `{harness}` bank template, so both routes into a repo land in ONE bank.
   const harness = resolveHarness();
@@ -117,7 +117,7 @@ async function main() {
 // it (as src/mcp-server.test.ts does) must not start a real server.
 if (process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url)) {
   main().catch((e) => {
-    console.error("hindsight mcp-server failed:", e);
+    console.error("dumemory mcp-server failed:", e);
     process.exit(1);
   });
 }

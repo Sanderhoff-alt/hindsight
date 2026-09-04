@@ -35,7 +35,7 @@ describe("dsh pre-step injection", () => {
   it("recalls on the human prompt and appends the memory as a sourced message", async () => {
     const core = {
       onPrompt: vi.fn(async () => {}),
-      getInjection: vi.fn(() => "<hindsight_memory>past decision</hindsight_memory>"),
+      getInjection: vi.fn(() => "<dumemory_memory>past decision</dumemory_memory>"),
       seedIfCold: vi.fn(async () => {}),
     };
     const hooks = createDshHooks(() => fakeWorkspace(core));
@@ -50,8 +50,8 @@ describe("dsh pre-step injection", () => {
     const appended = (decision as { messages: Record<string, any>[] }).messages.at(-1)!;
     expect(appended).toMatchObject({
       role: "user",
-      content: [{ type: "text", text: "<hindsight_memory>past decision</hindsight_memory>" }],
-      source: { kind: "plugin", plugin: "hindsight", form: "recall" },
+      content: [{ type: "text", text: "<dumemory_memory>past decision</dumemory_memory>" }],
+      source: { kind: "plugin", plugin: "dumemory", form: "recall" },
     });
     expect(appended.id).toEqual(expect.any(String));
   });
@@ -150,7 +150,7 @@ describe("dsh session start", () => {
 
 describe("toDshParameters", () => {
   const spec = (inputSchema: ToolSpec["inputSchema"]): ToolSpec => ({
-    name: "hindsight_capture_initiative",
+    name: "dumemory_capture_initiative",
     description: "…",
     inputSchema,
     annotations: {

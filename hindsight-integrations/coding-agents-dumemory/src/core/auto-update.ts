@@ -1,14 +1,15 @@
 /**
  * Keep the STAGED runtime current on its own.
  *
- * `install` copies this package into ~/.hindsight/coding-agents and points every wired agent's
+ * `install` copies this package into ~/.dumemory/coding-agents and points every wired agent's
  * hooks at that copy (installer.ts `stageRuntime`). Nothing ever refreshed it: the only update
  * path was the user remembering to re-run `install`, so a machine could sit several versions
  * behind indefinitely — bugs stayed fixed only for people who happened to re-install.
  *
- * Once per `CHECK_INTERVAL_MS`, at session start, this asks the npm registry for the published
- * version and — when it is newer than the staged one — spawns a DETACHED
- * `npx @vectorize-io/hindsight-coding-agents@<version> update`, which re-stages the runtime and
+ * Once per `CHECK_INTERVAL_MS`, at session start, this asks the registry npm is CONFIGURED to use
+ * (`npm view`, so a mirror or a private registry is honoured) for the published version and — when
+ * it is newer than the staged one — spawns a DETACHED
+ * `npx @baiducloud/dumemory-coding-agents@<version> update`, which re-stages the runtime and
  * touches no host config (see the `update` branch in installer.ts). Fire-and-forget: the current
  * session keeps running the version it already loaded and the next one starts on the new code.
  *
@@ -23,7 +24,7 @@
  *     nothing to spawn, so it says so once a day rather than failing a spawn each time.
  *   - it stages only. Rewiring hosts unattended would mean choosing which agents to install for,
  *     and that is the user's call (`install` spells it out for exactly this reason).
- *   - `autoUpdate: false` in ~/.hindsight/coding-agent.json (or HINDSIGHT_AUTO_UPDATE=false) turns
+ *   - `autoUpdate: false` in ~/.dumemory/coding-agent.json (or DUMEMORY_AUTO_UPDATE=false) turns
  *     it off entirely, for pinned or air-gapped setups.
  *
  * Known window: `stageRuntime` replaces dist/ wholesale, so a hook that happens to spawn during
@@ -33,7 +34,7 @@
  * possible concurrent hook spawn would need a lock every hook takes on every turn, which is a
  * worse trade than the window it closes.
  */
-import { spawn as realSpawn } from "node:child_process";
+import { execFile, spawn as realSpawn } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -46,18 +47,31 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Config } from "./config";
-import { log } from "./log";
+import { describeError, log } from "./log";
 import { binOnPath } from "./util";
 
-export const PACKAGE_NAME = "@vectorize-io/hindsight-coding-agents";
+export const PACKAGE_NAME = "@baiducloud/dumemory-coding-agents";
 
 /** How often the registry is asked. One session a day pays a few hundred milliseconds; the rest
  *  read a timestamp off disk and move on. */
 export const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
-/** Registry call budget. A slow or unreachable registry must not delay a session start, and this
- *  runs before the user has typed anything. */
-const FETCH_TIMEOUT_MS = 5000;
+/**
+ * Budget for the version probe — which is really "how long may a fresh-process hook be held open".
+ *
+ * `maybeAutoUpdate` is fire-and-forget, so the probe never extends the work a hook AWAITS: a hook
+ * process lives for max(its own work, this probe), not the sum, and cannot breach the host's hook
+ * window because of it. But it can turn a fast session start into a slow one, because `execFile`
+ * keeps the event loop alive through its stdio pipes until the child exits — `child.unref()` does
+ * NOT release that, so the process really does linger.
+ *
+ * Hence a tight bound rather than a generous one: `npm view` answers in well under a second on a
+ * working setup, and when it cannot, skipping today's check beats making the user wait for it. The
+ * previous value was 20s, chosen for npm's own startup and proxy overhead without accounting for
+ * the lingering — precisely the wrong trade for someone on a slow registry, who is the person most
+ * likely to hit it.
+ */
+const PROBE_TIMEOUT_MS = 5_000;
 
 /** Where the last check's timestamp lives — inside the staged runtime, so it is removed with it. */
 export function stateFile(runtimeDir: string): string {
@@ -69,10 +83,9 @@ function packageRoot(): string {
   return join(dirname(fileURLToPath(import.meta.url)), "..");
 }
 
-/** Where `install` stages the runtime — the one copy this may replace. Kept as a literal rather
- *  than imported from installer.ts, which would pull the whole installer into every hook bundle. */
-function stagedRuntimeDir(): string {
-  return join(homedir(), ".hindsight", "coding-agents");
+/** The staged runtime directory every wired agent's hook points at. */
+export function stagedRuntimeDir(): string {
+  return join(homedir(), ".dumemory", "coding-agents");
 }
 
 /** Same directory, compared through realpath — a symlinked or differently-spelled HOME must not
@@ -187,8 +200,8 @@ export function selfUpdatable(runtimeDir: string): boolean {
  */
 const LOCK_STALE_MS = 10 * 60 * 1000;
 
-function lockFile(): string {
-  return join(tmpdir(), "hindsight-coding-agent", "auto-update.lock");
+export function autoUpdateLockFile(): string {
+  return join(tmpdir(), "dumemory-coding-agent", "auto-update.lock");
 }
 
 function acquireUpdateLock(file: string, now: number): boolean {
@@ -252,22 +265,65 @@ function stampCheck(file: string, now: number, latest: string): void {
   }
 }
 
-/** Ask the registry for the published version, or "" if it cannot be determined. */
-async function latestVersion(fetchImpl: typeof fetch): Promise<string> {
+/** Asks the registry for a package's published version. Rejects when it cannot be reached. */
+export type NpmView = (pkg: string) => Promise<string>;
+
+/**
+ * `npm view <pkg> version`, so the CHECK resolves the registry exactly the way the INSTALL will.
+ *
+ * This used to be a direct `fetch` of `registry.npmjs.org/<pkg>/latest`, which disagreed with the
+ * updater: `npx` resolves from npm's own config — `.npmrc` (project, user, global), a
+ * scope-specific `@scope:registry`, `npm_config_registry` — plus auth tokens, proxy settings and
+ * private CA bundles, none of which a bare `fetch` reads. That split broke in both directions for
+ * anyone on a mirror: with npmjs.org slow or blocked no update was ever FOUND even though npx could
+ * have downloaded one, and with a mirror lagging behind a version was found that npx then could not
+ * RESOLVE — failing once a day in silence. Someone is usually on a mirror precisely because the
+ * default registry does not work well for them, so that is the common case here, not the edge.
+ *
+ * Node's undici `fetch` also ignores `HTTP_PROXY`/`HTTPS_PROXY` entirely; `npm` honours them.
+ */
+function npmView(pkg: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "npm",
+      ["view", pkg, "version"],
+      { timeout: PROBE_TIMEOUT_MS, windowsHide: true, encoding: "utf8" },
+      // npm puts the diagnosis (`code E404`, `ETIMEDOUT`, a proxy refusal) on stderr, while
+      // err.message is only "Command failed" — keep both or the log says nothing useful.
+      (err, stdout, stderr) =>
+        err ? reject(new Error(`${err.message} ${String(stderr).trim()}`.trim())) : resolve(stdout)
+    );
+  });
+}
+
+/**
+ * The published version, or "" when it cannot be determined.
+ *
+ * Every "" says WHY in the log. Returning it bare is what let an earlier bug (a 406 from asking for
+ * the abbreviated-packument media type on the wrong endpoint) ship as a silent, permanent no-op: a
+ * failed check is indistinguishable from "already current" at the call site — both skip the update
+ * and both stamp the daily timestamp — so the log line is the only thing that tells a broken check
+ * apart from an idle one.
+ */
+async function latestVersion(view: NpmView): Promise<string> {
   try {
-    // No `application/vnd.npm.install-v1+json` accept header. That abbreviated-packument media
-    // type is only served for the PACKUMENT (`/<pkg>`); asking for it on `/<pkg>/latest` gets a
-    // hard 406, which this function turned into "" — indistinguishable from "no newer version", so
-    // the runtime silently never updated (the stub in the tests answered `ok: true` regardless of
-    // what was requested, so nothing caught it). `/latest` is the smaller response anyway: one
-    // version's metadata rather than every version's.
-    const r = await fetchImpl(`https://registry.npmjs.org/${PACKAGE_NAME}/latest`, {
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-    if (!r.ok) return "";
-    const body = (await r.json()) as { version?: string };
-    return typeof body.version === "string" ? body.version : "";
-  } catch {
+    const out = (await view(PACKAGE_NAME)).trim();
+    if (!/^\d+\.\d+\.\d+/.test(out)) {
+      log.warn("auto-update", `no version in \`npm view\` output: ${out.slice(0, 120)}`);
+      return "";
+    }
+    return out;
+  } catch (e) {
+    const detail = describeError(e);
+    // E404 is the one actionable failure: nothing is published under PACKAGE_NAME, so either a
+    // rename missed that constant or the package was never pushed. Everything else — offline, DNS,
+    // TLS, proxy, the probe budget — is a fact about the network rather than a sign the plugin is
+    // broken, and is expected on an air-gapped machine, hence `info`.
+    if (/E404|404 Not Found/.test(detail)) {
+      log.warn("auto-update", `${PACKAGE_NAME} is not published on the configured registry`);
+    } else {
+      log.info("auto-update", `version check failed: ${detail}`);
+    }
     return "";
   }
 }
@@ -275,7 +331,7 @@ async function latestVersion(fetchImpl: typeof fetch): Promise<string> {
 export interface AutoUpdateOptions {
   /** Package root to treat as "where this code runs from" (tests). */
   pkgRoot?: string;
-  /** The staged runtime directory this may update (tests); defaults to ~/.hindsight/coding-agents. */
+  /** The staged runtime directory this may update (tests); defaults to ~/.dumemory/coding-agents. */
   runtimeDir?: string;
   /** Cross-process updater lock (tests); defaults to one in the OS temp dir. */
   lockFile?: string;
@@ -283,7 +339,8 @@ export interface AutoUpdateOptions {
   selfUpdatable?: (runtimeDir: string) => boolean;
   binOnPath?: (bin: string) => boolean;
   spawn?: typeof realSpawn;
-  fetch?: typeof fetch;
+  /** Version probe (tests); defaults to `npm view`. */
+  npmView?: NpmView;
   now?: number;
 }
 
@@ -300,7 +357,7 @@ export async function maybeAutoUpdate(
   try {
     if (!cfg.autoUpdate) return "";
     // The survey's own headless session must not race the runtime out from under its parent.
-    if (process.env.HINDSIGHT_DISABLE_HOOKS) return "";
+    if (process.env.DUMEMORY_DISABLE_HOOKS) return "";
 
     const pkgRoot = opts.pkgRoot ?? packageRoot();
     const runtime = opts.runtimeDir ?? stagedRuntimeDir();
@@ -331,17 +388,17 @@ export async function maybeAutoUpdate(
 
     // Claimed before the registry call, so a burst of simultaneous session starts makes ONE
     // request and can only ever produce one updater.
-    const lock = opts.lockFile ?? lockFile();
+    const lock = opts.lockFile ?? autoUpdateLockFile();
     if (!acquireUpdateLock(lock, now)) return "";
     try {
-      const latest = await latestVersion(opts.fetch ?? fetch);
+      const latest = await latestVersion(opts.npmView ?? npmView);
       stampCheck(file, now, latest);
       if (!latest || !isNewer(latest, current)) {
         releaseUpdateLock(lock);
         return "";
       }
 
-      log.info("auto-update", `updating the Hindsight runtime ${current} -> ${latest}`);
+      log.info("auto-update", `updating the DuMemory runtime ${current} -> ${latest}`);
       const child = (opts.spawn ?? realSpawn)(
         "npx",
         ["-y", `${PACKAGE_NAME}@${latest}`, "update"],
@@ -355,6 +412,16 @@ export async function maybeAutoUpdate(
       // unhandled one would take the session start down with it.
       child.on("error", (e) => {
         log.warn("auto-update", `update spawn failed: ${e.message}`);
+        releaseUpdateLock(lock);
+      });
+      // Best-effort, since the child is detached and unref'd and the parent usually exits first —
+      // but when the parent IS still alive, a non-zero exit is the only signal that npx could not
+      // install what the check found. `stdio` is "ignore", so without this the failure repeats once
+      // a day in total silence. Releasing the lock here is the tidy path; a parent that exits first
+      // leaves it to the stale-pid probe in acquireUpdateLock.
+      child.on("exit", (code) => {
+        if (code === 0) log.info("auto-update", `staged the DuMemory runtime ${latest}`);
+        else log.warn("auto-update", `\`npx ${PACKAGE_NAME}@${latest} update\` exited ${code}`);
         releaseUpdateLock(lock);
       });
       child.unref();

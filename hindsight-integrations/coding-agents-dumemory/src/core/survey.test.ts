@@ -8,25 +8,25 @@ import {
 } from "./survey";
 
 describe("resolveClaudeBin", () => {
-  const ORIGINAL_ENV = process.env.HINDSIGHT_CLAUDE_BIN;
+  const ORIGINAL_ENV = process.env.DUMEMORY_CLAUDE_BIN;
 
   afterEach(() => {
-    if (ORIGINAL_ENV === undefined) delete process.env.HINDSIGHT_CLAUDE_BIN;
-    else process.env.HINDSIGHT_CLAUDE_BIN = ORIGINAL_ENV;
+    if (ORIGINAL_ENV === undefined) delete process.env.DUMEMORY_CLAUDE_BIN;
+    else process.env.DUMEMORY_CLAUDE_BIN = ORIGINAL_ENV;
   });
 
   it("an explicit argument wins over everything", () => {
-    process.env.HINDSIGHT_CLAUDE_BIN = "/env/claude";
+    process.env.DUMEMORY_CLAUDE_BIN = "/env/claude";
     expect(resolveClaudeBin("/explicit/claude")).toBe("/explicit/claude");
   });
 
-  it("HINDSIGHT_CLAUDE_BIN env var wins when no explicit arg is given", () => {
-    process.env.HINDSIGHT_CLAUDE_BIN = "/env/claude";
+  it("DUMEMORY_CLAUDE_BIN env var wins when no explicit arg is given", () => {
+    process.env.DUMEMORY_CLAUDE_BIN = "/env/claude";
     expect(resolveClaudeBin()).toBe("/env/claude");
   });
 
   it("falls back to the bare 'claude' PATH lookup when nothing else resolves", () => {
-    delete process.env.HINDSIGHT_CLAUDE_BIN;
+    delete process.env.DUMEMORY_CLAUDE_BIN;
     const bin = resolveClaudeBin();
     expect(typeof bin).toBe("string");
     expect(bin.length).toBeGreaterThan(0);
@@ -60,7 +60,7 @@ describe("startCodebaseSurvey", () => {
     expect(argv).toContain("sonnet");
     expect(argv).toContain("--mcp-config");
     expect(argv).toContain("--strict-mcp-config");
-    expect(argv).toContain("mcp__hindsight__hindsight_ingest_document");
+    expect(argv).toContain("mcp__dumemory__dumemory_ingest_document");
 
     // Sandbox: no bypassPermissions (defeats --allowedTools), a --disallowedTools deny-list.
     expect(argv).not.toContain("--permission-mode");
@@ -74,17 +74,17 @@ describe("startCodebaseSurvey", () => {
 
     const mcpConfigJson = argv[argv.indexOf("--mcp-config") + 1];
     const parsed = JSON.parse(mcpConfigJson);
-    expect(parsed.mcpServers.hindsight.args).toEqual(["/x/mcp-server.js"]);
-    expect(parsed.mcpServers.hindsight.env.HINDSIGHT_MCP_PROJECT_CWD).toBe("/repo");
+    expect(parsed.mcpServers.dumemory.args).toEqual(["/x/mcp-server.js"]);
+    expect(parsed.mcpServers.dumemory.env.DUMEMORY_MCP_PROJECT_CWD).toBe("/repo");
     // #3603: mcp-server.js requires the harness — an inline recipe that omits it used to be served
     // as claude-code by default, and now refuses to start at all.
-    expect(parsed.mcpServers.hindsight.env.HINDSIGHT_MCP_HARNESS).toBe("claude-code");
+    expect(parsed.mcpServers.dumemory.env.DUMEMORY_MCP_HARNESS).toBe("claude-code");
 
     expect(options.cwd).toBe("/repo");
     expect(options.detached).toBe(true);
     expect(options.stdio).toBe("ignore");
     expect(options.windowsHide).toBe(true);
-    expect(options.env.HINDSIGHT_DISABLE_HOOKS).toBe("1");
+    expect(options.env.DUMEMORY_DISABLE_HOOKS).toBe("1");
 
     const child = spawn.mock.results[0].value;
     expect(child.on).toHaveBeenCalledWith("error", expect.any(Function));
@@ -112,16 +112,16 @@ describe("startCodebaseSurvey", () => {
     expect(bin).toBe("codex");
     expect(argv.slice(0, 3)).toEqual(["exec", "--sandbox", "read-only"]);
     expect(argv).toContain(SURVEY_PROMPT);
-    expect(argv).toContain(`mcp_servers.hindsight.command="node"`);
-    expect(argv).toContain(`mcp_servers.hindsight.args=["/x/mcp-server.js"]`);
+    expect(argv).toContain(`mcp_servers.dumemory.command="node"`);
+    expect(argv).toContain(`mcp_servers.dumemory.args=["/x/mcp-server.js"]`);
     // Without this the survey's findings were stamped harness:claude-code and landed in Claude
     // Code's bank even though Codex ran the survey (#3603).
-    expect(argv).toContain(`mcp_servers.hindsight.env.HINDSIGHT_MCP_HARNESS="codex"`);
-    expect(argv).toContain(`mcp_servers.hindsight.env.HINDSIGHT_MCP_PROJECT_CWD="/repo"`);
+    expect(argv).toContain(`mcp_servers.dumemory.env.DUMEMORY_MCP_HARNESS="codex"`);
+    expect(argv).toContain(`mcp_servers.dumemory.env.DUMEMORY_MCP_PROJECT_CWD="/repo"`);
     // No Claude-only flags leak into the codex recipe.
     expect(argv).not.toContain("--model");
     expect(argv).not.toContain("--disallowedTools");
-    expect(options.env.HINDSIGHT_DISABLE_HOOKS).toBe("1");
+    expect(options.env.DUMEMORY_DISABLE_HOOKS).toBe("1");
   });
 
   // ── Antigravity recipe (plan read-only mode + global MCP config) ───────────────────────────────
@@ -135,7 +135,7 @@ describe("startCodebaseSurvey", () => {
     const [bin, argv, options] = spawn.mock.calls[0];
     expect(bin).toBe("agy");
     expect(argv).toEqual(["-p", SURVEY_PROMPT, "--mode=plan"]);
-    expect(options.env.HINDSIGHT_DISABLE_HOOKS).toBe("1");
+    expect(options.env.DUMEMORY_DISABLE_HOOKS).toBe("1");
   });
 
   // ── opencode recipe (our own read-only agent; tools from the loaded plugin) ────────────────────
@@ -152,32 +152,32 @@ describe("startCodebaseSurvey", () => {
     // `plan` appends a read-only system-reminder that talks models out of the ingest call the
     // survey exists to make (#3450) — the whole point is not to run under it.
     expect(argv).not.toContain("plan");
-    expect(options.env.HINDSIGHT_DISABLE_HOOKS).toBe("1");
+    expect(options.env.DUMEMORY_DISABLE_HOOKS).toBe("1");
   });
 
   // The recipe above is only safe because the agent it names is read-only. opencode drops denied
   // tools from the model's tool list entirely, so this ruleset IS the sandbox.
   it("the survey agent denies everything except reading and the one ingest tool", () => {
     expect(SURVEY_AGENT_CONFIG.permission["*"]).toBe("deny");
-    expect(SURVEY_AGENT_CONFIG.permission.hindsight_ingest_document).toBe("allow");
+    expect(SURVEY_AGENT_CONFIG.permission.dumemory_ingest_document).toBe("allow");
     const allowed = Object.entries(SURVEY_AGENT_CONFIG.permission)
       .filter(([, v]) => v === "allow")
       .map(([k]) => k)
       .sort();
-    expect(allowed).toEqual(["glob", "grep", "hindsight_ingest_document", "read"]);
+    expect(allowed).toEqual(["dumemory_ingest_document", "glob", "grep", "read"]);
     // No write, no bash, and no `task` — which would reach a subagent that CAN write.
     for (const escape of ["write", "edit", "bash", "task", "patch"])
       expect(SURVEY_AGENT_CONFIG.permission).not.toHaveProperty(escape, "allow");
   });
 
   // ── agent selection + fallback ─────────────────────────────────────────────────────────────────
-  it("honors the HINDSIGHT_CODEX_BIN override for the codex binary", () => {
+  it("honors the DUMEMORY_CODEX_BIN override for the codex binary", () => {
     const spawn = fakeSpawn();
-    process.env.HINDSIGHT_CODEX_BIN = "/opt/codex";
+    process.env.DUMEMORY_CODEX_BIN = "/opt/codex";
     try {
       startCodebaseSurvey("/repo", { harness: "codex", spawn, exists: (b) => b === "/opt/codex" });
     } finally {
-      delete process.env.HINDSIGHT_CODEX_BIN;
+      delete process.env.DUMEMORY_CODEX_BIN;
     }
     expect(spawn.mock.calls[0][0]).toBe("/opt/codex");
   });

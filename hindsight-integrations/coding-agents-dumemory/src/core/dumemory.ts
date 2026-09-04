@@ -1,5 +1,5 @@
 /**
- * Harness-agnostic Hindsight HTTP client (raw fetch, no SDK dep).
+ * Harness-agnostic DuMemory HTTP client (raw fetch, no SDK dep).
  *
  * Every harness adapter and the backfill CLI go through this one client: it configures the bank
  * (missions + git/chat retain strategies), retains memories, reflects, drains async operations, and
@@ -154,7 +154,7 @@ export function retryAfterMs(header: string | null | undefined): number {
 export class KnowledgePagesUnavailableError extends Error {
   readonly code = "knowledge_pages_unavailable";
   constructor() {
-    super("Hindsight server does not support knowledge pages");
+    super("DuMemory server does not support knowledge pages");
     this.name = "KnowledgePagesUnavailableError";
   }
 }
@@ -181,10 +181,10 @@ const RETRY_AFTER_FLOOR_MS = 10 * 1000;
  */
 const RETRY_AFTER_CEILING_MS = 60 * 1000;
 
-export class HindsightClient {
+export class DuMemoryClient {
   readonly apiUrl: string;
   /** The credential the NEXT request will sign with — NOT the one the config file holds. The two
-   *  diverge exactly when #3600 bites, which is why `hindsight_diagnose` reports both. */
+   *  diverge exactly when #3600 bites, which is why `dumemory_diagnose` reports both. */
   private token: string | undefined;
   private readonly tokenProvider?: () => string | undefined;
   readonly bank: string;
@@ -238,12 +238,6 @@ export class HindsightClient {
 
   /**
    * The ONE place a request is signed. Every fetch goes through it — the generic `req`, the drain
-   * poll and `reflect` — because a 401 recovery wired into only one of them leaves the others
-   * failing forever, which is how #3600 read from the outside: hooks worked, in-session tools did
-   * not.
-   *
-   * On a 401 the credential is re-resolved and the request replayed ONCE (its body is already a
-   * string, so replay is exact). A 401 means the server did nothing, so replaying is side-effect
    * free even for retain. The retry shares the caller's `signal`, deliberately: one deadline still
    * bounds the whole call.
    */
@@ -259,7 +253,7 @@ export class HindsightClient {
   private authHint(status: number): string {
     if (status !== 401) return "";
     return this.token
-      ? " (the configured apiToken was rejected — check ~/.hindsight/coding-agent.json)"
+      ? " (the configured apiToken was rejected — check ~/.dumemory/coding-agent.json)"
       : " (no apiToken is configured, so no Authorization header was sent)";
   }
 
@@ -592,7 +586,7 @@ export class HindsightClient {
 
   /** Hybrid (BM25 + vector, RRF-fused) server-side search over the bank's knowledge pages.
    *  Returns page-level hits with a relevance snippet — the real search behind
-   *  hindsight_search_knowledge_pages. */
+   *  dumemory_search_knowledge_pages. */
   async searchKnowledgePages(
     query: string,
     limit = 3

@@ -34,11 +34,11 @@ describe("buildSessionStartContext", () => {
     expect(out.systemMessage).toContain("is learning");
     expect(out.systemMessage).toContain("bank-1");
     // The knowledge preamble is model context, lists live pages, and drops the old static mission.
-    expect(out.additionalContext).toContain("<hindsight_knowledge>");
+    expect(out.additionalContext).toContain("<dumemory_knowledge>");
     expect(out.additionalContext).toContain("- Component map (p1)");
     expect(out.additionalContext).not.toContain("agent_knowledge_list_pages");
     // The banner must NOT be duplicated into model context. (The tool guide legitimately
-    // contains a "🧠 From Hindsight memory" attribution example, so match on banner text.)
+    // contains a "🧠 From DuMemory memory" attribution example, so match on banner text.)
     expect(out.additionalContext).not.toContain("memory bank");
     expect(out.additionalContext).not.toContain("is learning this repo");
     expect(out.deferInitialReflect).toBe(true);
@@ -242,7 +242,7 @@ describe("buildSessionStartContext", () => {
     // Seeding is unaffected by a listPages failure.
     expect(startSeed).toHaveBeenCalledWith("/repo/dir", { limit: 300, harness: "claude-code" });
     // Empty-state roster preamble still renders (no page names, no throw).
-    expect(out.additionalContext).toContain("<hindsight_knowledge>");
+    expect(out.additionalContext).toContain("<dumemory_knowledge>");
     expect(out.additionalContext).toContain("No knowledge pages yet");
     expect(out.additionalContext).not.toContain("(p1)");
     // The background-learning note is still user-visible.
@@ -276,15 +276,15 @@ describe("buildSessionStartContext", () => {
 });
 
 describe("runSessionStartHook anti-recursion guard", () => {
-  const ORIGINAL = process.env.HINDSIGHT_DISABLE_HOOKS;
+  const ORIGINAL = process.env.DUMEMORY_DISABLE_HOOKS;
 
   afterEach(() => {
-    if (ORIGINAL === undefined) delete process.env.HINDSIGHT_DISABLE_HOOKS;
-    else process.env.HINDSIGHT_DISABLE_HOOKS = ORIGINAL;
+    if (ORIGINAL === undefined) delete process.env.DUMEMORY_DISABLE_HOOKS;
+    else process.env.DUMEMORY_DISABLE_HOOKS = ORIGINAL;
   });
 
-  it("HINDSIGHT_DISABLE_HOOKS set -> returns immediately, never reads stdin or builds a client", async () => {
-    process.env.HINDSIGHT_DISABLE_HOOKS = "1";
+  it("DUMEMORY_DISABLE_HOOKS set -> returns immediately, never reads stdin or builds a client", async () => {
+    process.env.DUMEMORY_DISABLE_HOOKS = "1";
     const makeClient = vi.fn();
     // No stdin is provided/mocked here — if the guard didn't return before `readFileSync(0, ...)`,
     // this call would attempt to read the real process stdin. Resolving without calling makeClient

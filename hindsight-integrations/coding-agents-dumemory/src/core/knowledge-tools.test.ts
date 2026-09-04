@@ -5,9 +5,9 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { buildKnowledgeTools } from "./knowledge-tools";
 import { DEFAULT_REFLECT_TOOL_TIMEOUT_MS } from "./config";
-import type { HindsightClient } from "./hindsight";
+import type { DuMemoryClient } from "./dumemory";
 
-/** Minimal stub of the HindsightClient surface the tools call — no SDK, no network. */
+/** Minimal stub of the DuMemoryClient surface the tools call — no SDK, no network. */
 function stubClient(overrides: Partial<Record<string, ReturnType<typeof vi.fn>>> = {}) {
   return {
     listPages: vi.fn(async () => ({ pages: [] })),
@@ -16,7 +16,7 @@ function stubClient(overrides: Partial<Record<string, ReturnType<typeof vi.fn>>>
     captureInitiative: vi.fn(async (_a: unknown) => ({ page_id: "initiative-x" })),
     retain: vi.fn(async (..._args: unknown[]) => undefined),
     ...overrides,
-  } as unknown as HindsightClient;
+  } as unknown as DuMemoryClient;
 }
 
 function findTool(tools: ReturnType<typeof buildKnowledgeTools>, name: string) {
@@ -26,14 +26,14 @@ function findTool(tools: ReturnType<typeof buildKnowledgeTools>, name: string) {
 }
 
 const EXPECTED_TOOLS = [
-  "hindsight_sync_status",
-  "hindsight_diagnose",
-  "hindsight_search_knowledge_pages",
-  "hindsight_list_knowledge_pages",
-  "hindsight_read_knowledge_page",
-  "hindsight_reflect",
-  "hindsight_capture_initiative",
-  "hindsight_ingest_document",
+  "dumemory_sync_status",
+  "dumemory_diagnose",
+  "dumemory_search_knowledge_pages",
+  "dumemory_list_knowledge_pages",
+  "dumemory_read_knowledge_page",
+  "dumemory_reflect",
+  "dumemory_capture_initiative",
+  "dumemory_ingest_document",
 ];
 
 describe("buildKnowledgeTools", () => {
@@ -43,10 +43,10 @@ describe("buildKnowledgeTools", () => {
     expect(tools.map((t) => t.name).sort()).toEqual([...EXPECTED_TOOLS].sort());
   });
 
-  it("hindsight_sync_status is the FIRST tool in the list", () => {
+  it("dumemory_sync_status is the FIRST tool in the list", () => {
     const client = stubClient();
     const tools = buildKnowledgeTools(client, "repo-a");
-    expect(tools[0].name).toBe("hindsight_sync_status");
+    expect(tools[0].name).toBe("dumemory_sync_status");
   });
 
   it("does not expose the removed raw page-CRUD tools", () => {
@@ -60,7 +60,7 @@ describe("buildKnowledgeTools", () => {
     expect(names).not.toContain("agent_knowledge_delete_page");
   });
 
-  it("hindsight_sync_status returns the syncStatus JSON for the given repoDir", async () => {
+  it("dumemory_sync_status returns the syncStatus JSON for the given repoDir", async () => {
     const repoDir = mkdtempSync(join(tmpdir(), "hs-status-nogit-"));
     try {
       const repoName = basename(repoDir);
@@ -74,7 +74,7 @@ describe("buildKnowledgeTools", () => {
         activeOperations: vi.fn(async () => 0),
       });
       const tools = buildKnowledgeTools(client, "repo-a", { repoDir });
-      const tool = findTool(tools, "hindsight_sync_status");
+      const tool = findTool(tools, "dumemory_sync_status");
       const result = await tool.handler({});
       expect(result.isError).toBeFalsy();
       expect(JSON.parse(result.content[0].text)).toEqual({
@@ -95,7 +95,7 @@ describe("buildKnowledgeTools", () => {
     }
   });
 
-  it("hindsight_sync_status returns isError:true when the client's listDocumentIds throws", async () => {
+  it("dumemory_sync_status returns isError:true when the client's listDocumentIds throws", async () => {
     const repoDir = mkdtempSync(join(tmpdir(), "hs-status-nogit-"));
     try {
       const client = stubClient({
@@ -106,7 +106,7 @@ describe("buildKnowledgeTools", () => {
         activeOperations: vi.fn(async () => 0),
       });
       const tools = buildKnowledgeTools(client, "repo-a", { repoDir });
-      const tool = findTool(tools, "hindsight_sync_status");
+      const tool = findTool(tools, "dumemory_sync_status");
       const result = await tool.handler({});
       expect(result.isError).toBe(true);
       expect(JSON.parse(result.content[0].text)).toEqual({ error: "server down" });
@@ -115,10 +115,10 @@ describe("buildKnowledgeTools", () => {
     }
   });
 
-  it("hindsight_diagnose returns safe runtime configuration without touching the client", async () => {
+  it("dumemory_diagnose returns safe runtime configuration without touching the client", async () => {
     const client = stubClient();
     const tools = buildKnowledgeTools(client, "repo-a");
-    const tool = findTool(tools, "hindsight_diagnose");
+    const tool = findTool(tools, "dumemory_diagnose");
     const result = await tool.handler({});
     expect(result.isError).toBeFalsy();
     expect(JSON.parse(result.content[0].text)).toMatchObject({
@@ -133,10 +133,10 @@ describe("buildKnowledgeTools", () => {
   // #3600: diagnose read the config FILE and called a host healthy while its live client was
   // signing with a credential that no longer existed — misdirecting the one investigation this
   // tool exists to guide.
-  it("hindsight_diagnose reports the credential in USE, not only the one on disk", async () => {
+  it("dumemory_diagnose reports the credential in USE, not only the one on disk", async () => {
     const client = stubClient();
     (client as unknown as { apiToken: string }).apiToken = "credential-the-host-started-with";
-    const tool = findTool(buildKnowledgeTools(client, "repo-a"), "hindsight_diagnose");
+    const tool = findTool(buildKnowledgeTools(client, "repo-a"), "dumemory_diagnose");
 
     const report = JSON.parse((await tool.handler({})).content[0].text);
     expect(report.credential).toEqual({
@@ -147,7 +147,7 @@ describe("buildKnowledgeTools", () => {
     expect(JSON.stringify(report)).not.toContain("credential-the-host-started-with");
   });
 
-  it("hindsight_search_knowledge_pages calls the server hybrid search and returns ranked hits", async () => {
+  it("dumemory_search_knowledge_pages calls the server hybrid search and returns ranked hits", async () => {
     const client = stubClient({
       searchKnowledgePages: vi.fn(async () => [
         { id: "p1", name: "Uploader guide", snippet: "Uploads retry with backoff…", score: 0.031 },
@@ -155,7 +155,7 @@ describe("buildKnowledgeTools", () => {
       ]),
     });
     const tools = buildKnowledgeTools(client, "repo-a");
-    const tool = findTool(tools, "hindsight_search_knowledge_pages");
+    const tool = findTool(tools, "dumemory_search_knowledge_pages");
     const result = await tool.handler({ query: "upload retries" });
     expect(result.isError).toBeFalsy();
     expect(client.searchKnowledgePages).toHaveBeenCalledWith("upload retries", 3);
@@ -170,44 +170,41 @@ describe("buildKnowledgeTools", () => {
     ]);
   });
 
-  it("hindsight_search_knowledge_pages returns isError:true when the server search throws", async () => {
+  it("dumemory_search_knowledge_pages returns isError:true when the server search throws", async () => {
     const client = stubClient({
       searchKnowledgePages: vi.fn(async () => {
         throw new Error("search down");
       }),
     });
-    const tool = findTool(
-      buildKnowledgeTools(client, "repo-a"),
-      "hindsight_search_knowledge_pages"
-    );
+    const tool = findTool(buildKnowledgeTools(client, "repo-a"), "dumemory_search_knowledge_pages");
     const result = await tool.handler({ query: "x" });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("search down");
   });
 
-  it("hindsight_list_knowledge_pages calls client.listPages() with no args", async () => {
+  it("dumemory_list_knowledge_pages calls client.listPages() with no args", async () => {
     const client = stubClient({ listPages: vi.fn(async () => ({ pages: [{ id: "p1" }] })) });
     const tools = buildKnowledgeTools(client, "repo-a");
-    const tool = findTool(tools, "hindsight_list_knowledge_pages");
+    const tool = findTool(tools, "dumemory_list_knowledge_pages");
     const result = await tool.handler({});
     expect(client.listPages).toHaveBeenCalledWith();
     expect(JSON.parse(result.content[0].text)).toEqual({ pages: [{ id: "p1" }] });
   });
 
-  it("hindsight_read_knowledge_page calls client.getPage(page_id)", async () => {
+  it("dumemory_read_knowledge_page calls client.getPage(page_id)", async () => {
     const client = stubClient({ getPage: vi.fn(async (id: string) => ({ id, name: "X" })) });
     const tools = buildKnowledgeTools(client, "repo-a");
-    const tool = findTool(tools, "hindsight_read_knowledge_page");
+    const tool = findTool(tools, "dumemory_read_knowledge_page");
     const result = await tool.handler({ page_id: "p1" });
     expect(client.getPage).toHaveBeenCalledWith("p1");
     expect(JSON.parse(result.content[0].text)).toEqual({ id: "p1", name: "X" });
   });
 
-  it("hindsight_reflect calls client.reflect(query, {budget: high}) and returns the synthesis", async () => {
+  it("dumemory_reflect calls client.reflect(query, {budget: high}) and returns the synthesis", async () => {
     const client = stubClient({
       reflect: vi.fn(async () => "the decided rule is X=3"),
     });
-    const tool = findTool(buildKnowledgeTools(client, "repo-a"), "hindsight_reflect");
+    const tool = findTool(buildKnowledgeTools(client, "repo-a"), "dumemory_reflect");
     const result = await tool.handler({ query: "why is X 3?" });
     expect(result.isError).toBeFalsy();
     expect(client.reflect).toHaveBeenCalledWith("why is X 3?", {
@@ -219,30 +216,30 @@ describe("buildKnowledgeTools", () => {
 
   // #3590: the handler used to pass NO timeout, so the client fell back to a hardcoded 120s and
   // aborted every high-budget synthesis on a populated bank — with the configured value dead.
-  it("hindsight_reflect passes the configured timeout and budget through to the client", async () => {
+  it("dumemory_reflect passes the configured timeout and budget through to the client", async () => {
     const client = stubClient({ reflect: vi.fn(async () => "answer") });
     const tool = findTool(
       buildKnowledgeTools(client, "repo-a", { reflectTimeoutMs: 660_000, reflectBudget: "mid" }),
-      "hindsight_reflect"
+      "dumemory_reflect"
     );
     await tool.handler({ query: "why?" });
     expect(client.reflect).toHaveBeenCalledWith("why?", { budget: "mid", timeoutMs: 660_000 });
   });
 
-  it("hindsight_reflect never leaves the timeout unset (the client default would abort at 120s)", async () => {
+  it("dumemory_reflect never leaves the timeout unset (the client default would abort at 120s)", async () => {
     const client = stubClient({ reflect: vi.fn(async () => "answer") });
-    const tool = findTool(buildKnowledgeTools(client, "repo-a"), "hindsight_reflect");
+    const tool = findTool(buildKnowledgeTools(client, "repo-a"), "dumemory_reflect");
     await tool.handler({ query: "why?" });
     const opts = (client.reflect as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1];
     expect(opts.timeoutMs).toBeGreaterThan(300_000); // above the server's own reflect wall timeout
   });
 
-  it("hindsight_capture_initiative calls client.captureInitiative({title, summary, relatesToPageId}) and returns the page id", async () => {
+  it("dumemory_capture_initiative calls client.captureInitiative({title, summary, relatesToPageId}) and returns the page id", async () => {
     const client = stubClient({
       captureInitiative: vi.fn(async (_a: unknown) => ({ page_id: "initiative-retry-backoff" })),
     });
     const tools = buildKnowledgeTools(client, "repo-a");
-    const tool = findTool(tools, "hindsight_capture_initiative");
+    const tool = findTool(tools, "dumemory_capture_initiative");
     const result = await tool.handler({
       title: "Retry backoff for the uploader",
       summary: "Add exponential backoff so transient upload failures self-heal.",
@@ -258,9 +255,9 @@ describe("buildKnowledgeTools", () => {
 
   // Regression guard for the "ONCE, EARLY" contract that told agents to capture the opening plan
   // and never recapture, so mid-work pivots never reached the initiative page.
-  it("hindsight_capture_initiative's description tells the agent to recapture when the plan changes", () => {
+  it("dumemory_capture_initiative's description tells the agent to recapture when the plan changes", () => {
     const tools = buildKnowledgeTools(stubClient(), "repo-a");
-    const desc = findTool(tools, "hindsight_capture_initiative").description;
+    const desc = findTool(tools, "dumemory_capture_initiative").description;
     expect(desc).not.toMatch(/ONCE, EARLY/i);
     expect(desc).toMatch(/call it AGAIN/i);
     expect(desc).toMatch(/goal, scope, or rationale/i);
@@ -287,10 +284,10 @@ describe("buildKnowledgeTools", () => {
     expect(md).toMatch(/never a second page/i);
   });
 
-  it("hindsight_capture_initiative passes relatesToPageId: undefined for a brand-new initiative", async () => {
+  it("dumemory_capture_initiative passes relatesToPageId: undefined for a brand-new initiative", async () => {
     const client = stubClient();
     const tools = buildKnowledgeTools(client, "repo-a");
-    const tool = findTool(tools, "hindsight_capture_initiative");
+    const tool = findTool(tools, "dumemory_capture_initiative");
     await tool.handler({ title: "New thing", summary: "why" });
     expect(client.captureInitiative).toHaveBeenCalledWith({
       title: "New thing",
@@ -307,7 +304,7 @@ describe("buildKnowledgeTools", () => {
     }));
     const tools = buildKnowledgeTools(client, "repo-a", { harness: "codex", stampFor });
 
-    await findTool(tools, "hindsight_capture_initiative").handler({
+    await findTool(tools, "dumemory_capture_initiative").handler({
       title: "New thing",
       summary: "why",
     });
@@ -318,7 +315,7 @@ describe("buildKnowledgeTools", () => {
       stamp: { tags: ["project:repo-a"], metadata: { project: "repo-a" } },
     });
 
-    await findTool(tools, "hindsight_ingest_document").handler({ title: "Notes", content: "x" });
+    await findTool(tools, "dumemory_ingest_document").handler({ title: "Notes", content: "x" });
     expect(client.retain).toHaveBeenCalledWith(
       "x",
       "ingested document",
@@ -330,10 +327,10 @@ describe("buildKnowledgeTools", () => {
     expect(stampFor).toHaveBeenCalledTimes(2);
   });
 
-  it("hindsight_ingest_document slugifies the title and calls client.retain(...) with the 'document' strategy", async () => {
+  it("dumemory_ingest_document slugifies the title and calls client.retain(...) with the 'document' strategy", async () => {
     const client = stubClient();
     const tools = buildKnowledgeTools(client, "repo-a");
-    const tool = findTool(tools, "hindsight_ingest_document");
+    const tool = findTool(tools, "dumemory_ingest_document");
     const result = await tool.handler({ title: "My Title", content: "some content" });
     expect(client.retain).toHaveBeenCalledWith(
       "some content",
@@ -346,10 +343,10 @@ describe("buildKnowledgeTools", () => {
     expect(JSON.parse(result.content[0].text)).toEqual({ ok: true, doc_id: "my-title" });
   });
 
-  it("hindsight_ingest_document collapses internal whitespace runs in the title into single hyphens", async () => {
+  it("dumemory_ingest_document collapses internal whitespace runs in the title into single hyphens", async () => {
     const client = stubClient();
     const tools = buildKnowledgeTools(client, "repo-a");
-    const tool = findTool(tools, "hindsight_ingest_document");
+    const tool = findTool(tools, "dumemory_ingest_document");
     await tool.handler({ title: "Repo   Core  Concepts", content: "x" });
     expect(client.retain).toHaveBeenCalledWith(
       "x",
@@ -361,10 +358,10 @@ describe("buildKnowledgeTools", () => {
     );
   });
 
-  it("hindsight_ingest_document strips punctuation from the title into a safe slug", async () => {
+  it("dumemory_ingest_document strips punctuation from the title into a safe slug", async () => {
     const client = stubClient();
     const tools = buildKnowledgeTools(client, "repo-a");
-    const tool = findTool(tools, "hindsight_ingest_document");
+    const tool = findTool(tools, "dumemory_ingest_document");
     await tool.handler({ title: "Repo: Component Map! (v2/final)", content: "x" });
     expect(client.retain).toHaveBeenCalledWith(
       "x",
@@ -376,10 +373,10 @@ describe("buildKnowledgeTools", () => {
     );
   });
 
-  it("hindsight_ingest_document falls back to 'doc' when the title has no safe characters", async () => {
+  it("dumemory_ingest_document falls back to 'doc' when the title has no safe characters", async () => {
     const client = stubClient();
     const tools = buildKnowledgeTools(client, "repo-a");
-    const tool = findTool(tools, "hindsight_ingest_document");
+    const tool = findTool(tools, "dumemory_ingest_document");
     await tool.handler({ title: "!!!///???", content: "x" });
     expect(client.retain).toHaveBeenCalledWith(
       "x",
@@ -392,11 +389,11 @@ describe("buildKnowledgeTools", () => {
   });
 
   for (const name of [
-    "hindsight_list_knowledge_pages",
-    "hindsight_read_knowledge_page",
-    "hindsight_reflect",
-    "hindsight_capture_initiative",
-    "hindsight_ingest_document",
+    "dumemory_list_knowledge_pages",
+    "dumemory_read_knowledge_page",
+    "dumemory_reflect",
+    "dumemory_capture_initiative",
+    "dumemory_ingest_document",
   ] as const) {
     it(`${name} returns isError:true with the error text when the client method throws`, async () => {
       const boom = new Error("boom: not found");
@@ -420,13 +417,13 @@ describe("buildKnowledgeTools", () => {
       const tools = buildKnowledgeTools(client, "repo-a");
       const tool = findTool(tools, name);
       const args =
-        name === "hindsight_reflect"
+        name === "dumemory_reflect"
           ? { query: "q" }
-          : name === "hindsight_capture_initiative"
+          : name === "dumemory_capture_initiative"
             ? { title: "T", summary: "S" }
-            : name === "hindsight_ingest_document"
+            : name === "dumemory_ingest_document"
               ? { title: "T", content: "C" }
-              : name === "hindsight_read_knowledge_page"
+              : name === "dumemory_read_knowledge_page"
                 ? { page_id: "p1" }
                 : {};
       const result = await tool.handler(args);

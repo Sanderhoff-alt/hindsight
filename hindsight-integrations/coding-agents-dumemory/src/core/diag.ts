@@ -12,7 +12,7 @@ import { log } from "./log";
 
 /** Where the JSONL trail lands. Exported so a failure notice can name the file to open. */
 export function diagFilePath(): string {
-  return process.env.HINDSIGHT_DIAG_FILE || "/tmp/hindsight-plugin.log";
+  return process.env.DUMEMORY_DIAG_FILE || "/tmp/dumemory-plugin.log";
 }
 
 export function diag(harness: string, event: string, extra: Record<string, unknown> = {}): void {

@@ -22,7 +22,7 @@ describe("syncCompanionSkill", () => {
     const src = tmp("skill-src-");
     writeFileSync(join(src, "SKILL.md"), "NEW CONTENT v2");
     if (installedContent !== undefined) {
-      const dst = join(home, ".claude", "skills", "hindsight-coding-agent");
+      const dst = join(home, ".claude", "skills", "dumemory-coding-agent");
       mkdirSync(dst, { recursive: true });
       writeFileSync(join(dst, "SKILL.md"), installedContent);
     }
@@ -33,14 +33,14 @@ describe("syncCompanionSkill", () => {
     const { home, src } = setup("OLD CONTENT v1");
     syncCompanionSkill("claude-code", { home, srcDir: src });
     expect(
-      readFileSync(join(home, ".claude", "skills", "hindsight-coding-agent", "SKILL.md"), "utf8")
+      readFileSync(join(home, ".claude", "skills", "dumemory-coding-agent", "SKILL.md"), "utf8")
     ).toBe("NEW CONTENT v2");
   });
 
   it("does NOT install where the skill was never installed (uninstall stays respected)", () => {
     const { home, src } = setup(undefined);
     syncCompanionSkill("claude-code", { home, srcDir: src });
-    expect(existsSync(join(home, ".claude", "skills", "hindsight-coding-agent"))).toBe(false);
+    expect(existsSync(join(home, ".claude", "skills", "dumemory-coding-agent"))).toBe(false);
   });
 
   it("no-ops on identical content and on hosts without a skills mechanism", () => {
@@ -48,7 +48,7 @@ describe("syncCompanionSkill", () => {
     syncCompanionSkill("claude-code", { home, srcDir: src }); // same content — no throw, unchanged
     syncCompanionSkill("opencode", { home, srcDir: src }); // no mechanism — no-op
     expect(
-      readFileSync(join(home, ".claude", "skills", "hindsight-coding-agent", "SKILL.md"), "utf8")
+      readFileSync(join(home, ".claude", "skills", "dumemory-coding-agent", "SKILL.md"), "utf8")
     ).toBe("NEW CONTENT v2");
   });
 });

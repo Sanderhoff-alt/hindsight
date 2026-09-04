@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 /**
- * hindsight-claude-hook — the Claude Code entry point (a `UserPromptSubmit` hook).
+ * dumemory-claude-hook — the Claude Code entry point (a `UserPromptSubmit` hook).
  *
- * Install (Claude Code settings.json):
- *   { "hooks": { "UserPromptSubmit": [ { "hooks": [
- *       { "type": "command", "command": "hindsight-claude-hook" } ] } ] } }
+ * Configured in Claude Code's settings.json (`~/.claude/settings.json`):
+ *   { "hooks": { "UserPromptSubmit": [ { "commands": [
+ *       { "type": "command", "command": "dumemory-claude-hook" } ] } ] } }
  *
- * Behavior (shared hook runtime, core/hook.ts): recall every prompt; reflect once per Claude
- * session on the first prompt and cache the outcome so later prompts recall only. Reflect
- * outcomes recorded in the diagnostic file. Config: the layered files (~/.hindsight/coding-agent.json
- * + nearest project file), harness name "claude-code".
+ * Emits nothing on standard stdout; injections travel via `hookEventName: "UserPromptSubmit"`
+ * JSON payloads (`{ hookSpecificOutput: { additionalContext: "..." } }`). Failures log to stderr,
+ * outcomes recorded in the diagnostic file. Config: the layered files (~/.dumemory/coding-agent.json
+ * etc.) and env overrides documented in README.md.
  */
 import { runHarnessPrompt } from "./harness/hook-lifecycle";
 

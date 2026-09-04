@@ -1,4 +1,4 @@
-FROM hindsight-coding-agents-e2e-base
+FROM dumemory-coding-agents-e2e-base
 ARG VERSION=beta
 # opencode v2 is a separate package and binary (`opencode2`) that installs ALONGSIDE v1; it is
 # beta-tagged, so `latest` would silently install v1's CLI.

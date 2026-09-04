@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { RateLimitedError, type HindsightClient } from "./hindsight";
+import { RateLimitedError, type DuMemoryClient } from "./dumemory";
 import { ingestChats, renderSessionJsonl, retainLiveSession, type TransportTurn } from "./chat";
 import { memoryCursorStore, type RetainCursorStore } from "./retain-cursor";
 
@@ -47,7 +47,7 @@ describe("renderSessionJsonl", () => {
 describe("retainLiveSession", () => {
   it("upserts the JSONL transcript under conversation:<id> with the unified conversation strategy", async () => {
     const retain = vi.fn().mockResolvedValue(undefined);
-    const client = { retain } as unknown as HindsightClient;
+    const client = { retain } as unknown as DuMemoryClient;
     const turns: TransportTurn[] = [
       { role: "user", content: "hi", timestamp: "2026-01-01T00:00:00Z" },
     ];
@@ -81,7 +81,7 @@ describe("retainLiveSession", () => {
 describe("ingestChats", () => {
   it("applies per-session retain attribution while preserving built-in chat identity", async () => {
     const retain = vi.fn().mockResolvedValue(undefined);
-    const client = { retain } as unknown as HindsightClient;
+    const client = { retain } as unknown as DuMemoryClient;
 
     await ingestChats(
       client,
@@ -120,11 +120,11 @@ describe("retainLiveSession — incremental write-back", () => {
         retain,
         bank: "coding-agent::repo",
         supportsIdempotentRetain: async () => supported,
-      } as unknown as HindsightClient,
+      } as unknown as DuMemoryClient,
     };
   };
 
-  const write = (client: HindsightClient, turnList: TransportTurn[], cursors: RetainCursorStore) =>
+  const write = (client: DuMemoryClient, turnList: TransportTurn[], cursors: RetainCursorStore) =>
     retainLiveSession(client, "s1", turnList, "2026-01-01T00:00:00Z", "codex", { cursors });
 
   it("replaces on the first write, then appends only the new turns", async () => {
@@ -229,7 +229,7 @@ describe("retainLiveSession — incremental write-back", () => {
       retain,
       bank: "b",
       supportsIdempotentRetain: async () => true,
-    } as unknown as HindsightClient;
+    } as unknown as DuMemoryClient;
     const cursors = memoryCursorStore();
 
     const first = write(client, turns(5), cursors);
@@ -287,7 +287,7 @@ describe("retainLiveSession — incremental write-back", () => {
         retain: vi.fn(async (_c: string, ...rest: unknown[]) => {
           sent.push({ bank, mode: (rest[4] as { updateMode?: string }).updateMode ?? "replace" });
         }),
-      }) as unknown as HindsightClient;
+      }) as unknown as DuMemoryClient;
     const cursors = memoryCursorStore();
 
     await write(mk("repo-a"), turns(5), cursors);
@@ -442,7 +442,7 @@ describe("retainLiveSession — incremental write-back", () => {
       supportsIdempotentRetain: async () => {
         throw new Error("unreachable");
       },
-    } as unknown as HindsightClient;
+    } as unknown as DuMemoryClient;
     await write(client, turns(2), memoryCursorStore());
     expect(retain).toHaveBeenCalledTimes(1);
     expect(retain.mock.calls[0][5].updateMode).toBeUndefined();

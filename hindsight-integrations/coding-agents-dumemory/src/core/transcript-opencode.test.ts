@@ -56,7 +56,7 @@ describe("readOpencodeMessages", () => {
         parts: [
           {
             type: "text",
-            text: "<hindsight_memories>\nleak\n</hindsight_memories>\nWhy retry?",
+            text: "<dumemory_memory>\nleak\n</dumemory_memory>\nWhy retry?",
           },
         ],
       },

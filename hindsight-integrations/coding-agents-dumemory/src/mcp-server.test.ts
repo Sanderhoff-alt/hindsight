@@ -6,31 +6,31 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { buildMcpServer, resolveHarness, selectTools } from "./mcp-server";
 import { resolveConfig } from "./core/config";
-import type { HindsightClient } from "./core/hindsight";
+import type { DuMemoryClient } from "./core/dumemory";
 
 // Plain stub — no SDK, no network. selectTools only needs a client reference to hand to
 // buildKnowledgeTools when enabled; it never calls any client method itself.
-const stubClient = {} as HindsightClient;
+const stubClient = {} as DuMemoryClient;
 
 describe("selectTools", () => {
-  it("returns [] when cfg.disabled is true — a disabled Hindsight exposes NO tools", () => {
+  it("returns [] when cfg.disabled is true — a disabled DuMemory exposes NO tools", () => {
     const cfg = resolveConfig({ disabled: true });
     expect(selectTools(cfg, stubClient, "b")).toEqual([]);
   });
 
-  it("returns the eight hindsight_* tool specs when enabled", () => {
+  it("returns the eight dumemory_* tool specs when enabled", () => {
     const cfg = resolveConfig({});
     const tools = selectTools(cfg, stubClient, "b");
     expect(tools.map((t) => t.name).sort()).toEqual(
       [
-        "hindsight_sync_status",
-        "hindsight_diagnose",
-        "hindsight_search_knowledge_pages",
-        "hindsight_list_knowledge_pages",
-        "hindsight_read_knowledge_page",
-        "hindsight_reflect",
-        "hindsight_capture_initiative",
-        "hindsight_ingest_document",
+        "dumemory_sync_status",
+        "dumemory_diagnose",
+        "dumemory_search_knowledge_pages",
+        "dumemory_list_knowledge_pages",
+        "dumemory_read_knowledge_page",
+        "dumemory_reflect",
+        "dumemory_capture_initiative",
+        "dumemory_ingest_document",
       ].sort()
     );
   });
@@ -38,33 +38,33 @@ describe("selectTools", () => {
   it("propagates the configured harness to diagnostics", async () => {
     const cfg = resolveConfig({ harness: "codex" });
     const tools = selectTools(cfg, stubClient, "b");
-    const diagnose = tools.find((tool) => tool.name === "hindsight_diagnose");
+    const diagnose = tools.find((tool) => tool.name === "dumemory_diagnose");
 
     expect(diagnose).toBeDefined();
     const result = await diagnose!.handler({});
     expect(JSON.parse(result.content[0].text)).toMatchObject({ harness: "codex" });
   });
 
-  // #3590: selectTools built the tools WITHOUT the reflect settings, so hindsight_reflect fell
+  // #3590: selectTools built the tools WITHOUT the reflect settings, so dumemory_reflect fell
   // back to the client's hardcoded 120s deadline and reflectTimeoutMs was dead config.
-  it("forwards the resolved reflect timeout and budget into hindsight_reflect", async () => {
+  it("forwards the resolved reflect timeout and budget into dumemory_reflect", async () => {
     const reflect = vi.fn().mockResolvedValue("answer");
-    const client = { reflect } as unknown as HindsightClient;
+    const client = { reflect } as unknown as DuMemoryClient;
     const cfg = resolveConfig({ reflectToolTimeoutMs: 660_000, reflectBudget: "mid" });
     const tools = selectTools(cfg, client, "b");
 
-    await tools.find((tool) => tool.name === "hindsight_reflect")!.handler({ query: "why?" });
+    await tools.find((tool) => tool.name === "dumemory_reflect")!.handler({ query: "why?" });
     expect(reflect).toHaveBeenCalledWith("why?", { budget: "mid", timeoutMs: 660_000 });
   });
 
   it("also attributes documents ingested through the MCP tool to that harness", async () => {
-    // The same option feeds hindsight_ingest_document, which until now stamped nothing: the
+    // The same option feeds dumemory_ingest_document, which until now stamped nothing: the
     // documents list resolves a document's agent logo from `metadata.harness` / `harness:<id>`,
     // so MCP-ingested documents used to show up unattributed.
     const retain = vi.fn().mockResolvedValue(undefined);
-    const client = { retain } as unknown as HindsightClient;
+    const client = { retain } as unknown as DuMemoryClient;
     const tools = selectTools(resolveConfig({ harness: "codex" }), client, "b");
-    const ingest = tools.find((tool) => tool.name === "hindsight_ingest_document");
+    const ingest = tools.find((tool) => tool.name === "dumemory_ingest_document");
 
     await ingest!.handler({ title: "Runbook", content: "steps" });
     const [, , , tags, , opts] = retain.mock.calls[0];
@@ -82,13 +82,13 @@ describe("selectTools", () => {
  */
 describe("resolveHarness", () => {
   it("returns the harness its registration declares", () => {
-    expect(resolveHarness({ HINDSIGHT_MCP_HARNESS: "codex" })).toBe("codex");
+    expect(resolveHarness({ DUMEMORY_MCP_HARNESS: "codex" })).toBe("codex");
   });
 
-  it.each([{}, { HINDSIGHT_MCP_HARNESS: "" }])(
+  it.each([{}, { DUMEMORY_MCP_HARNESS: "" }])(
     "refuses to start on %j rather than guessing",
     (env) => {
-      expect(() => resolveHarness(env)).toThrow(/HINDSIGHT_MCP_HARNESS is not set/);
+      expect(() => resolveHarness(env)).toThrow(/DUMEMORY_MCP_HARNESS is not set/);
       // The message has to name the way out — the fix is a re-install, not editing a config by hand.
       expect(() => resolveHarness(env)).toThrow(/install <harness>/);
     }
@@ -119,12 +119,12 @@ describe("every mcp-server.js registration names a harness", () => {
 
   /**
    * An ASSIGNMENT of the variable, in any of the three dialects a registration is written in:
-   * a JS env object (`HINDSIGHT_MCP_HARNESS: "codex"`), a TOML/`-c` override
-   * (`HINDSIGHT_MCP_HARNESS = "codex"`), or a CLI pair (`HINDSIGHT_MCP_HARNESS=codex`).
+   * a JS env object (`DUMEMORY_MCP_HARNESS: "codex"`), a TOML/`-c` override
+   * (`DUMEMORY_MCP_HARNESS = "codex"`), or a CLI pair (`DUMEMORY_MCP_HARNESS=codex`).
    * Deliberately not a bare-name search: prose about the variable — including the comments this
    * very fix added next to each registration — would satisfy that and let a site slip through.
    */
-  const SETS_HARNESS = /HINDSIGHT_MCP_HARNESS\s*[:=]/;
+  const SETS_HARNESS = /DUMEMORY_MCP_HARNESS\s*[:=]/;
 
   function sourceFiles(dir: string, prefix = ""): string[] {
     return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -135,7 +135,7 @@ describe("every mcp-server.js registration names a harness", () => {
     });
   }
 
-  it("has no module that points at mcp-server.js without setting HINDSIGHT_MCP_HARNESS", () => {
+  it("has no module that points at mcp-server.js without setting DUMEMORY_MCP_HARNESS", () => {
     const nameless = sourceFiles(SRC).filter((rel) => {
       if (rel in EXEMPT) return false;
       const src = readFileSync(join(SRC, rel), "utf8");
@@ -146,7 +146,7 @@ describe("every mcp-server.js registration names a harness", () => {
 });
 
 describe("buildMcpServer", () => {
-  it("answers tools/list with an empty list when Hindsight is disabled", async () => {
+  it("answers tools/list with an empty list when DuMemory is disabled", async () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const server = buildMcpServer([]);
     const client = new Client({ name: "test-client", version: "0.1.0" });
@@ -183,14 +183,14 @@ describe("buildMcpServer", () => {
       openWorldHint: false,
     };
     const expected = {
-      hindsight_sync_status: readOnly,
-      hindsight_diagnose: readOnly,
-      hindsight_search_knowledge_pages: readOnly,
-      hindsight_list_knowledge_pages: readOnly,
-      hindsight_read_knowledge_page: readOnly,
-      hindsight_reflect: readOnly,
-      hindsight_capture_initiative: nonDestructiveWrite,
-      hindsight_ingest_document: nonDestructiveWrite,
+      dumemory_sync_status: readOnly,
+      dumemory_diagnose: readOnly,
+      dumemory_search_knowledge_pages: readOnly,
+      dumemory_list_knowledge_pages: readOnly,
+      dumemory_read_knowledge_page: readOnly,
+      dumemory_reflect: readOnly,
+      dumemory_capture_initiative: nonDestructiveWrite,
+      dumemory_ingest_document: nonDestructiveWrite,
     };
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const server = buildMcpServer(selectTools(resolveConfig({}), stubClient, "b"));
