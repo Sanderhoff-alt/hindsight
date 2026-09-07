@@ -90,8 +90,8 @@ def test_server_entrypoint_loads_dotenv_before_engine_semaphores(tmp_path: Path)
         "import hindsight_api.server; "
         "import hindsight_api.engine.llm_wrapper as llm_wrapper; "
         "print(f'VAL:{llm_wrapper._llm_max_concurrent}'); "
-        "print(f'VAL:{llm_wrapper._global_llm_semaphore._value}'); "
-        "print(f'VAL:{llm_wrapper._per_op_llm_semaphores[\"retain\"]._value}')"
+        "print(f'VAL:{llm_wrapper._global_llm_semaphore.capacity}'); "
+        "print(f'VAL:{llm_wrapper._per_op_llm_semaphores[\"retain\"].capacity}')"
     )
 
     result = subprocess.run(
