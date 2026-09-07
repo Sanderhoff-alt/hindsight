@@ -228,9 +228,14 @@ def _find_intrabatch_similar_pairs(names: list[str], threshold: float) -> list[_
     size — is longer than that bound demands, so the pair cannot slip past both prefixes.
 
     On a batch of distinct names at the default 0.5 cutoff that verifies ~5% of the pairs: 3.9x
-    faster than the double loop at the ``_INTRABATCH_MAX_NAMES`` cap of 250, 8x at 1000. Below
-    ~40 names the index costs more than it saves (0.7x at 20), which is tens of microseconds and
-    not worth a second code path — see ``benchmarks/micro/entity_resolver_bench.py``.
+    faster than the double loop at the ``_INTRABATCH_MAX_NAMES`` cap of 250, 8x at 1000 — see
+    ``benchmarks/micro/entity_resolver_bench.py``. Measured against the shape retain actually
+    produces (9,525 per-document name batches harvested from the LoCoMo and LongMemEval corpora,
+    median 58 distinct names, p95 156): 2.5x over the whole corpus, but the win is all in the
+    tail. Under ~50 names the index costs more than it saves — 0.55x at the smallest sizes,
+    which is 40 microseconds on a batch that takes 0.05ms either way — and half of real batches
+    are that small. A size threshold would buy back tens of microseconds on the median batch at
+    the price of a second code path, so there isn't one.
 
     The pruning buys nothing when the names really are all alike — 250 names of the shape
     "Acme Corporation Subsidiary 0001" probe into every bucket and pay the index on top of the
