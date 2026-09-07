@@ -199,65 +199,105 @@ def _cooccurrence_weight(degree: int) -> float:
     return 1.0 / math.sqrt(max(degree, 1))
 
 
+@dataclass(frozen=True, slots=True)
+class _PrefixIndexed:
+    """One name's trigram set, prepared for the prefix-filtering join.
+
+    ``prefix`` is the leading slice of the trigrams sorted rarest-first — the only tokens the
+    join indexes or probes on. ``input_index`` is the name's position in the caller's list, kept
+    so emitted pairs read in input order however the join happened to reach them.
+    """
+
+    size: int
+    prefix: list[str]
+    trigrams: set[str]
+    name: str
+    input_index: int
+
+
 def _find_intrabatch_similar_pairs(names: list[str], threshold: float) -> list[_SimilarNamePair]:
     """Every pair of ``names`` whose in-memory trigram similarity meets ``threshold``.
 
-    Uses the Prefix Filtering Principle (All-Pairs Set Similarity Join) to index and compare
-    only the frequency-sorted prefix tokens of each name, pruning >95% of pairwise candidate
-    checks in sub-linear time while guaranteeing 100% exact match against pg_trgm similarity.
+    Exactly the pairs the old O(N^2) double loop found — same Jaccard, same cutoff — reached by a
+    prefix-filtering set-similarity join rather than by comparing every pair. Sort each name's
+    trigrams rarest-first and index only the leading ``|A| - ceil(threshold * |A|) + 1`` of them:
+    two sets sharing none of those tokens cannot overlap enough to clear ``threshold``, so only
+    the pairs that survive the probe are verified. Each name's prefix is cut from its own size,
+    which is what makes the pruning lossless: a qualifying pair needs an overlap of at least
+    ``ceil(threshold * max(|A|, |B|))``, and the shorter set's prefix — cut for its own smaller
+    size — is longer than that bound demands, so the pair cannot slip past both prefixes.
+
+    On a batch of distinct names at the default 0.5 cutoff that verifies ~5% of the pairs: 3.9x
+    faster than the double loop at the ``_INTRABATCH_MAX_NAMES`` cap of 250, 8x at 1000. Below
+    ~40 names the index costs more than it saves (0.7x at 20), which is tens of microseconds and
+    not worth a second code path — see ``benchmarks/micro/entity_resolver_bench.py``.
+
+    The pruning buys nothing when the names really are all alike — 250 names of the shape
+    "Acme Corporation Subsidiary 0001" probe into every bucket and pay the index on top of the
+    full quadratic verification, ~1.2x slower than the double loop. That worst case is ~29ms at
+    the cap, which is why there is one code path here instead of a size or shape heuristic — but
+    it is also why the cap should not be raised on the strength of the distinct-name numbers
+    alone: the same shape at 500 names costs ~156ms of un-yielded CPU.
+
+    ``threshold`` is validated to ``0 < t <= 1`` (``entity_intrabatch_merge_similarity``), so a
+    name with no trigrams at all — no word characters, e.g. "!!!" — can never reach it and is
+    left out of the join entirely.
     """
-    if len(names) < 2 or threshold <= 0.0:
+    if len(names) < 2:
         return []
 
     trigrams = [_trigram_set(n) for n in names]
 
-    # 1. Compute global frequency of each trigram in this batch
+    # How common each trigram is in this batch. Sorting each set by it puts the tokens that
+    # discriminate best up front, which is what keeps the indexed prefixes small.
     freq: dict[str, int] = {}
     for t in trigrams:
         for tri in t:
             freq[tri] = freq.get(tri, 0) + 1
 
-    # 2. Sort tokens inside each set ascending by (frequency, token) for prefix filtering.
-    #    Sort sets ascending by set size (len), carrying input index to preserve pair order.
-    indexed: list[tuple[int, list[str], set[str], str, int]] = []
-    for orig_idx, (t, name) in enumerate(zip(trigrams, names)):
+    indexed: list[_PrefixIndexed] = []
+    for input_index, (t, name) in enumerate(zip(trigrams, names)):
         if not t:
             continue
-        sorted_tri = sorted(t, key=lambda x: (freq[x], x))
-        indexed.append((len(sorted_tri), sorted_tri, t, name, orig_idx))
+        ordered = sorted(t, key=lambda tri: (freq[tri], tri))
+        prefix_len = len(ordered) - math.ceil(threshold * len(ordered)) + 1
+        indexed.append(
+            _PrefixIndexed(
+                size=len(ordered),
+                prefix=ordered[:prefix_len],
+                trigrams=t,
+                name=name,
+                input_index=input_index,
+            )
+        )
 
-    indexed.sort(key=lambda x: (x[0], x[4]))
+    # Shortest set first — not for correctness (the prefixes are lossless in any order) but so
+    # that a probe only ever meets sets no larger than itself, which is what gives the size
+    # filter below something to reject. Ties break on input order, keeping the walk deterministic.
+    indexed.sort(key=lambda e: (e.size, e.input_index))
 
-    inverted_index: dict[str, list[int]] = {}
+    postings: dict[str, list[int]] = {}
     pairs: list[_SimilarNamePair] = []
-
-    # 3. Filter-and-Verification
-    for i, (len_a, sorted_tri_a, set_a, name_a, idx_a) in enumerate(indexed):
-        p_len = len_a - math.ceil(threshold * len_a) + 1
-        prefix_a = sorted_tri_a[:p_len]
-
+    for position, entry in enumerate(indexed):
         candidates: set[int] = set()
-        for tri in prefix_a:
-            if tri in inverted_index:
-                candidates.update(inverted_index[tri])
+        for tri in entry.prefix:
+            candidates.update(postings.get(tri, ()))
 
-        min_allowed_len_b = threshold * len_a
-        for j in candidates:
-            len_b, _, set_b, name_b, idx_b = indexed[j]
-            if len_b < min_allowed_len_b:
+        # |b| >= threshold * |a| is implied by the Jaccard cutoff (the intersection can never
+        # exceed the smaller set), and rejects a candidate without touching its trigrams.
+        min_size = threshold * entry.size
+        for other_position in candidates:
+            other = indexed[other_position]
+            if other.size < min_size:
                 continue
-            inter = len(set_a & set_b)
-            union = len_a + len_b - inter
-            if union and (inter / union) >= threshold:
-                if idx_a < idx_b:
-                    pairs.append(_SimilarNamePair(name_a=name_a, name_b=name_b))
-                else:
-                    pairs.append(_SimilarNamePair(name_a=name_b, name_b=name_a))
+            intersection = len(entry.trigrams & other.trigrams)
+            union = entry.size + other.size - intersection
+            if union and (intersection / union) >= threshold:
+                first, second = (entry, other) if entry.input_index < other.input_index else (other, entry)
+                pairs.append(_SimilarNamePair(name_a=first.name, name_b=second.name))
 
-        for tri in prefix_a:
-            if tri not in inverted_index:
-                inverted_index[tri] = []
-            inverted_index[tri].append(i)
+        for tri in entry.prefix:
+            postings.setdefault(tri, []).append(position)
 
     return pairs
 
@@ -1093,13 +1133,12 @@ class EntityResolver:
         entities_to_update: list[_EntityStat] = []
         entities_to_create: list[_EntityToCreate] = []
 
-        # Pre-compute trigram sets for distinct candidate canonical names across this batch (PERF-R18)
-        # to avoid recalculating _trigram_set for the same candidates inside the scoring loop.
+        # One trigram set per distinct candidate name for the whole batch. Mentions in a batch
+        # draw on heavily overlapping candidate lists, so the same canonical name was otherwise
+        # re-trigrammed once per mention that saw it. Filled lazily: a candidate the scoring
+        # loop never reaches (a label row, or a mention that resolves before scoring) costs
+        # nothing, and nothing is computed ahead of the yield points below (GH-3211).
         candidate_trigram_map: dict[str, set[str]] = {}
-        for cands in all_candidates.values():
-            for _, cname, _, _, _ in cands:
-                if cname not in candidate_trigram_map:
-                    candidate_trigram_map[cname] = _trigram_set(cname)
         # Candidates scored since the last yield, counted across mentions so a
         # batch of many small candidate sets yields as often as one large set.
         scored_since_yield = 0
@@ -1218,11 +1257,11 @@ class EntityResolver:
                 # alone: SequenceMatcher stays load-bearing for typo variants that arrive
                 # with no co-occurrence context at all ("Dr Waler" -> "Dr Wall").
                 canonical_lower = canonical_name.lower()
-                cand_trigrams = candidate_trigram_map.get(canonical_name)
-                if cand_trigrams is None:
-                    cand_trigrams = _trigram_set(canonical_name)
-                    candidate_trigram_map[canonical_name] = cand_trigrams
-                name_trigram_similarity = _trigram_set_similarity(mention_trigrams, cand_trigrams)
+                candidate_trigrams = candidate_trigram_map.get(canonical_name)
+                if candidate_trigrams is None:
+                    candidate_trigrams = _trigram_set(canonical_name)
+                    candidate_trigram_map[canonical_name] = candidate_trigrams
+                name_trigram_similarity = _trigram_set_similarity(mention_trigrams, candidate_trigrams)
                 if name_trigram_similarity < self._merge_min_similarity:
                     continue
 

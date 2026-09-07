@@ -109,96 +109,102 @@ def _v_length_pruned_quadratic(names: Sequence[str], threshold: float) -> list[_
     return pairs
 
 
+# Surname / given-name / place fragments recombined into distinct names. The production caller
+# passes `rep_by_lower.values()` — one entry per *distinct* new name in the batch — so a workload
+# built by sampling a small pool with replacement measures a batch shape that cannot occur.
+_GIVEN = "James Mary John Patricia Robert Jennifer Michael Linda William Elizabeth David Barbara Richard Susan Joseph Jessica Thomas Sarah Charles Karen Christopher Nancy Daniel Lisa Matthew Betty Anthony Margaret Mark Sandra Donald Ashley Steven Kimberly Paul Emily Andrew Donna Joshua Michelle".split()
+_FAMILY = "Smith Johnson Williams Brown Jones Garcia Miller Davis Rodriguez Martinez Hernandez Lopez Gonzalez Wilson Anderson Thomas Taylor Moore Jackson Martin Lee Perez Thompson White Harris Sanchez Clark Ramirez Lewis Robinson Walker Young Allen King Wright Scott Torres Nguyen Hill Flores".split()
+_ORG_SUFFIX = "Systems Labs Holdings Group Ventures Partners Industries Technologies Solutions Networks Dynamics Analytics Robotics Biosciences Capital Foundation Institute Media Logistics Energy".split()
+_PLACE = "Springfield Riverton Fairview Kingston Ashland Georgetown Clinton Salem Madison Franklin Greenville Bristol Newport Oxford Milton Dover Arlington Burlington Manchester Hudson".split()
+_PLACE_KIND = ["County", "City", "Township", "District", "Metro Area"]
+
+
+def _distinct_entity_names(count: int, rng: random.Random) -> list[str]:
+    """``count`` distinct people / orgs / places, with the surface variants a retain batch carries.
+
+    Roughly a sixth of the names are a near-miss of one already emitted — an accent dropped, a
+    suffix added, a transposed letter — which is the material the in-batch dedup exists to catch.
+    """
+    names: list[str] = []
+    seen: set[str] = set()
+
+    def emit(name: str) -> None:
+        if name.lower() not in seen:
+            seen.add(name.lower())
+            names.append(name)
+
+    while len(names) < count:
+        roll = rng.random()
+        if roll < 0.5:
+            emit(f"{rng.choice(_GIVEN)} {rng.choice(_FAMILY)}")
+        elif roll < 0.8:
+            emit(f"{rng.choice(_FAMILY)} {rng.choice(_ORG_SUFFIX)}")
+        else:
+            emit(f"{rng.choice(_PLACE)} {rng.choice(_PLACE_KIND)}")
+        if names and rng.random() < 0.2:
+            source = rng.choice(names)
+            variant = rng.choice(
+                [
+                    source.replace("a", "á", 1),
+                    f"{source} Inc",
+                    f"{source.lower()}",
+                    source.replace("e", "", 1),
+                ]
+            )
+            emit(variant)
+    return names[:count]
+
+
 def build_workloads(seed: int = 1234) -> list[Workload]:
     rng = random.Random(seed)
-
-    base_entities = [
-        "Barack Obama",
-        "Apple Inc.",
-        "New York City",
-        "Dr. John Watson",
-        "OpenAI GPT-4",
-        "OpenAI GPT 4",
-        "Microsoft Corporation",
-        "Google LLC",
-        "Amazon Web Services",
-        "Meta Platforms Inc",
-        "Nvidia RTX GPU",
-        "Elon Musk",
-        "Tesla Motors",
-        "SpaceX Falcon 9",
-        "DeepMind Technologies",
-        "Anthropic Claude 3.5",
-        "San Francisco",
-        "State of California",
-        "Los Angeles County",
-        "Seattle WA",
-        "Chicago Illinois",
-        "Python Software Foundation",
-        "Rust Language Foundation",
-        "TypeScript",
-        "PostgreSQL pg_trgm",
-        "Linux Kernel Development",
-        "Wren 🕯️",
-        "Wren 🗯️",
-        "Aster 🔑",
-        "aster 0",
-        "ke-aster",
-        "Merrivale",
-        "Merryvale",
-        "Corvin",
-        "Corvyn",
-        "Astrid",
-        "José García",
-        "Jose Garcia",
-        "北京",
-        "北京市",
-        "Jean-Luc",
-        "Jean Luc",
-    ]
-
-    def make_batch(target_count: int) -> list[str]:
-        res = []
-        while len(res) < target_count:
-            chosen = rng.choice(base_entities)
-            # occasionally introduce slight noise/suffix
-            r = rng.random()
-            if r < 0.2:
-                suffix = rng.choice([" Inc", " LLC", " 2", " Corp", " - New"])
-                res.append(chosen + suffix)
-            else:
-                res.append(chosen)
-        return res[:target_count]
 
     return [
         Workload(
             name="micro_batch_20",
-            description="Minimal retain batch (20 entities, 190 comparisons)",
-            entity_names=make_batch(20),
+            description="Minimal retain batch (20 distinct names, 190 comparisons)",
+            entity_names=_distinct_entity_names(20, rng),
             threshold=0.5,
         ),
         Workload(
             name="small_batch_50",
-            description="Typical standard retain batch (50 entities, 1,225 comparisons)",
-            entity_names=make_batch(50),
+            description="Typical retain batch (50 distinct names, 1,225 comparisons)",
+            entity_names=_distinct_entity_names(50, rng),
             threshold=0.5,
         ),
         Workload(
             name="cap_batch_250",
-            description="Previous system cap size (250 entities, 31,125 comparisons)",
-            entity_names=make_batch(250),
+            description="At the _INTRABATCH_MAX_NAMES cap (250 distinct names, 31,125 comparisons)",
+            entity_names=_distinct_entity_names(250, rng),
             threshold=0.5,
         ),
         Workload(
-            name="large_doc_500",
-            description="Large document import (500 entities, 124,750 comparisons)",
-            entity_names=make_batch(500),
+            name="cap_batch_250_low_cutoff",
+            description="At the cap with the merge cutoff lowered to 0.2 (more names survive the filter)",
+            entity_names=_distinct_entity_names(250, rng),
+            threshold=0.2,
+        ),
+        Workload(
+            name="adversarial_250_alike",
+            description="Worst case: 250 mutually similar names, prefix filter prunes nothing",
+            entity_names=[f"Acme Corporation Subsidiary {i:04d}" for i in range(250)],
+            threshold=0.5,
+        ),
+        Workload(
+            name="above_cap_500",
+            description="Above the current cap (500 distinct names, 124,750 comparisons)",
+            entity_names=_distinct_entity_names(500, rng),
+            threshold=0.5,
+        ),
+        Workload(
+            name="above_cap_500_alike",
+            description="Above the cap, worst case: 500 mutually similar names",
+            entity_names=[f"Acme Corporation Subsidiary {i:04d}" for i in range(500)],
             threshold=0.5,
         ),
         Workload(
             name="bulk_import_1000",
-            description="Bulk knowledge import batch (1000 entities, 499,500 comparisons)",
-            entity_names=make_batch(1000),
+            description="Bulk import (1000 distinct names, 499,500 comparisons)",
+            entity_names=_distinct_entity_names(1000, rng),
             threshold=0.5,
         ),
     ]
