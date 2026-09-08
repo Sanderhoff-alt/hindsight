@@ -1,8 +1,9 @@
 #!/bin/bash
-# Microbenchmark within-batch semantic link calculation on retain path.
+# Microbenchmark the within-batch semantic link pass on the retain path (#3977).
 #
 # Usage:
 #   ./scripts/benchmarks/run-semantic-within-batch-bench.sh
+#   ./scripts/benchmarks/run-semantic-within-batch-bench.sh --sizes 500 5000 --workloads clustered
 
 set -e
 
