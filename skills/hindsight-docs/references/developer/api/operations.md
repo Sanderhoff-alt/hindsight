@@ -24,7 +24,7 @@ By default, every operation runs in-process: no external queue, no extra process
 | `processing` | A worker has claimed the row and is actively running the handler. |
 | `completed` | The handler returned successfully. |
 | `failed` | The handler raised. `error_message` carries the reason; you can re-queue with `POST /…/retry`. |
-| `cancelled` | The operation was cancelled via `DELETE /…/operations/{id}` before a worker picked it up. Cancelling a `processing` operation is not supported. |
+| `cancelled` | The operation was cancelled via `DELETE /…/operations/{id}`. Works on `pending` and `processing` operations alike. |
 
 The worker retries failed operations up to `HINDSIGHT_API_WORKER_MAX_RETRIES` times before settling on `failed`. Deterministic failures (e.g., invalid embedding dimensions, integrity violations) skip retries — they won't succeed by re-running.
 
@@ -215,9 +215,21 @@ A few response fields are worth calling out:
 | `total` | Total units of work for the operation, when known. |
 | `detail` | Operation-specific counters (e.g. `observations_created`, `round`, `items_in_sub_batch`). |
 
-### Cancel a pending operation
+### Cancel an operation
 
-Returns `409` if the operation is already in `processing`, `completed`, or `failed` state.
+Cancels a `pending` or `processing` operation. Returns `409` if it has already reached a
+terminal state (`completed`, `failed`, `cancelled`).
+
+The row is marked `cancelled` straight away, but cancelling running work is **cooperative
+and not immediate**. A worker executing the operation notices at its next checkpoint — the
+boundary between sub-batches or documents for retain, between LLM batches for consolidation —
+and stops there, so whatever it had already committed stays committed and the batch in
+progress may still finish. Operation types without checkpoints run to the end; the row stays
+`cancelled` either way, because no worker write may overwrite that status.
+
+This is also how you clear an operation stranded in `processing` by a worker that was killed
+before it could finish: nothing is running, so the cancel takes effect immediately. Use
+`POST /…/operations/{id}/retry` to re-queue the work afterwards.
 
 ### Python
 
@@ -346,6 +358,8 @@ done
 Each worker has a single concurrency budget (`HINDSIGHT_API_WORKER_MAX_SLOTS`, default 10) shared across all operation types. Per-type slot reservations (`HINDSIGHT_API_WORKER_<TYPE>_MAX_SLOTS`) carve out guaranteed capacity within that budget; remaining slots form a shared pool any type can use. See [Configuration → Worker Configuration](../configuration#distributed-workers) for the full table.
 
 For most deployments the defaults are fine. Reserve slots for an operation type if you've seen it starved by a flood of another type (e.g., a long file_convert_retain blocking graph_maintenance on a deletion-heavy workload).
+
+Slots are also rotated across banks. Each claim serves the next bank in turn — one operation — then fills the rest of the pool oldest-first from anywhere. So a bank ingesting in bulk cannot own the whole pool while another bank's single write waits behind its backlog, and it is not throttled either: when no one else is waiting it still takes every slot.
 
 ## Next Steps
 

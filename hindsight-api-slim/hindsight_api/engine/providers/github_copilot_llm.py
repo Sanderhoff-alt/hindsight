@@ -27,8 +27,11 @@ from pydantic import ValidationError
 from hindsight_api.engine.llm_interface import LLM_TOOL_CHOICE_AUTO, LLMInterface, LLMToolChoice, LLMToolChoiceMode
 from hindsight_api.engine.llm_trace import LLMResponseUsage, stash_response_usage
 from hindsight_api.engine.response_models import LLMToolCall, LLMToolCallResult, TokenUsage
+from hindsight_api.engine.structured_output import provider_json_schema
 from hindsight_api.metrics import get_metrics_collector
 from hindsight_api.worker.stage import set_stage
+
+from ..response_models import LLMCallResult
 
 logger = logging.getLogger(__name__)
 
@@ -592,10 +595,8 @@ class GitHubCopilotLLM(LLMInterface):
         max_backoff: float = 60.0,
         skip_validation: bool = False,
         strict_schema: bool = False,
-        return_usage: bool = False,
-        cached_prefix: str | None = None,
         attempt_context: Callable[[], AbstractAsyncContextManager[None]] | None = None,
-    ) -> Any:
+    ) -> LLMCallResult:
         start_time = time.time()
 
         for attempt in range(max_retries + 1):
@@ -605,7 +606,7 @@ class GitHubCopilotLLM(LLMInterface):
                 system_suffix = ""
 
                 if response_format is not None:
-                    schema = response_format.model_json_schema()
+                    schema = provider_json_schema(response_format)
                     sdk_tools = [
                         self._terminal_tool(
                             _STRUCTURED_TOOL_NAME,
@@ -661,9 +662,7 @@ class GitHubCopilotLLM(LLMInterface):
                     scope=scope,
                     duration=duration,
                 )
-                if return_usage:
-                    return result, invocation.usage
-                return result
+                return LLMCallResult(content=result, usage=invocation.usage)
             except ValidationError:
                 raise
             except Exception as error:
@@ -701,8 +700,6 @@ class GitHubCopilotLLM(LLMInterface):
         initial_backoff: float = 1.0,
         max_backoff: float = 30.0,
         tool_choice: LLMToolChoice = LLM_TOOL_CHOICE_AUTO,
-        cached_prefix: str | None = None,
-        cached_prefix_message_count: int = 0,
         attempt_context: Callable[[], AbstractAsyncContextManager[None]] | None = None,
     ) -> LLMToolCallResult:
         start_time = time.time()

@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HindsightClient } from "./hindsight";
-import { buildPageTrigger, PAGE_MAX_TOKENS, pagesFor } from "./missions";
+import {
+  buildPageTrigger,
+  KNOWLEDGE_LABELS,
+  PAGE_MAX_TOKENS,
+  pagesFor,
+  RETAIN_STRATEGIES,
+} from "./missions";
 import { resolveConfig } from "./config";
 
 /** What a client built with `bank: "repo-a"` and no `project` seeds — the bank id is the fallback. */
@@ -396,6 +402,51 @@ describe("HindsightClient.seedPages", () => {
     }
   });
 
+  /**
+   * The whole point of `H`: one `pageTriggerCron` is copied into every repo's config, so a literal
+   * expression puts all five pages of every bank on the same minute, competing with retain on the
+   * same worker pool. Resolution happens HERE, at page creation, because that is where the page's
+   * identity exists.
+   */
+  it("gives each page its own slot when the cron asks to be hashed", async () => {
+    const seed = async (bank: string) => {
+      const calls: any[] = [];
+      stubFetchRouted(calls, [
+        { match: (m, u) => m === "GET" && u.endsWith("/knowledge-base/tree"), json: { roots: [] } },
+      ]);
+      const c = new HindsightClient({ apiUrl: "http://x", bank });
+      await c.seedPages(
+        buildPageTrigger(resolveConfig({ pageTriggerType: "cron", pageTriggerCron: "H H * * *" }))
+      );
+      return calls
+        .filter((k) => k.method === "POST" && k.url.endsWith("/knowledge-base/pages"))
+        .map((k) => k.body.trigger.refresh_cron as string);
+    };
+
+    const a = await seed("repo-a");
+    expect(a).toHaveLength(PAGES.length);
+    // Resolved to plain cron — `H` is this package's syntax and the server would reject it.
+    for (const cron of a) expect(cron).toMatch(/^\d+ \d+ \* \* \*$/);
+    expect(new Set(a).size).toBe(PAGES.length);
+    // Stable across runs, and different in another bank seeded from the same config.
+    expect(await seed("repo-a")).toEqual(a);
+    expect(await seed("repo-b")).not.toEqual(a);
+  });
+
+  it("sends a cron with no H exactly as configured", async () => {
+    const calls: any[] = [];
+    stubFetchRouted(calls, [
+      { match: (m, u) => m === "GET" && u.endsWith("/knowledge-base/tree"), json: { roots: [] } },
+    ]);
+    const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+    await c.seedPages(
+      buildPageTrigger(resolveConfig({ pageTriggerType: "cron", pageTriggerCron: "0 3 * * *" }))
+    );
+    for (const post of calls.filter((k) => k.method === "POST")) {
+      expect(post.body.trigger.refresh_cron).toBe("0 3 * * *");
+    }
+  });
+
   it("falls back to the bank id when no project is supplied, never an unscoped query", async () => {
     const calls: any[] = [];
     stubFetchRouted(calls, [
@@ -558,6 +609,44 @@ describe("HindsightClient.captureInitiative", () => {
     expect(item.context).toContain(`[[page:${result.page_id}]]`);
   });
 
+  /** An initiative page is one of these pages, so it is staggered on the same terms — seeded by
+   *  its own title rather than a taxonomy name. */
+  it("hashes an initiative page's own schedule", async () => {
+    const capture = async (title: string) => {
+      const calls: any[] = [];
+      stubFetchRouted(calls, [
+        { match: (m, u) => m === "GET" && u.endsWith("/knowledge-base/tree"), json: { roots: [] } },
+        {
+          match: (m, u) => m === "POST" && u.endsWith("/knowledge-base/folders"),
+          json: { id: "folder-abc" },
+        },
+        {
+          match: (m, u) => m === "POST" && u.endsWith("/knowledge-base/pages"),
+          json: { page_id: "pg" },
+        },
+        {
+          match: (m, u) => m === "POST" && u.endsWith("/memories"),
+          json: { operation_id: "op-1" },
+        },
+      ]);
+      const c = new HindsightClient({ apiUrl: "http://x", bank: "repo-a" });
+      await c.captureInitiative({
+        title,
+        summary: "…",
+        pageTrigger: buildPageTrigger(
+          resolveConfig({ pageTriggerType: "cron", pageTriggerCron: "H H * * *" })
+        ),
+      });
+      return calls.find((k) => k.method === "POST" && k.url.endsWith("/knowledge-base/pages"))!.body
+        .trigger.refresh_cron as string;
+    };
+
+    const one = await capture("Retry backoff for the uploader");
+    expect(one).toMatch(/^\d+ \d+ \* \* \*$/);
+    expect(await capture("Retry backoff for the uploader")).toBe(one);
+    expect(await capture("Typo-tolerant tag matching")).not.toBe(one);
+  });
+
   it("enhancement (relatesToPageId): NO page POST; marker names the existing page id", async () => {
     const calls: any[] = [];
     stubFetchRouted(calls, [
@@ -705,7 +794,8 @@ describe("HindsightClient.configureBank — missions are seeded once (#2492)", (
       })
     );
     await new HindsightClient({ apiUrl: "http://x", bank: "repo-a" }).configureBank();
-    return calls.find((k) => k.method === "POST" && k.url.endsWith("/import")).body;
+    // Optional: a bank that already carries the whole structure is not imported to at all (#3927).
+    return calls.find((k) => k.method === "POST" && k.url.endsWith("/import"))?.body;
   };
 
   it("seeds the full template — missions included — on a bank with no mission overrides", async () => {
@@ -723,8 +813,10 @@ describe("HindsightClient.configureBank — missions are seeded once (#2492)", (
     expect(body.bank.observations_mission).toBeUndefined();
   });
 
-  it("still re-applies the strategies and labels the plugin writes through", async () => {
-    // Not preferences: a bank missing `conversation` would reject the session write-back.
+  it("still adds the strategies and labels the plugin writes through", async () => {
+    // Not preferences: without `conversation` the session write-back silently extracts under the
+    // bank's own config (the server warns on an unknown strategy, it does not reject), so a
+    // transcript would get whatever a commit diff gets. A bank that has none must still get them.
     const body = await run([], routes({ retain_mission: "mine" }));
     expect(Object.keys(body.bank.retain_strategies)).toEqual(
       expect.arrayContaining(["git", "gitlog", "conversation", "document"])
@@ -743,6 +835,44 @@ describe("HindsightClient.configureBank — missions are seeded once (#2492)", (
     // With that API off a user cannot set per-bank missions at all, so there is no edit to protect.
     const body = await run([], routes(undefined, false));
     expect(typeof body.bank.reflect_mission).toBe("string");
+  });
+
+  it("makes no import call at all once the bank carries the whole structure (#3927)", async () => {
+    // The settled steady state: deepen runs on every session start, and on a bank that already has
+    // everything there is nothing left to write. Not a harmless no-op POST — an import of the
+    // strategies IS the overwrite, since the server replaces the whole map.
+    const calls: any[] = [];
+    await run(
+      calls,
+      routes({
+        reflect_mission: "mine",
+        retain_default_strategy: "git",
+        entities_allow_free_form: true,
+        retain_strategies: RETAIN_STRATEGIES,
+        entity_labels: [KNOWLEDGE_LABELS],
+      })
+    );
+    expect(calls.some((k) => k.method === "POST" && k.url.endsWith("/import"))).toBe(false);
+    // Pages are seeded either way — they are not bank configuration.
+    expect(calls.some((k) => k.url.includes("/knowledge-base/"))).toBe(true);
+  });
+
+  it("manageBankConfig: false keeps the plugin out of the bank's config entirely", async () => {
+    const calls: any[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: any) => {
+        calls.push({ url, method: init?.method });
+        return { ok: true, status: 200, json: async () => ({ roots: [] }) } as any;
+      })
+    );
+    await new HindsightClient({ apiUrl: "http://x", bank: "repo-a" }).configureBank({
+      manage: false,
+    });
+    expect(calls.some((k) => k.url.endsWith("/import"))).toBe(false);
+    // Not even the probe: the bank's configuration is none of this plugin's business.
+    expect(calls.some((k) => k.url.endsWith("/config"))).toBe(false);
+    expect(calls.some((k) => k.url.includes("/knowledge-base/"))).toBe(true);
   });
 
   it("re-seeds the missions after an explicit reset", async () => {

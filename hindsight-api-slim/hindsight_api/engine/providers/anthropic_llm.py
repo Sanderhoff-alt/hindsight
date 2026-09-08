@@ -11,16 +11,21 @@ This provider enables using Claude models from Anthropic with support for:
 import asyncio
 import json
 import logging
+import re
 import time
 from contextlib import AbstractAsyncContextManager, nullcontext
 from typing import Any, Callable
 
 from hindsight_api.engine.llm_interface import LLM_TOOL_CHOICE_AUTO, LLMInterface, LLMToolChoice
 from hindsight_api.engine.llm_trace import LLMResponseUsage, stash_response_usage
+from hindsight_api.engine.llm_transport import build_sdk_timeout, describe_transport_error
 from hindsight_api.engine.providers.llm_debug import dump_request_on_4xx
 from hindsight_api.engine.response_models import LLMToolCall, LLMToolCallResult, TokenUsage
+from hindsight_api.engine.structured_output import provider_json_schema
 from hindsight_api.metrics import get_metrics_collector
 from hindsight_api.worker.stage import set_stage
+
+from ..response_models import LLMCallResult
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +77,64 @@ def _mark_last_message_for_caching(messages: list[dict[str, Any]]) -> None:
             last["content"] = [{"type": "text", "text": content, "cache_control": _EPHEMERAL_CACHE}]
     elif isinstance(content, list) and content and isinstance(content[-1], dict):
         content[-1]["cache_control"] = _EPHEMERAL_CACHE
+
+
+#: ``data:<media type>;base64,<payload>`` — the OpenAI-style image part's URL form.
+_DATA_URI_RE = re.compile(r"^data:(?P<media_type>[\w.+-]+/[\w.+-]+);base64,(?P<data>.*)$", re.DOTALL)
+
+
+def _to_anthropic_content(content: Any) -> Any:
+    """Translate an OpenAI-style content-part list into Anthropic's block shape.
+
+    Retain assembles multimodal messages in the OpenAI part vocabulary — one
+    canonical wire shape, converted per provider here — so an inline image
+    reaches Claude as a native ``image`` block rather than as a data URI the
+    model would read as literal text.
+
+    A plain string, which is what every text-only call sends, passes straight
+    through untouched.
+    """
+    if not isinstance(content, list):
+        return content
+
+    blocks: list[Any] = []
+    for part in content:
+        if not isinstance(part, dict):
+            blocks.append(part)
+            continue
+        kind = part.get("type")
+        if kind == "image_url":
+            url = (part.get("image_url") or {}).get("url", "")
+            match = _DATA_URI_RE.match(url)
+            if match is None:
+                # Anthropic can fetch a URL image itself, so a non-data URI is
+                # passed on as a url source rather than dropped.
+                blocks.append({"type": "image", "source": {"type": "url", "url": url}})
+                continue
+            blocks.append(_anthropic_source_block("image", match))
+        elif kind == "file":
+            # Non-image attachments (PDFs) are a *document* block for Anthropic,
+            # not an image one — the API rejects a PDF sent as an image source.
+            url = (part.get("file") or {}).get("file_data", "")
+            match = _DATA_URI_RE.match(url)
+            if match is None:
+                continue
+            blocks.append(_anthropic_source_block("document", match))
+        else:
+            blocks.append(part)
+    return blocks
+
+
+def _anthropic_source_block(block_type: str, match: "re.Match[str]") -> dict[str, Any]:
+    """One base64 source block — image or document — from a parsed data URI."""
+    return {
+        "type": block_type,
+        "source": {
+            "type": "base64",
+            "media_type": match.group("media_type"),
+            "data": match.group("data"),
+        },
+    }
 
 
 # Fallback per-request timeout when the caller resolved none (direct
@@ -140,7 +203,8 @@ class AnthropicLLM(LLMInterface):
             client_kwargs: dict[str, Any] = {"api_key": self.api_key, "max_retries": 0}
             if self.base_url:
                 client_kwargs["base_url"] = self.base_url
-            client_kwargs["timeout"] = self.timeout or _DEFAULT_ANTHROPIC_TIMEOUT
+            # Per-phase so the connect leg is capped independently (issue #3881).
+            client_kwargs["timeout"] = build_sdk_timeout(self.timeout or _DEFAULT_ANTHROPIC_TIMEOUT)
             if default_headers:
                 client_kwargs["default_headers"] = default_headers
 
@@ -181,9 +245,8 @@ class AnthropicLLM(LLMInterface):
         max_backoff: float = 60.0,
         skip_validation: bool = False,
         strict_schema: bool = False,
-        return_usage: bool = False,
         attempt_context: Callable[[], AbstractAsyncContextManager[None]] | None = None,
-    ) -> Any:
+    ) -> LLMCallResult:
         """
         Make an LLM API call with retry logic.
 
@@ -200,11 +263,8 @@ class AnthropicLLM(LLMInterface):
             strict_schema: Route structured output through a forced tool_use tool for
                 native constrained decoding (issue #1002). When False, falls back to
                 schema-in-prompt + JSON parse.
-            return_usage: If True, return tuple (result, TokenUsage) instead of just result.
 
         Returns:
-            If return_usage=False: Parsed response if response_format is provided, otherwise text content.
-            If return_usage=True: Tuple of (result, TokenUsage) with token counts.
 
         Raises:
             OutputTooLongError: If output exceeds token limits.
@@ -228,7 +288,7 @@ class AnthropicLLM(LLMInterface):
                 else:
                     system_prompt = content
             else:
-                anthropic_messages.append({"role": role, "content": content})
+                anthropic_messages.append({"role": role, "content": _to_anthropic_content(content)})
 
         # Structured output: prefer Anthropic-native constrained decoding via a single
         # forced tool_use tool (strict_schema) over text-injecting the schema and
@@ -239,7 +299,7 @@ class AnthropicLLM(LLMInterface):
         use_forced_tool = False
         _tool_name = "structured_response"
         if response_format is not None and hasattr(response_format, "model_json_schema"):
-            schema = response_format.model_json_schema()
+            schema = provider_json_schema(response_format)
             if strict_schema:
                 use_forced_tool = True
             else:
@@ -371,15 +431,13 @@ class AnthropicLLM(LLMInterface):
                         f"time={duration:.3f}s"
                     )
 
-                if return_usage:
-                    token_usage = TokenUsage(
-                        input_tokens=input_tokens,
-                        output_tokens=output_tokens,
-                        total_tokens=total_tokens,
-                        cached_tokens=cached_tokens,
-                    )
-                    return result, token_usage
-                return result
+                token_usage = TokenUsage(
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    total_tokens=total_tokens,
+                    cached_tokens=cached_tokens,
+                )
+                return LLMCallResult(content=result, usage=token_usage)
 
             except json.JSONDecodeError as e:
                 last_exception = e
@@ -414,7 +472,8 @@ class AnthropicLLM(LLMInterface):
                         await asyncio.sleep(backoff + jitter)
                         continue
 
-                logger.error(f"Anthropic API error after {max_retries + 1} attempts: {str(e)}")
+                detail = f" [{describe_transport_error(e)}]" if isinstance(e, APIConnectionError) else ""
+                logger.error(f"Anthropic API error after {max_retries + 1} attempts: {str(e)}{detail}")
                 raise
 
             except Exception as e:
@@ -612,6 +671,11 @@ class AnthropicLLM(LLMInterface):
                 # Diagnostic dump (opt-in) of the exact request behind any 4xx.
                 dump_request_on_4xx(scope=scope, provider=self.provider, model=self.model, err=e, request=call_params)
                 last_exception = e
+                if isinstance(e, APIConnectionError):
+                    logger.warning(
+                        f"APIConnectionError in tool call ({self.provider}/{self.model}, scope={scope}, "
+                        f"attempt {attempt + 1}/{max_retries + 1}): {str(e)[:200]} [{describe_transport_error(e)}]"
+                    )
                 if attempt < max_retries:
                     await asyncio.sleep(min(initial_backoff * (2**attempt), max_backoff))
                     continue
@@ -620,6 +684,10 @@ class AnthropicLLM(LLMInterface):
         if last_exception:
             raise last_exception
         raise RuntimeError("Anthropic tool call failed")
+
+    def supports_vision(self) -> bool:
+        """Every Claude model this provider can reach accepts image blocks."""
+        return True
 
     # ── Message Batches API (50% token discount) ─────────────────────────────
 

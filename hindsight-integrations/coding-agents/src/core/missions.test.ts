@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { resolveConfig } from "./config";
-import { buildPageTrigger, PAGE_FACT_TYPES } from "./missions";
+import {
+  type BankOverrides,
+  buildPageTrigger,
+  CODING_BANK_TEMPLATE,
+  codingBankManifest,
+  expandCronHash,
+  KNOWLEDGE_LABELS,
+  pageTriggerFor,
+  PAGE_FACT_TYPES,
+  REFLECT_MISSION,
+  RETAIN_STRATEGIES,
+} from "./missions";
 
 /**
  * The page trigger is what a project's knowledge pages COST to keep current: auto-refresh means one
@@ -65,6 +76,93 @@ describe("buildPageTrigger", () => {
   });
 });
 
+/**
+ * One `pageTriggerCron` is shared by every page in every bank running this plugin, so a literal
+ * expression schedules ALL of them on the one minute it names — a pile of LLM syntheses on the
+ * worker pool that also serves retain. `H` is Jenkins' answer: hash the field per page.
+ */
+describe("hashed cron fields", () => {
+  const cron = (raw: string, bank: string, page: string) =>
+    pageTriggerFor(
+      buildPageTrigger(resolveConfig({ pageTriggerType: "cron", pageTriggerCron: raw })),
+      bank,
+      page
+    ).refresh_cron;
+
+  it("leaves an expression without H exactly as written", () => {
+    expect(cron("0 3 * * *", "repo-a", "Component map")).toBe("0 3 * * *");
+    expect(cron("0 3 * * *", "repo-b", "Core concepts")).toBe("0 3 * * *");
+  });
+
+  it("resolves H to an ordinary cron expression the server can parse", () => {
+    // `H` never leaves this package — `refresh_cron` is standard 5-field cron server-side.
+    expect(cron("H H * * *", "repo-a", "Component map")).toMatch(
+      /^(?:[0-9]|[1-5][0-9]) (?:[0-9]|1[0-9]|2[0-3]) \* \* \*$/
+    );
+    expect(cron("H * * * *", "repo-a", "Component map")).toMatch(
+      /^(?:[0-9]|[1-5][0-9]) \* \* \* \*$/
+    );
+  });
+
+  it("keeps the fields the operator wrote and hashes only the H", () => {
+    // "spread within 03:00" — the hour is a decision, the minute is not.
+    const daily = cron("H 3 * * *", "repo-a", "Component map");
+    expect(daily).toMatch(/^\d+ 3 \* \* \*$/);
+    // A range bounds where the hash may land: spread across the night only.
+    const hours = new Set(
+      Array.from({ length: 60 }, (_, i) =>
+        Number(cron("H H(0-5) * * *", `repo-${i}`, "Component map")!.split(" ")[1])
+      )
+    );
+    expect(Math.min(...hours)).toBeGreaterThanOrEqual(0);
+    expect(Math.max(...hours)).toBeLessThanOrEqual(5);
+    expect(hours.size).toBeGreaterThan(1);
+  });
+
+  it("gives each page its own slot, stably", () => {
+    const one = cron("H H * * *", "repo-a", "Component map");
+    // Stable: a page keeps its slot across runs, machines and releases, or every session would
+    // reschedule it (and the seed PATCH would report drift forever).
+    expect(cron("H H * * *", "repo-a", "Component map")).toBe(one);
+    expect(cron("H H * * *", "repo-a", "Core concepts")).not.toBe(one);
+    expect(cron("H H * * *", "repo-b", "Component map")).not.toBe(one);
+  });
+
+  it("spreads a shared config across banks instead of piling them on one minute", () => {
+    const slots = Array.from({ length: 50 }, (_, i) =>
+      cron("H H * * *", `repo-${i}`, "Component map")
+    );
+    // The whole point: 50 banks copying the same setting do not collide. Hashing distributes
+    // approximately — it does not partition — so a couple of collisions are expected, not a bug.
+    expect(new Set(slots).size).toBeGreaterThan(45);
+  });
+
+  it("does not derive minute and hour from the same number", () => {
+    // Hashing the field index alongside the seed is what keeps "H H * * *" worth 1440 slots
+    // rather than 60 correlated ones.
+    const minutes = new Set<number>();
+    const hours = new Set<number>();
+    for (let i = 0; i < 200; i++) {
+      const [m, h] = cron("H H * * *", `repo-${i}`, "Component map")!.split(" ");
+      minutes.add(Number(m));
+      hours.add(Number(h));
+    }
+    expect(minutes.size).toBeGreaterThan(40);
+    expect(hours.size).toBe(24);
+  });
+
+  it("leaves a malformed expression for the server to reject", () => {
+    // Rewriting it here would invent a schedule nobody asked for; resolveConfig refuses it first.
+    expect(expandCronHash("H(9-3) * * * *", "seed")).toBe("H(9-3) * * * *");
+    expect(expandCronHash("H H", "seed")).toBe("H H");
+  });
+
+  it("passes a trigger with no cron through untouched", () => {
+    const auto = buildPageTrigger(resolveConfig({}));
+    expect(pageTriggerFor(auto, "repo-a", "Component map")).toBe(auto);
+  });
+});
+
 describe("page trigger config resolution", () => {
   it("keeps today's behaviour when nothing is configured", () => {
     expect(resolveConfig({}).pageTriggerType).toBe("auto-refresh");
@@ -81,9 +179,137 @@ describe("page trigger config resolution", () => {
     );
   });
 
+  /**
+   * `expandCronHash` leaves an expression it cannot read alone, so an unchecked malformed `H`
+   * would reach the server verbatim and fail page creation with a parse error naming syntax this
+   * package invented. Only the H fields are checked — ordinary cron syntax is the server's.
+   */
+  it("falls back to auto-refresh on a malformed hashed field", () => {
+    for (const bad of ["H(9-3) * * * *", "H(0-99) * * * *", "H H", "Hx * * * *"]) {
+      expect(resolveConfig({ pageTriggerType: "cron", pageTriggerCron: bad }).pageTriggerType).toBe(
+        "auto-refresh"
+      );
+    }
+  });
+
+  it("accepts a well-formed hashed cron", () => {
+    for (const good of ["H H * * *", "H * * * *", "H 3 * * *", "H H(0-5) * * *"]) {
+      const cfg = resolveConfig({ pageTriggerType: "cron", pageTriggerCron: good });
+      expect(cfg.pageTriggerType).toBe("cron");
+      expect(cfg.pageTriggerCron).toBe(good);
+    }
+  });
+
   it("ignores a value that is not one of the three types", () => {
     expect(resolveConfig({ pageTriggerType: "whenever" as never }).pageTriggerType).toBe(
       "auto-refresh"
     );
+  });
+});
+
+/**
+ * Applying the whole template on every pass is how a plugin takes a bank over. #1270 fixed it for
+ * OpenClaw's missions, #2492 for this plugin's; #3927 is the same bug on the half both fixes left
+ * un-guarded — the strategies and labels, re-sent wholesale on every session start. Because the
+ * server stores each of those as ONE config value, re-sending them deleted a user's own strategy,
+ * reverted their edits to the plugin's, and could leave `retain_default_strategy` pointing at a
+ * strategy that no longer existed.
+ */
+describe("codingBankManifest (#3927)", () => {
+  const bankOf = (overrides: BankOverrides | undefined) => codingBankManifest(overrides)?.bank;
+
+  it("seeds the full template on a bank with no overrides of its own", () => {
+    // Unreadable overrides (no bank yet, or the bank-config API switched off) seed the same lot:
+    // nothing can have been customised through an API that is not there.
+    for (const empty of [undefined, {}]) {
+      expect(codingBankManifest(empty)).toEqual(CODING_BANK_TEMPLATE);
+    }
+  });
+
+  it("adds a strategy a newer plugin release introduced, keeping the ones already there", () => {
+    // The reason the re-apply exists at all: a bank seeded before `survey` shipped must still get
+    // it, or the survey's documents retain under a strategy the bank does not have.
+    const { survey: _survey, ...seededByAnOlderRelease } = RETAIN_STRATEGIES;
+    const bank = bankOf({
+      reflect_mission: "seeded",
+      retain_strategies: { ...seededByAnOlderRelease, mycustom: { retain_chunk_size: 500 } },
+    });
+    expect(Object.keys(bank!.retain_strategies as object).sort()).toEqual([
+      "conversation",
+      "document",
+      "git",
+      "gitlog",
+      "mycustom",
+      "survey",
+    ]);
+    expect((bank!.retain_strategies as Record<string, unknown>).survey).toEqual(
+      RETAIN_STRATEGIES.survey
+    );
+  });
+
+  it("never deletes a strategy the user defined, nor reverts their edits to ours", () => {
+    const mine = {
+      ...RETAIN_STRATEGIES,
+      // The user made the conversation strategy concise and small; that is theirs to decide.
+      conversation: { retain_mission: "MINE", retain_extraction_mode: "concise" },
+      mycustom: { retain_chunk_size: 500 },
+    };
+    // Nothing missing => the field is not written at all, so no import can revert it.
+    expect(bankOf({ reflect_mission: "seeded", retain_strategies: mine })).not.toHaveProperty(
+      "retain_strategies"
+    );
+  });
+
+  it("leaves a bank that already carries the whole structure completely alone", () => {
+    // Every session start calls this. On a settled bank it must be a no-op — no manifest, no POST.
+    expect(
+      codingBankManifest({
+        reflect_mission: "seeded",
+        retain_default_strategy: "mycustom",
+        entities_allow_free_form: false,
+        retain_strategies: RETAIN_STRATEGIES,
+        entity_labels: [KNOWLEDGE_LABELS],
+      })
+    ).toBeUndefined();
+  });
+
+  it("keeps retain_default_strategy pointing where the user aimed it", () => {
+    // The dangling half of #3927: the map was replaced (deleting `mycustom`) while the pointer to
+    // it survived, leaving the bank naming a strategy that no longer existed.
+    const bank = bankOf({
+      retain_default_strategy: "mycustom",
+      retain_strategies: { mycustom: { retain_chunk_size: 500 } },
+    });
+    expect(bank).not.toHaveProperty("retain_default_strategy");
+    expect(bank!.retain_strategies).toHaveProperty("mycustom");
+  });
+
+  it("adds the knowledge label group alongside the user's own, and only once", () => {
+    const mine = { key: "audience", type: "multi-values", values: [] };
+    expect(bankOf({ reflect_mission: "seeded", entity_labels: [mine] })!.entity_labels).toEqual([
+      mine,
+      KNOWLEDGE_LABELS,
+    ]);
+    // Already present — including a version the user reworded — is left as it is.
+    expect(
+      bankOf({
+        reflect_mission: "seeded",
+        entity_labels: [{ ...KNOWLEDGE_LABELS, description: "my wording" }],
+      })
+    ).not.toHaveProperty("entity_labels");
+  });
+
+  it("still seeds the missions as a group, once (#2492)", () => {
+    // Spelled out rather than imported: the contract is these three fields, whatever the
+    // implementation happens to call its list of them.
+    const missions = ["reflect_mission", "retain_mission", "observations_mission"] as const;
+    expect(bankOf({})!.reflect_mission).toBe(REFLECT_MISSION);
+    for (const field of missions) {
+      // Any one mission present means the bank has been through here; none of the three is rewritten.
+      const bank = bankOf({ [field]: "MY OWN MISSION" })!;
+      for (const f of missions) expect(bank).not.toHaveProperty(f);
+    }
+    // A blank override is not a choice.
+    expect(bankOf({ reflect_mission: "   " })!.reflect_mission).toBe(REFLECT_MISSION);
   });
 });

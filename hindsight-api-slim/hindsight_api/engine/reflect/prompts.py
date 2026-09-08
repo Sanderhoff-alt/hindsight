@@ -8,6 +8,7 @@ The reflect agent uses hierarchical retrieval:
 """
 
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -138,6 +139,28 @@ def build_agent_user_prompt(query: str, llm_output_language: str | None = None) 
     return query + output_language_directive(llm_output_language)
 
 
+def bank_name_line(bank_profile: dict[str, Any]) -> str:
+    """The bank's name as the prompt writes it.
+
+    Shared with the prompt preview, which reports this line as its own block so a
+    reader can see it comes from the bank rather than from the prompt. Rebuilding the
+    wording there would be one more copy to keep in step.
+    """
+    return f"## Memory Bank: {bank_profile.get('name', 'Assistant')}"
+
+
+def bank_disposition_line(bank_profile: dict[str, Any]) -> str:
+    """The bank's disposition traits as the prompt writes them, or "" if it has none.
+
+    Shared with the prompt preview — see :func:`bank_name_line`.
+    """
+    disposition = bank_profile.get("disposition") or {}
+    traits = [
+        f"{trait}={disposition[trait]}" for trait in ("skepticism", "literalism", "empathy") if trait in disposition
+    ]
+    return f"Disposition: {', '.join(traits)}" if traits else ""
+
+
 def build_system_prompt_for_tools(
     bank_profile: dict[str, Any],
     context: str | None = None,
@@ -172,7 +195,6 @@ def build_system_prompt_for_tools(
         llm_output_language: Configured output language; drops the default language rule
             (the directive itself goes on the user message, see build_agent_user_prompt).
     """
-    name = bank_profile.get("name", "Assistant")
     mission = bank_profile.get("mission", "")
 
     parts = []
@@ -444,6 +466,17 @@ def build_system_prompt_for_tools(
                 "## Output Format: Structured Document",
                 "Call done() with a 'document' field. Do NOT write a markdown document — "
                 "state its structure and the markdown is generated from it.",
+                # Name the wrapper and show it. Every field of a *section* was spelled out
+                # here — heading, level, blocks — and the array holding them never was, so
+                # the prose described a section while the tool schema described a document
+                # containing sections. Models resolved that disagreement in favour of the
+                # prose and emitted the bare section, which parsed to zero sections, an
+                # empty render, and a failed refresh. A shape stated in one place and shown
+                # in another is a shape that gets filled correctly.
+                "- 'document' holds a 'sections' array — one entry per section, in order. "
+                'Shape: {"sections": [{"heading": "Overview", "level": 2, "blocks": '
+                '["First paragraph.", "- a list item\\n- another"]}]}',
+                "- Even a one-section document uses the 'sections' array; never emit a bare section",
                 "- Each section carries its heading text (no '#') and a level; the heading is NOT a block",
                 "- 'blocks' holds the section's content, ONE block per paragraph, list, table or code fence",
                 "- Never put two paragraphs in one block, and never put a heading inside a block",
@@ -480,23 +513,14 @@ def build_system_prompt_for_tools(
     parts.append(_current_datetime_section())
 
     parts.append("")
-    parts.append(f"## Memory Bank: {name}")
+    parts.append(bank_name_line(bank_profile))
 
     if mission:
         parts.append(f"Mission: {mission}")
 
-    # Disposition traits
-    disposition = bank_profile.get("disposition", {})
-    if disposition:
-        traits = []
-        if "skepticism" in disposition:
-            traits.append(f"skepticism={disposition['skepticism']}")
-        if "literalism" in disposition:
-            traits.append(f"literalism={disposition['literalism']}")
-        if "empathy" in disposition:
-            traits.append(f"empathy={disposition['empathy']}")
-        if traits:
-            parts.append(f"Disposition: {', '.join(traits)}")
+    disposition_line = bank_disposition_line(bank_profile)
+    if disposition_line:
+        parts.append(disposition_line)
 
     if context:
         parts.append(f"\n## Additional Context\n{context}")
@@ -1054,6 +1078,29 @@ def _truncate_prompt_text(text: str, max_tokens: int) -> str:
     return truncate_to_tokens(text, max_tokens).text
 
 
+@dataclass(frozen=True)
+class FittedDeltaPrompt:
+    """The three oversized prompt sections after budget-fitting, and whether any was cut.
+
+    The sections are named for their *slots*, not their contents, because both
+    callers reuse this fitter with different material in them: the refresh prompt
+    puts the synthesis in ``candidate`` and the new facts in ``facts``, while the
+    retraction prompt puts the still-supported facts in ``candidate`` and the
+    retracted ones in ``facts``.
+
+    That reuse is why these must not be a bare tuple. All three are ``str``, so
+    transposing two positions type-checks perfectly — and for the retraction
+    caller, swapping ``candidate`` and ``facts`` builds a prompt instructing the
+    model to strip content resting on still-valid facts while keeping content
+    resting on retracted ones. Nothing downstream could detect it.
+    """
+
+    document_json: str
+    candidate: str
+    facts: str
+    truncated: bool
+
+
 def _fit_structured_delta_prompt_parts(
     *,
     source_query: str,
@@ -1063,7 +1110,7 @@ def _fit_structured_delta_prompt_parts(
     budget_hint: str,
     task_footer: str,
     max_input_tokens: int,
-) -> tuple[str, str, str, bool]:
+) -> FittedDeltaPrompt:
     """Shrink large prompt sections to fit within max_input_tokens (tokenizer estimate)."""
     from .tokenization import count_prompt_tokens
 
@@ -1087,7 +1134,7 @@ def _fit_structured_delta_prompt_parts(
     candidate = _truncate_prompt_text(candidate_markdown, cand_budget)
     facts_body = _truncate_prompt_text(facts_block, facts_budget)
     truncated = doc_json != current_document_json or candidate != candidate_markdown or facts_body != facts_block
-    return doc_json, candidate, facts_body, truncated
+    return FittedDeltaPrompt(doc_json, candidate, facts_body, truncated)
 
 
 def build_structured_delta_prompt(
@@ -1165,7 +1212,7 @@ def build_structured_delta_prompt(
         "as needed. Preserve unchanged sections and blocks by not mentioning them."
     )
     input_cap = max_input_tokens if max_input_tokens is not None else _STRUCTURED_DELTA_DEFAULT_MAX_INPUT_TOKENS
-    doc_json, candidate, facts_body, input_truncated = _fit_structured_delta_prompt_parts(
+    fitted = _fit_structured_delta_prompt_parts(
         source_query=source_query,
         current_document_json=current_document_json,
         candidate_markdown=candidate_markdown,
@@ -1175,7 +1222,7 @@ def build_structured_delta_prompt(
         max_input_tokens=input_cap,
     )
     truncation_note = ""
-    if input_truncated:
+    if fitted.truncated:
         truncation_note = (
             "\n\n*Note: Document, synthesis, or facts were truncated to fit the model "
             "context window. Prefer minimal, high-leverage operations.*"
@@ -1184,10 +1231,10 @@ def build_structured_delta_prompt(
     return (
         f"## Topic\n{source_query}\n\n"
         f"## CURRENT DOCUMENT (apply ops to this; copy section and block ids from it verbatim)\n"
-        f"```json\n{doc_json}\n```\n\n"
+        f"```json\n{fitted.document_json}\n```\n\n"
         f"## NEW INFORMATION SYNTHESIS (context for how new facts relate to the topic)\n"
-        f"```markdown\n{candidate}\n```\n\n"
-        f"## SUPPORTING FACTS (new since last refresh — integrate these)\n{facts_body}"
+        f"```markdown\n{fitted.candidate}\n```\n\n"
+        f"## SUPPORTING FACTS (new since last refresh — integrate these)\n{fitted.facts}"
         f"{document_hint}{budget_hint}{truncation_note}\n\n"
         f"{task_footer}"
     )
@@ -1315,7 +1362,7 @@ def build_structured_retraction_prompt(
     # lists standing in for synthesis + facts), same budget split, so a large
     # document cannot push the retracted list out of the window.
     input_cap = max_input_tokens if max_input_tokens is not None else _STRUCTURED_DELTA_DEFAULT_MAX_INPUT_TOKENS
-    doc_json, surviving_body, retracted_body, input_truncated = _fit_structured_delta_prompt_parts(
+    fitted = _fit_structured_delta_prompt_parts(
         source_query=source_query,
         current_document_json=current_document_json,
         candidate_markdown=surviving_block,
@@ -1325,7 +1372,7 @@ def build_structured_retraction_prompt(
         max_input_tokens=input_cap,
     )
     truncation_note = ""
-    if input_truncated:
+    if fitted.truncated:
         truncation_note = (
             "\n\n*Note: Document or fact lists were truncated to fit the model context "
             "window. Prefer minimal, high-leverage operations, and keep anything you "
@@ -1335,11 +1382,11 @@ def build_structured_retraction_prompt(
     return (
         f"## Topic\n{source_query}\n\n"
         f"## CURRENT DOCUMENT (apply ops to this; reference section ids as listed)\n"
-        f"```json\n{doc_json}\n```\n\n"
+        f"```json\n{fitted.document_json}\n```\n\n"
         f"## STILL-SUPPORTED FACTS (these remain valid — do not remove content resting on them)\n"
-        f"{surviving_body}\n\n"
+        f"{fitted.candidate}\n\n"
         f"## RETRACTED FACTS (no longer in the memory bank — remove content resting on these)\n"
-        f"{retracted_body}"
+        f"{fitted.facts}"
         f"{budget_hint}{truncation_note}\n\n"
         f"{task_footer}"
     )

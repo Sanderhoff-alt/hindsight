@@ -13,9 +13,16 @@ were resolved into ``HindsightConfig`` but never reached the provider, so a conf
 (``LiteLLM call exceeded timeout=120.0s``) and the per-op retry knobs were inert.
 """
 
+from hindsight_api.engine.response_models import LLMCallResult, TokenUsage
 import pytest
 
-from hindsight_api.config import DEFAULT_LLM_TIMEOUT
+from hindsight_api.config import (
+    DEFAULT_LLM_TIMEOUT,
+    DEFAULT_REFLECT_LLM_TIMEOUT,
+    ENV_LLM_TIMEOUT,
+    ENV_REFLECT_LLM_TIMEOUT,
+    _resolve_reflect_llm_timeout,
+)
 from hindsight_api.engine.llm_wrapper import LLMConfig
 
 
@@ -29,7 +36,7 @@ def _spy_provider_call(monkeypatch, llm: LLMConfig) -> dict:
 
     async def fake_call(**kwargs):
         captured.update(kwargs)
-        return "ok"
+        return LLMCallResult(content="ok", usage=TokenUsage())
 
     monkeypatch.setattr(llm._provider_impl, "call", fake_call)
     return captured
@@ -100,14 +107,16 @@ def test_gemini_deadline_falls_back_when_unconfigured():
 def test_anthropic_passes_the_resolved_timeout_to_its_sdk_client():
     """Anthropic silently used its own 300 s default because none was threaded."""
     llm = LLMConfig(provider="anthropic", api_key="k", base_url="", model="claude-sonnet-4-20250514", timeout=45.0)
-    assert llm._provider_impl._client.timeout == 45.0
+    # The request budget lives on the read/write/pool phases; connect is capped
+    # separately (#3881), so the client carries an httpx.Timeout, not a float.
+    assert llm._provider_impl._client.timeout.read == 45.0
 
 
 def test_anthropic_timeout_falls_back_when_unconfigured():
     from hindsight_api.engine.providers.anthropic_llm import _DEFAULT_ANTHROPIC_TIMEOUT
 
     llm = LLMConfig(provider="anthropic", api_key="k", base_url="", model="claude-sonnet-4-20250514")
-    assert llm._provider_impl._client.timeout == _DEFAULT_ANTHROPIC_TIMEOUT
+    assert llm._provider_impl._client.timeout.read == _DEFAULT_ANTHROPIC_TIMEOUT
 
 
 def test_codex_deadline_falls_back_when_unconfigured():
@@ -249,7 +258,48 @@ def test_memory_engine_per_op_defaults_to_global_default(_clean_timeout_env):
         engine._reflect_llm_config,
         engine._consolidation_llm_config,
     ):
-        assert cfg.timeout == DEFAULT_LLM_TIMEOUT
         assert cfg.max_retries == DEFAULT_LLM_MAX_RETRIES
         assert cfg.initial_backoff == DEFAULT_LLM_INITIAL_BACKOFF
         assert cfg.max_backoff == DEFAULT_LLM_MAX_BACKOFF
+
+    # The deadline is the one default that is not uniform: reflect answers a waiting
+    # caller, so it gets its own shorter one (see TestReflectDeadlineDefault).
+    assert engine._llm_config.timeout == DEFAULT_LLM_TIMEOUT
+    assert engine._retain_llm_config.timeout == DEFAULT_LLM_TIMEOUT
+    assert engine._consolidation_llm_config.timeout == DEFAULT_LLM_TIMEOUT
+    assert engine._reflect_llm_config.timeout == DEFAULT_REFLECT_LLM_TIMEOUT
+
+
+class TestReflectDeadlineDefault:
+    """Reflect's per-request deadline defaults below the global one.
+
+    Reflect is the only interactive operation — a caller holds an HTTP request open
+    while it makes several sequential LLM calls — so a per-call deadline equal to the
+    whole global budget lets ONE stalled provider call outlive the caller. That is not
+    hypothetical: raising Gemini's effective deadline from its hardcoded 90s to the
+    configured 120s (#3946) took a stalled reflect iteration from ~84s to ~122s, which
+    is past the 120s budget the client suites allow, and turned them red.
+
+    Retain and consolidation keep the 120s: they run in the background against a queue,
+    where the deadline exists to stop runaway generation, not to keep a caller waiting.
+    """
+
+    def test_defaults_below_the_global_deadline(self, monkeypatch):
+        monkeypatch.delenv(ENV_REFLECT_LLM_TIMEOUT, raising=False)
+        monkeypatch.delenv(ENV_LLM_TIMEOUT, raising=False)
+
+        assert _resolve_reflect_llm_timeout() == DEFAULT_REFLECT_LLM_TIMEOUT
+        assert DEFAULT_REFLECT_LLM_TIMEOUT < DEFAULT_LLM_TIMEOUT
+
+    def test_an_explicit_global_is_inherited(self, monkeypatch):
+        """An operator who set a global deadline meant it — reflect must not cap it."""
+        monkeypatch.delenv(ENV_REFLECT_LLM_TIMEOUT, raising=False)
+        monkeypatch.setenv(ENV_LLM_TIMEOUT, "300")
+
+        assert _resolve_reflect_llm_timeout() is None  # None = inherit llm_timeout
+
+    def test_the_reflect_override_wins(self, monkeypatch):
+        monkeypatch.setenv(ENV_LLM_TIMEOUT, "300")
+        monkeypatch.setenv(ENV_REFLECT_LLM_TIMEOUT, "45")
+
+        assert _resolve_reflect_llm_timeout() == 45.0

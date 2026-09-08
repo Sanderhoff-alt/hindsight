@@ -88,7 +88,13 @@ def test_api_retain_puts_the_strategy_on_the_content_dict():
     cannot see this: a strategy that is never assigned simply drops out of the set
     it compares."""
     src = API_HTTP.read_text()
-    block = src[src.index("# Group items by strategy") :][:2500]
+    # Bounded by the end of the loop that builds the dict, not by a character
+    # count: a fixed window silently stops covering the assignment as soon as
+    # anything is added above it, which is a test that fails for the wrong
+    # reason (adding `attachment_filenames` pushed the assignment past 2500).
+    start = src.index("# Group items by strategy")
+    end = src.index("strategy_groups[effective].append", start)
+    block = src[start:end]
     assert 'content_dict["strategy"] = item.strategy' in block
 
 
@@ -178,3 +184,20 @@ async def test_strategy_survives_more_than_one_reprocess():
         stored = _params(**item)
 
     assert stored["strategy"] == "survey"
+
+
+@pytest.mark.asyncio
+async def test_reprocess_forces_reextraction():
+    """A reprocess replays identical content, which the delta and crash-recovery
+    paths both read as "nothing to do" — so it has to say it means it (#3899)."""
+    item, _strategy = await _reprocess(_params(content="STATUS: survey started"))
+    assert item["force_reextract"] is True
+
+
+@pytest.mark.asyncio
+async def test_force_reextract_is_not_stored_in_retain_params():
+    """It is the reprocess's own instruction, not something the document carries:
+    storing it would put an internal flag on every reprocessed document's
+    retain_params (and back onto the next replay) for no added effect."""
+    item, _strategy = await _reprocess(_params(content="STATUS: survey started"))
+    assert "force_reextract" not in _params(**item)

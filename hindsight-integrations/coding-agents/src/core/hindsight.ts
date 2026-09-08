@@ -6,12 +6,13 @@
  * creates knowledge pages. Nothing here knows about opencode/claude-code/etc.
  */
 import {
+  type BankOverrides,
   buildPageTrigger,
-  CODING_BANK_STRUCTURE,
-  CODING_BANK_TEMPLATE,
+  codingBankManifest,
   PAGE_MAX_TOKENS,
   pagesFor,
   type PageTrigger,
+  pageTriggerFor,
 } from "./missions";
 import { pool, semverGte, sleep } from "./util";
 import type { RetainStamp } from "./retain-stamp";
@@ -33,7 +34,45 @@ export interface KnowledgeNode {
  * How consolidation scopes the observations a retained memory feeds (`observation_scopes` on the
  * retain API). The scalar modes are the server's; a `string[][]` declares the scopes explicitly.
  */
-export type ObservationScopes = "shared" | "combined" | "per_tag" | "all_combinations" | string[][];
+export type ObservationScopes =
+  | "shared"
+  | "combined"
+  | "per_tag"
+  | "all_combinations"
+  | "per_source"
+  | string[][];
+
+/**
+ * `per_source` is resolved HERE, per document, and never reaches the server: it expands to the
+ * global scope plus one named for that document's own `source:` tag.
+ *
+ * It cannot be expressed as configuration. The server treats an explicit scope list as
+ * unconditional — consolidation returns it verbatim without filtering it against the memory's own
+ * tags — so a configured `[[], ["source:git"], ["source:chat"]]` writes EVERY document into all
+ * three, and the `source:git` scope fills up with beliefs built from chat transcripts. Only a
+ * per-document decision separates "what the commits say" from "what was discussed".
+ *
+ * `per_tag` would split on the right axis but also on every other one: it reinstates the per-agent
+ * `harness:` fork that `shared` exists to prevent, and any volatile tag (a session id in
+ * `retainTags`) becomes its own scope, which is the fragmentation bug itself. Reading only
+ * `source:` is what keeps this safe.
+ *
+ * A document may carry more than one source tag — the commit-message seed is both `source:git` and
+ * `source:git-log`, because the cold-repo check filters on `source:git` — so every distinct one
+ * gets a scope. Taking all of them, sorted, is the only rule that needs no arbitrary tie-break and
+ * does not silently depend on the order the caller assembled its tags in.
+ *
+ * The empty scope is always first and always present, so the untagged observations that knowledge
+ * pages read (they match with `tags_match: "all"`) keep being written exactly as under `shared`.
+ */
+export function resolveRetainScopes(
+  tags: string[] | undefined,
+  configured: ObservationScopes
+): ObservationScopes {
+  if (configured !== "per_source") return configured;
+  const sources = [...new Set((tags ?? []).filter((t) => t.startsWith("source:")))].sort();
+  return [[], ...sources.map((s) => [s])];
+}
 
 /**
  * One global scope for everything this plugin writes.
@@ -55,8 +94,10 @@ export interface ClientOpts {
   apiToken?: string;
   bank: string;
   /** Repository this bank is about, named in every seeded page's query (`pageScopeRule`). Only
-   *  `seedPages()` reads it; it falls back to the bank id, which carries the repo name in the
-   *  default `coding-agent::{gitProject}` template. */
+   *  `seedPages()` reads it. Undefined when no single repository is (a shared static bank, a path
+   *  map, a bank several repos are renamed onto) — the query then names the BANK, which is the
+   *  only stable subject such a bank has. Must be a property of the bank and never of the calling
+   *  session's cwd: see `bankProjectName` (#4146). */
   project?: string;
   log?: (msg: string) => void;
   /** Cap on concurrent retain-related requests (drain op polls, deepen pools). Default 10. */
@@ -142,9 +183,6 @@ const RETRY_AFTER_FLOOR_MS = 10 * 1000;
  * another 429 and backs off again.
  */
 const RETRY_AFTER_CEILING_MS = 60 * 1000;
-
-/** Bank-level missions the template seeds once and then leaves alone (#2492). */
-const MISSION_FIELDS = ["reflect_mission", "retain_mission", "observations_mission"] as const;
 
 export class HindsightClient {
   readonly apiUrl: string;
@@ -274,7 +312,7 @@ export class HindsightClient {
       // Sent on EVERY retain, including the server default `combined`, so the scoping a bank's
       // observations were built under is a property of the write rather than of whichever server
       // version happened to process it. Servers older than 0.4.15 ignore the field.
-      observation_scopes: this.observationScopes,
+      observation_scopes: resolveRetainScopes(tags, this.observationScopes),
     };
     if (opts.timestamp) item.timestamp = opts.timestamp;
     if (opts.metadata) item.metadata = opts.metadata;
@@ -343,52 +381,56 @@ export class HindsightClient {
     return ids;
   }
 
-  /** Configure the bank: POST the coding bank template manifest to /import (missions, retain
-   *  strategies, entity labels), then seed knowledge pages when the server supports them. Both
-   *  halves are idempotent, so the deepen engine can re-run this every pass. Creates the bank if
-   *  missing; legacy servers continue with the template-only path. */
-  async configureBank(opts: { reset?: boolean; pageTrigger?: PageTrigger } = {}): Promise<void> {
+  /** Configure the bank: POST the coding bank manifest to /import (missions, retain strategies,
+   *  entity labels), then seed knowledge pages when the server supports them. Both halves are
+   *  idempotent and strictly ADDITIVE — nothing the bank already says is overwritten (#3927) — so
+   *  the deepen engine can re-run this every pass. Creates the bank if missing; legacy servers
+   *  continue with the template-only path.
+   *
+   *  `manage: false` skips the config half entirely, for a bank whose owner shapes it themselves.
+   *  That bank should then define the strategies this plugin writes under (`git`, `gitlog`,
+   *  `conversation`, `document`, `survey`): an unknown strategy name is not an error server-side,
+   *  it just falls back to the bank's own config, so the miss is silent. */
+  async configureBank(
+    opts: { reset?: boolean; pageTrigger?: PageTrigger; manage?: boolean } = {}
+  ): Promise<void> {
     if (opts.reset) {
       await this.req("DELETE", this.bankUrl());
       this.log(`[bank] reset ${this.bank}`);
     }
-    // Seed the missions ONCE. After that they belong to whoever set them — see CODING_BANK_STRUCTURE.
-    const seeded = opts.reset ? false : await this.hasBankMissions();
-    await this.req(
-      "POST",
-      this.bankUrl("/import"),
-      seeded ? CODING_BANK_STRUCTURE : CODING_BANK_TEMPLATE
-    );
-    this.log(
-      seeded
-        ? `[bank] structure applied to ${this.bank}: entity_labels {knowledge}, ` +
-            `strategies {git, gitlog, conversation, document} — missions left as configured`
-        : `[bank] template applied to ${this.bank}: missions, entity_labels {knowledge}, ` +
-            `strategies {git, gitlog, conversation, document}`
-    );
+    if (opts.manage === false) {
+      this.log(`[bank] manageBankConfig: false — leaving ${this.bank}'s configuration alone`);
+    } else {
+      // What the bank ALREADY overrides decides what is left to write: the missions are seeded once
+      // and then belong to whoever set them (#2492), and every other field is added only where the
+      // bank is silent (#3927). A reset just deleted the bank, so there is nothing to read.
+      const manifest = codingBankManifest(opts.reset ? undefined : await this.readBankOverrides());
+      if (!manifest) {
+        this.log(`[bank] ${this.bank} already carries the coding structure — nothing to apply`);
+      } else {
+        await this.req("POST", this.bankUrl("/import"), manifest);
+        this.log(`[bank] applied to ${this.bank}: ${Object.keys(manifest.bank).sort().join(", ")}`);
+      }
+    }
     await this.seedPages(opts.pageTrigger);
   }
 
   /**
-   * Whether this bank already carries bank-level mission overrides — ours from an earlier seed, or
-   * the user's own edit. Either way they are not ours to overwrite.
+   * This bank's own config OVERRIDES, or undefined when there are none to read.
    *
-   * Reads the bank-scoped OVERRIDES, not the resolved config, so inherited global defaults don't
-   * read as "already set". A missing bank, or a deployment with the bank-config API switched off,
-   * answers false: there is nothing to preserve, and without that API a user cannot set per-bank
-   * missions in the first place.
+   * Deliberately the overrides and not the resolved config: an inherited global default is not
+   * something this bank's owner chose, so it must not read as "already set". `undefined` means the
+   * bank does not exist yet, or the deployment has the bank-config API switched off — in neither
+   * case can anything have been customised, so the caller seeds the full template.
    */
-  private async hasBankMissions(): Promise<boolean> {
+  private async readBankOverrides(): Promise<BankOverrides | undefined> {
     try {
       const r = await this.req("GET", this.bankUrl("/config"));
-      if (!r.ok) return false;
-      const j = (await r.json()) as { overrides?: Record<string, unknown> };
-      return MISSION_FIELDS.some((f) => {
-        const v = j.overrides?.[f];
-        return typeof v === "string" && v.trim() !== "";
-      });
+      if (!r.ok) return undefined;
+      const j = (await r.json()) as { overrides?: BankOverrides };
+      return j.overrides ?? {};
     } catch {
-      return false;
+      return undefined;
     }
   }
 
@@ -584,6 +626,9 @@ export class HindsightClient {
    * which is how `pageScopeRule`'s repo name reaches banks seeded by an earlier version.
    */
   async seedPages(pageTrigger: PageTrigger = buildPageTrigger()): Promise<void> {
+    // The bank id is the fallback subject, not a degraded one: for a bank no single repository
+    // owns it is the only name that stays put across sessions, and under the default
+    // `coding-agent::{gitProject}` template `project` is always set, so it never applies there.
     const pages = pagesFor(this.project ?? this.bank);
     const existing = new Map<string, KnowledgeNode>();
     let roots: KnowledgeNode[];
@@ -608,7 +653,9 @@ export class HindsightClient {
         source_query: page.source_query,
         tags: page.tags,
         max_tokens: PAGE_MAX_TOKENS,
-        trigger: pageTrigger,
+        // Resolved HERE, not in `buildPageTrigger`: a hashed cron (`H`) needs the page's identity,
+        // and one trigger is built per session for all of them.
+        trigger: pageTriggerFor(pageTrigger, this.bank, page.name),
       };
       if (!hit) {
         // 409 = another deepen run seeded this name between our tree read and this POST. That is
@@ -656,7 +703,8 @@ export class HindsightClient {
       }
     }
     this.log(
-      `[bank] knowledge pages seeded on ${this.bank}: ${created} created, ${updated} re-synced, ` +
+      `[bank] knowledge pages seeded on ${this.bank} (scoped to ${this.project ?? this.bank}): ` +
+        `${created} created, ${updated} re-synced, ` +
         `${pages.length - created - updated} unchanged`
     );
   }
@@ -706,7 +754,7 @@ export class HindsightClient {
         source_query: `Summarize the "${args.title}" initiative: what is being built or changed and why, and its current state — drawn from the project's memory.`,
         parent_id: folderId,
         tags: ["knowledge:feature-work"],
-        trigger: args.pageTrigger ?? buildPageTrigger(),
+        trigger: pageTriggerFor(args.pageTrigger ?? buildPageTrigger(), this.bank, args.title),
       });
       try {
         const j = (await r.json()) as { page_id?: string; id?: string };

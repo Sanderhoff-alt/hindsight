@@ -75,6 +75,10 @@ class InMemoryMemories(MemoriesExtension):
         self.archive: dict[str, StoredMemory] = {}
         self.invalidation_reason: dict[str, str | None] = {}
         self.embeddings: dict[str, object] = {}
+        # What `apply_edit` was handed, so a test can tell which door the vector came through and
+        # whether the caller supplied the pre-edit fact type.
+        self.edit_embedding: object = None
+        self.edit_current_fact_type: str | None = None
         # The document store: one record per document, each carrying its extracted text and the
         # ordered chunk texts — the bodies a store that owns them keeps out of Postgres.
         self.documents: dict[str, dict] = {}
@@ -447,6 +451,7 @@ class InMemoryMemories(MemoriesExtension):
         return row
 
     async def set_memory_embedding(self, *, conn, fq_table, bank_id, unit_id, embedding):
+        self.calls.append("set_memory_embedding")
         self.embeddings[str(unit_id)] = embedding
 
     async def list_entities(self, *, conn, fq_table, bank_id, search=None, limit=100, offset=0):
@@ -529,11 +534,18 @@ class InMemoryMemories(MemoriesExtension):
         mentioned_at,
         entity_ids,
         entity_names=None,
+        embedding=None,
+        current_fact_type=None,
     ):
         self.calls.append("apply_edit")
+        self.edit_embedding = embedding
+        self.edit_current_fact_type = current_fact_type
         row = self.rows.get(str(unit_id))
         if row is None:
             return
+        if embedding is not None:
+            # Applying an edit includes writing its vector — the same call, not a following one.
+            self.embeddings[str(unit_id)] = embedding
         row.text = text
         row.context = context
         row.fact_type = fact_type
@@ -611,11 +623,6 @@ class InMemoryMemories(MemoriesExtension):
         doc = self.documents.get(str(document_id))
         return list(doc["chunk_texts"]) if doc else None
 
-    async def count_chunks(self, *, bank_id, document_id):
-        self.calls.append("count_chunks")
-        doc = self.documents.get(str(document_id))
-        return len(doc["chunk_texts"]) if doc else 0
-
     async def delete_document_record(self, *, bank_id, document_id):
         self.calls.append("delete_document_record")
         self.documents.pop(str(document_id), None)
@@ -647,9 +654,25 @@ class InMemoryMemories(MemoriesExtension):
         self.calls.append("memories_timeseries")
         return []
 
-    async def observation_scope_counts(self, *, conn, fq_table, bank_id):
+    async def observation_scope_counts(self, *, conn, fq_table, bank_id, limit=100, offset=0):
         self.calls.append("observation_scope_counts")
-        return []
+        # Same paged shape as list_tags above: the histogram is the store's to group,
+        # order and page, so the stub does it over its own rows rather than shipping
+        # every scope back for the engine to trim.
+        counts: dict[tuple[str, ...], int] = {}
+        for row in self.rows.values():
+            if row.fact_type != "observation":
+                continue
+            scope = tuple(sorted(row.tags or []))
+            counts[scope] = counts.get(scope, 0) + 1
+        scopes = [{"tags": list(scope), "count": count} for scope, count in counts.items()]
+        scopes.sort(key=lambda it: (-it["count"], it["tags"]))
+        return {
+            "scopes": scopes[offset : offset + limit],
+            "total": len(scopes),
+            "limit": limit,
+            "offset": offset,
+        }
 
     # -- the knowledge-page index -------------------------------------------
     #
@@ -862,6 +885,11 @@ async def test_engine_list_tags_routes_through_the_installed_store(memory, reque
         tags = ["only-in-the-store"]
 
     await store.insert_facts(conn=None, ops=None, bank_id="seam-bank", facts=[_Fact()], document_id="d")
+
+    # The read 404s for a bank nobody created (#4175). A store owns the facts, never the bank row
+    # itself, so a real deployment always has this row — a retain writes it before the store sees
+    # anything. Only the stub reaches an engine read without one.
+    await memory.get_bank_profile("seam-bank", request_context=request_context)
 
     result = await memory.list_tags("seam-bank", request_context=request_context)
 
@@ -1080,14 +1108,49 @@ async def test_engine_list_memory_units_routes_through_store(memory, request_con
     store = InMemoryMemories({})
     set_memories(store)
     await _seed(store, "seam-bank", text="only in the store", fact_type="world")
+    await memory.get_bank_profile("seam-bank", request_context=request_context)  # see #4175 above
     res = await memory.list_memory_units("seam-bank", request_context=request_context)
     assert "list_memory_units" in store.calls
     assert res["total"] == 1  # the row exists only in the stub, so it can only have come from it
 
 
+async def test_an_edit_writes_its_vector_in_the_edit_itself(memory, request_context, restore_default_store):
+    """Applying an edit writes its re-embedded vector — with no second call to do it.
+
+    The property is not "the vector ends up stored": that passed while the edit was making two
+    writes to get it there, which is the whole cost of an edit again for a store whose write is a
+    durable append rather than a row update. It is that the vector arrives through `apply_edit`
+    and that nothing follows it to write the same row again.
+    """
+    store = InMemoryMemories({})
+    set_memories(store)
+    unit_ids = await _seed(store, "seam-bank", text="before the edit", fact_type="world")
+
+    await memory.update_memory_unit("seam-bank", unit_ids[0], text="after the edit", request_context=request_context)
+
+    assert "apply_edit" in store.calls
+    assert store.edit_embedding is not None, "the store is handed the re-embedded vector"
+    assert store.embeddings.get(unit_ids[0]) is not None, "…and applying the edit stored it"
+    assert "set_memory_embedding" not in store.calls, "a second write of the row just written"
+
+
+async def test_apply_edit_is_told_the_pre_edit_fact_type(memory, request_context, restore_default_store):
+    """A store that can apply a type-preserving edit more cheaply needs to know the type did not
+    change, and re-reading the memory to find that out costs the round trip the cheap path saves.
+    The caller has it from the re-read it already did, so it passes it."""
+    store = InMemoryMemories({})
+    set_memories(store)
+    unit_ids = await _seed(store, "seam-bank", text="before the edit", fact_type="world")
+
+    await memory.update_memory_unit("seam-bank", unit_ids[0], text="after the edit", request_context=request_context)
+
+    assert store.edit_current_fact_type == "world"
+
+
 async def test_engine_list_entities_routes_through_store(memory, request_context, restore_default_store):
     store = InMemoryMemories({})
     set_memories(store)
+    await memory.get_bank_profile("seam-bank", request_context=request_context)  # see #4175 above
     await memory.list_entities("seam-bank", request_context=request_context)
     assert "list_entities" in store.calls
 

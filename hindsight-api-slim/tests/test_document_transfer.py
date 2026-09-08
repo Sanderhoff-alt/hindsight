@@ -23,7 +23,7 @@ from hindsight_api.engine.consolidation.consolidator import (
 from hindsight_api.engine.db_utils import acquire_with_retry
 from hindsight_api.engine.schema import fq_table
 from hindsight_api.engine.transfer import import_documents
-from hindsight_api.engine.transfer.importer import parse_archive
+from hindsight_api.engine.transfer.importer import _EMBED_BATCH_SIZE, _embed_in_batches, parse_archive
 from hindsight_api.engine.transfer.schema import (
     SCHEMA_VERSION,
     TransferCausalRelation,
@@ -102,7 +102,14 @@ def _unique_bank(prefix: str) -> str:
 
 
 async def _retain(memory, bank_id, content, request_context, document_id):
-    await memory.retain_async(
+    """Retain one document and return the ids of the facts it created.
+
+    Returned rather than left to a follow-up `list_memory_units` call: retain
+    already knows exactly which facts it wrote, whereas the list query answers a
+    different question ("what is in the bank now") that also reflects
+    auto-consolidation and anything else touching the bank concurrently.
+    """
+    return await memory.retain_async(
         bank_id=bank_id,
         content=content,
         context="Test context",
@@ -1265,11 +1272,11 @@ async def test_export_import_observations(memory, request_context):
     src = _unique_bank("transfer_obs_src")
     dst = _unique_bank("transfer_obs_dst")
     try:
-        await _retain(memory, src, "Alice works at Google. Bob works at Microsoft.", request_context, "doc-1")
-        # Sources must be world/experience facts (not auto-consolidation observations).
-        units = await memory.list_memory_units(src, fact_type="world", request_context=request_context)
-        source_ids = [uuid.UUID(str(i["id"])) for i in units["items"][:2]]
-        assert len(source_ids) == 2
+        # Sources must be world/experience facts, never auto-consolidation
+        # observations -- which is what retain returns, so take them from there.
+        created = await _retain(memory, src, "Alice works at Google. Bob works at Microsoft.", request_context, "doc-1")
+        assert len(created) >= 2, f"setup: retain created {len(created)} facts, need at least 2"
+        source_ids = [uuid.UUID(str(i)) for i in created[:2]]
 
         # Create a real observation over those source facts. The helper self-acquires a
         # short-lived connection now (the embed runs off-connection), so pass the backend.
@@ -2279,3 +2286,40 @@ async def test_a_sql_backed_bank_is_not_read_through_the_store():
     with pytest.raises(Exception) as ei:  # noqa: PT011 - backend=None fails once SQL is reached
         await export_documents(None, "bank-x", None, memories=_SqlMemories())
     assert "list_documents" not in str(ei.value), "a SQL bank must not be read through the store"
+
+
+class _RecordingEmbedder:
+    """Minimal embeddings backend that records the size of every encode call."""
+
+    dimension = 2
+
+    def __init__(self):
+        self.batch_sizes: list[int] = []
+
+    def encode_documents(self, texts: list[str]) -> list[list[float]]:
+        self.batch_sizes.append(len(texts))
+        return [[float(len(text)), 0.0] for text in texts]
+
+
+@pytest.mark.asyncio
+async def test_embed_in_batches_bounds_call_size_and_keeps_order():
+    """Import embeds bank-sized lists; nothing below it bounds an in-process provider.
+
+    Without this slice, ``_import_observations`` hands the embedder every observation in
+    the bank in a single call and peak memory scales with the bank (issue #3891).
+    """
+    embedder = _RecordingEmbedder()
+    texts = [f"observation {index}" for index in range(_EMBED_BATCH_SIZE * 2 + 5)]
+
+    vectors = await _embed_in_batches(embedder, texts)
+
+    assert embedder.batch_sizes == [_EMBED_BATCH_SIZE, _EMBED_BATCH_SIZE, 5]
+    assert vectors == [[float(len(text)), 0.0] for text in texts]
+
+
+@pytest.mark.asyncio
+async def test_embed_in_batches_handles_empty_input():
+    embedder = _RecordingEmbedder()
+
+    assert await _embed_in_batches(embedder, []) == []
+    assert embedder.batch_sizes == []

@@ -18,6 +18,7 @@ import { DEFAULT_SEED_LIMIT } from "./seed";
 import { isOptedIn } from "./bank";
 import { log } from "./log";
 import { DEFAULT_OBSERVATION_SCOPES, type ObservationScopes } from "./hindsight";
+import { isHashedCron, parseHashedCron } from "./missions";
 
 /** Default config-file path: ~/.hindsight/coding-agent.json */
 export // HINDSIGHT_CONFIG joins the two env exceptions (diag/log files): it points at THE config file,
@@ -114,7 +115,10 @@ export interface RawConfig {
    *  consolidation, which adds up fast across auto-surveyed repos (#3506). Existing pages keep the
    *  trigger they were created with — this changes what NEW pages get. */
   pageTriggerType?: "auto-refresh" | "cron" | "manual";
-  /** Schedule for `pageTriggerType: "cron"` — UTC, standard 5-field cron, e.g. "0 3 * * *". */
+  /** Schedule for `pageTriggerType: "cron"` — UTC, standard 5-field cron, e.g. "0 3 * * *".
+   *  A field written `H` ("0 3 * * *" -> "H H * * *") is replaced per page by a value hashed from
+   *  bank + page name, so pages spread across the period instead of all firing on the one minute
+   *  this shared setting names. See `expandCronHash` in core/missions.ts. */
   pageTriggerCron?: string;
   autoSeed?: boolean; // SessionStart: auto-seed a cold repo's bank from git history (default true)
   seedLimit?: number; // SessionStart auto-seed: most-recent-N-commits cap (default 300)
@@ -124,6 +128,13 @@ export interface RawConfig {
   /** Plugin log verbosity ("debug" | "info" | "warn" | "error", default "info");
    *  HINDSIGHT_LOG_LEVEL overrides for ad-hoc debugging. */
   logLevel?: "debug" | "info" | "warn" | "error";
+  /** Keep the installed runtime current by itself (default true). Once a day a session start asks
+   *  npm for the published version and, when it is newer, re-stages ~/.hindsight/coding-agents in
+   *  the background — the copy every wired agent's hooks already point at. It rewires no host
+   *  config, so a release that adds a NEW hook entry point still needs a manual `install`.
+   *  Set false to pin the installed version (air-gapped machines, or a deliberate downgrade);
+   *  updating is then `npx @vectorize-io/hindsight-coding-agents install` again, as before. */
+  autoUpdate?: boolean;
   surveyRefreshCommits?: number; // re-run the survey at SessionStart once this many commits have accrued since the last one, so structural pages track an evolving architecture (default 20; 0 = cold-seed only)
   /** How git history feeds memory — seeding AND keeping current use the same engine:
    *  "message" = commit messages only (cheap aggregated doc, re-upserted when HEAD moves);
@@ -138,6 +149,18 @@ export interface RawConfig {
   /** Extra metadata stamped on every session write-back, e.g. {"repo": "{gitProject}"}. Same
    *  placeholders as retainTags; built-in metadata (harness attribution) wins on conflict. */
   retainMetadata?: Record<string, string>;
+  /** Let the plugin shape the bank's own configuration — the retain strategies it writes under,
+   *  the `knowledge` entity-label group, and (on a bank that has none) the missions (default true).
+   *
+   *  Writing is strictly ADDITIVE: the plugin adds what the bank does not already define and never
+   *  overwrites an existing value, so an edit made in the control plane survives (#3927). Set false
+   *  to keep it out of the bank's configuration entirely — for a bank you shape yourself, or share
+   *  with non-coding work. That bank should then define the strategies this plugin retains under
+   *  (`git`, `gitlog`, `conversation`, `document`, `survey`): the server does not reject a retain
+   *  naming a strategy the bank lacks, it logs a warning and extracts with the bank's own config
+   *  instead — so a diff, a transcript and a survey marker all get the same generic treatment.
+   *  Knowledge pages are seeded either way (see `pageTriggerType`). */
+  manageBankConfig?: boolean;
   /** How consolidation groups the observations this plugin's memories feed (default "shared" — one
    *  global scope per bank, so every agent working a repo builds ONE set of beliefs; see
    *  DEFAULT_OBSERVATION_SCOPES). "combined" restores the server default of one scope per distinct
@@ -171,7 +194,7 @@ export interface Config {
   daemonProfile: string;
   embedVersion?: string;
   embedPackagePath?: string;
-  bankId?: string; // resolved per-directory via deriveBankId(cfg, dir) — see core/bank.ts
+  bankId?: string; // resolved per-directory via deriveBankIdOrSkip — see core/bank.ts
   dynamicBankId?: boolean;
   bankIdTemplate?: string;
   mapPathToBank?: Record<string, string>;
@@ -198,9 +221,11 @@ export interface Config {
   gitIngest: "message" | "full" | "none";
   retainTags: string[];
   retainMetadata: Record<string, string>;
+  manageBankConfig: boolean;
   observationScopes: ObservationScopes;
   banks: Record<string, Omit<RawConfig, "banks" | "harnesses"> & { bank?: string }>;
   logLevel: "debug" | "info" | "warn" | "error";
+  autoUpdate: boolean;
 }
 
 /**
@@ -209,15 +234,26 @@ export interface Config {
  * `"cron"` without a `pageTriggerCron` is a broken config, not a request to stop refreshing: the
  * API rejects a cron trigger with no expression, which would fail page creation outright. Fall
  * back to the default and say so — a user who wants pages to stop refreshing writes "manual".
+ *
+ * A malformed `H` is refused here for the same reason and not one step later: `expandCronHash`
+ * leaves an expression it cannot read alone, so an unchecked `"H(9-3) * * * *"` would reach the
+ * server verbatim and fail page creation with a cron parse error naming syntax this package
+ * invented. Ordinary cron syntax stays unvalidated — the server owns that, and duplicating its
+ * parser here would only disagree with it.
  */
 function resolvePageTriggerType(raw: RawConfig): "auto-refresh" | "cron" | "manual" {
   if (raw.pageTriggerType === "manual") return "manual";
   if (raw.pageTriggerType === "cron") {
-    if (raw.pageTriggerCron?.trim()) return "cron";
+    const cron = raw.pageTriggerCron?.trim();
+    if (cron && (!isHashedCron(cron) || parseHashedCron(cron))) return "cron";
     log.warn(
       "config",
-      'pageTriggerType "cron" needs pageTriggerCron (UTC 5-field, e.g. "0 3 * * *") — ' +
-        'falling back to "auto-refresh"'
+      cron
+        ? `pageTriggerCron ${JSON.stringify(cron)} has a malformed hashed field — ` +
+            'write `H` or `H(<lo>-<hi>)` within the field\'s own range, e.g. "H H(0-5) * * *" — ' +
+            'falling back to "auto-refresh"'
+        : 'pageTriggerType "cron" needs pageTriggerCron (UTC 5-field, e.g. "H H * * *") — ' +
+            'falling back to "auto-refresh"'
     );
   }
   return "auto-refresh";
@@ -244,7 +280,15 @@ function resolveReflectBudget(raw: RawConfig): "low" | "mid" | "high" {
 }
 
 /** The server's scalar scoping modes; anything else in this field has to be an explicit scope list. */
-const OBSERVATION_SCOPE_MODES = ["shared", "combined", "per_tag", "all_combinations"] as const;
+// `per_source` is this plugin's own mode, resolved per document in `resolveRetainScopes` and never
+// sent to the server; the rest are the server's.
+const OBSERVATION_SCOPE_MODES = [
+  "shared",
+  "combined",
+  "per_tag",
+  "all_combinations",
+  "per_source",
+] as const;
 
 /**
  * Validate `observationScopes`, falling back to the default on anything unrecognized.
@@ -306,6 +350,7 @@ export function resolveConfig(raw: RawConfig = {}): Config {
     harness: raw.harness ?? "opencode",
     disabled: raw.disabled ?? false,
     retainSessions: raw.retainSessions ?? true, // write sessions back by default, every harness
+    manageBankConfig: raw.manageBankConfig ?? true,
     maxParallelRetains: raw.maxParallelRetains || 10,
     reflectTimeoutMs: raw.reflectTimeoutMs || 120000,
     // Inherit an explicitly-raised reflectTimeoutMs (that is what users reaching for a longer
@@ -344,6 +389,7 @@ export function resolveConfig(raw: RawConfig = {}): Config {
     logLevel: ["debug", "info", "warn", "error"].includes(raw.logLevel as string)
       ? (raw.logLevel as "debug" | "info" | "warn" | "error")
       : "info",
+    autoUpdate: raw.autoUpdate ?? true,
   };
 }
 
@@ -433,6 +479,7 @@ const ENV_KEYS = {
   surveyBudgetUsd: "HINDSIGHT_SURVEY_BUDGET_USD",
   surveyRefreshCommits: "HINDSIGHT_SURVEY_REFRESH_COMMITS",
   logLevel: "HINDSIGHT_LOG_LEVEL",
+  autoUpdate: "HINDSIGHT_AUTO_UPDATE",
   gitIngest: "HINDSIGHT_GIT_INGEST",
   // Scalar modes only ("shared", "combined", "per_tag", "all_combinations"). An explicit scope
   // list is a list OF lists, which does not survive flattening into one variable — file-only.
@@ -440,6 +487,7 @@ const ENV_KEYS = {
   // Comma-separated, e.g. HINDSIGHT_RETAIN_TAGS="project:{gitProject},env:work". A LIST rather than
   // a map, so it flattens cleanly; its sibling retainMetadata stays file-only for the reason above.
   retainTags: "HINDSIGHT_RETAIN_TAGS",
+  manageBankConfig: "HINDSIGHT_MANAGE_BANK_CONFIG",
 } as const satisfies Partial<Record<keyof RawConfig, string>>;
 
 /** Fields parsed as booleans/numbers/comma-separated lists; everything else is taken as a string. */
@@ -452,6 +500,8 @@ const ENV_BOOLEANS = new Set<keyof RawConfig>([
   "autoReflect",
   "autoSeed",
   "codebaseSurvey",
+  "autoUpdate",
+  "manageBankConfig",
 ]);
 const ENV_LISTS = new Set<keyof RawConfig>(["retainTags", "optInPaths"]);
 const ENV_NUMBERS = new Set<keyof RawConfig>([
@@ -533,7 +583,7 @@ export function applyBankConfig(
   cfg: Config,
   resolvedId: string,
   /** The directory the bank was resolved FROM. Supplying it enforces `optInOnly`; every entry
-   *  point already has it to hand, having just passed it to `deriveBankId`. */
+   *  point already has it to hand, having just passed it to bank resolution. */
   directory?: string
 ): { cfg: Config; bankId: string } {
   // Rides the `disabled` gate every entry point already checks after bank resolution, rather than

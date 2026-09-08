@@ -6,6 +6,8 @@
  * every harness adapter.
  */
 
+import { createHash } from "node:crypto";
+
 // ── retain missions (git vs chat need different extraction) ─────────────────────
 export const GIT_MISSION =
   "You are ingesting a single git commit: its message and its full diff. Extract the concrete " +
@@ -194,7 +196,12 @@ export interface KnowledgePage {
 }
 
 /**
- * The subject-scoping clause every seeded page's query carries, naming the repository it is about.
+ * The subject-scoping clause every seeded page's query carries, naming the subject it is about.
+ *
+ * `project` is the repository when the bank is one repository's, and the BANK otherwise — a bank
+ * several repos share has no repo to name, and naming whichever one seeded last made the sentence
+ * flip on every session start (#4146). Either way it must be stable for the bank, because the
+ * clause is PATCHed onto pages that outlive the session.
  *
  * A bank collects everything said IN a repository, which is NOT the same as everything said ABOUT
  * it: a repo that reads its dependency's source, drafts its upstream issues, or documents how it
@@ -209,7 +216,7 @@ export interface KnowledgePage {
  * Naming the repo and stating the exclusion is what lets the synthesizer make that call while it
  * still has the fact's text in front of it. It rides on `source_query` rather than the bank's
  * `reflect_mission` because the mission is seeded ONCE and then belongs to whoever set it
- * (CODING_BANK_STRUCTURE, #2492) — a mission-only fix would never reach an existing bank, while a
+ * (`codingBankManifest`, #2492) — a mission-only fix would never reach an existing bank, while a
  * reworded query re-syncs through `seedPages()`'s drift PATCH on the next run.
  */
 function pageScopeRule(project: string): string {
@@ -269,10 +276,11 @@ const PAGE_TAXONOMY: readonly KnowledgePage[] = [
 ];
 
 /**
- * The seeded pages for one repository: the taxonomy above with `project` named in every query.
+ * The seeded pages for one subject: the taxonomy above with `project` named in every query.
  *
- * A pure function of `project`, so the query text is STABLE for a given repo and `seedPages()`
- * PATCHes once (on the upgrade that introduces the clause) rather than on every deepen run.
+ * A pure function of `project`, so the query text is STABLE for a given subject and `seedPages()`
+ * PATCHes once (on the upgrade that introduces the clause) rather than on every deepen run — which
+ * holds only while the caller's `project` is itself stable per bank (see `bankProjectName`).
  */
 export function pagesFor(project: string): KnowledgePage[] {
   const scope = pageScopeRule(project);
@@ -316,6 +324,127 @@ export const PAGE_FACT_TYPES = ["world", "experience", "observation"];
 export interface PageTriggerConfig {
   pageTriggerType?: "auto-refresh" | "cron" | "manual";
   pageTriggerCron?: string;
+}
+
+// ── hashed cron fields (`H`) ───────────────────────────────────────────────────
+/**
+ * A cron field written `H` means "pick a value in this field's range by hashing the page", so
+ * every page gets its OWN stable slot instead of the one the config literally names.
+ *
+ * One `pageTriggerCron` is shared by every page in every bank running this plugin — it ships as a
+ * single documented example and is copied verbatim. A literal `"0 3 * * *"` therefore does not
+ * schedule a refresh at 03:00; it schedules ALL of them at 03:00, on the worker pool that also
+ * serves retain, so a session ingesting at 03:0x queues behind ~5 page syntheses per bank that
+ * happened to share the one minute the docs suggested. Moving the hour moves the pile.
+ *
+ * `H` is Jenkins' syntax for exactly this problem, borrowed rather than invented because it is
+ * already recognisable, and it composes with the rest of the expression instead of replacing it:
+ *
+ *   "H H * * *"      once a day, at this page's own minute and hour
+ *   "H * * * *"      once an hour, at this page's own minute
+ *   "H 3 * * *"      daily at 03:MM — spread within the hour the operator chose
+ *   "H H(0-5) * * *" daily, spread across the night only
+ *   "0 3 * * *"      unchanged: no `H`, no hashing, exactly what it says
+ *
+ * The alternative — one enum member per period (`daily-staggered`, then `hourly-staggered`, then
+ * whatever is asked for next) — spells the schedule in the type name, so every new period is a new
+ * config value, a new branch, and a new row of docs. Spreading is a property of the SCHEDULE, so it
+ * belongs in the expression.
+ *
+ * `H` never leaves this package: `expandCronHash` resolves it to an ordinary 5-field expression
+ * before the trigger is sent, because `refresh_cron` is parsed server-side as standard cron.
+ */
+const CRON_FIELD_RANGES: readonly (readonly [number, number])[] = [
+  [0, 59], // minute
+  [0, 23], // hour
+  [1, 31], // day of month
+  [1, 12], // month
+  [0, 6], // day of week
+];
+
+const HASHED_FIELD = /^H(?:\((\d+)-(\d+)\))?$/;
+
+/**
+ * Does this expression ask for hashing at all? Plain crons take every path below unchanged.
+ *
+ * Any field STARTING with `H` counts, not just a well-formed one: no standard cron field begins
+ * with `H` (values are digits, `*`, `,`, `-`, `/`, and the JAN-DEC/SUN-SAT names), so `"Hx"` is a
+ * typo in this package's syntax rather than something the server was going to accept. Claiming it
+ * here is what gets it reported as a malformed hashed field instead of an opaque cron parse error.
+ */
+export function isHashedCron(cron: string): boolean {
+  return /(^|\s)H/.test(cron);
+}
+
+/**
+ * The five fields of `cron` when every `H` in it is well-formed, else `undefined`.
+ *
+ * Only the `H` fields are checked. The rest are the server's to validate, as they already are —
+ * this package does not own cron syntax, only the extension it adds to it.
+ */
+export function parseHashedCron(cron: string): string[] | undefined {
+  const fields = cron.trim().split(/\s+/);
+  if (fields.length !== CRON_FIELD_RANGES.length) return undefined;
+  for (const [i, field] of fields.entries()) {
+    if (!field.startsWith("H")) continue;
+    const m = HASHED_FIELD.exec(field);
+    if (!m) return undefined;
+    if (m[1] === undefined) continue;
+    const [lo, hi] = [Number(m[1]), Number(m[2])];
+    const [min, max] = CRON_FIELD_RANGES[i];
+    if (lo > hi || lo < min || hi > max) return undefined;
+  }
+  return fields;
+}
+
+/**
+ * `seed`'s own value in `[lo, hi]` — stable across machines, processes and releases.
+ *
+ * The field index is hashed alongside the seed so `H H * * *` does not derive its minute and its
+ * hour from one number: the two would move together across pages, collapsing the 1440 daily slots
+ * the expression offers back towards 60.
+ */
+function hashedValue(seed: string, field: number, lo: number, hi: number): number {
+  const digest = createHash("sha256").update(`${seed}\u0000${field}`).digest();
+  return lo + (digest.readUInt32BE(0) % (hi - lo + 1));
+}
+
+/**
+ * `cron` with each `H` replaced by `seed`'s own value for that field — an ordinary cron expression.
+ *
+ * Returns the input untouched when it holds no `H`, and when an `H` in it is malformed: a bad
+ * expression is reported by the server that parses crons, not silently rewritten into a valid one
+ * that runs at a time nobody asked for. `resolvePageTriggerType` rejects it before it gets here.
+ */
+export function expandCronHash(cron: string, seed: string): string {
+  if (!isHashedCron(cron)) return cron;
+  const fields = parseHashedCron(cron);
+  if (!fields) return cron;
+  return fields
+    .map((field, i) => {
+      const m = HASHED_FIELD.exec(field);
+      if (!m) return field;
+      const [lo, hi] =
+        m[1] === undefined ? CRON_FIELD_RANGES[i] : ([Number(m[1]), Number(m[2])] as const);
+      return String(hashedValue(seed, i, lo, hi));
+    })
+    .join(" ");
+}
+
+/**
+ * `trigger` as it should be sent for ONE page, resolving any `H` against that page's identity.
+ *
+ * Applied where a page is created rather than where the trigger is built, because that is the only
+ * place the identity exists: `buildPageTrigger` runs once per session for all of them.
+ *
+ * The seed is bank + page name — the pair that identifies a page across runs — so a page keeps its
+ * slot for as long as it keeps its name, and two banks seeded from the same config land on
+ * different ones. Hashing distributes; it does not partition, so two pages CAN still collide.
+ */
+export function pageTriggerFor(trigger: PageTrigger, bank: string, page: string): PageTrigger {
+  const cron = trigger.refresh_cron;
+  if (!cron || !isHashedCron(cron)) return trigger;
+  return { ...trigger, refresh_cron: expandCronHash(cron, `${bank}\u0000${page}`) };
 }
 
 /**
@@ -378,21 +507,86 @@ export const CODING_BANK_TEMPLATE = {
   },
 } as const;
 
+/** Bank-level missions the template seeds ONCE and then leaves alone (#2492). */
+const MISSION_FIELDS = ["reflect_mission", "retain_mission", "observations_mission"] as const;
+
+/** Bank-scoped config OVERRIDES exactly as `GET /banks/{id}/config` reports them. */
+export type BankOverrides = Record<string, unknown>;
+
+/** The manifest `configureBank` POSTs to `/banks/{id}/import`. */
+export interface BankManifest {
+  version: "1";
+  bank: Record<string, unknown>;
+}
+
+/** A bank-config override the bank's owner actually made. Blank is not a choice; `false` is. */
+function isSet(v: unknown): boolean {
+  if (v === null || v === undefined) return false;
+  if (typeof v === "string") return v.trim() !== "";
+  return true;
+}
+
 /**
- * The subset re-applied to a bank that is ALREADY configured — everything above minus the missions.
+ * The template fields still missing from a bank whose overrides are `overrides` — or `undefined`
+ * when it already carries them all and there is nothing to write.
  *
- * The full template seeds a bank once. After that the missions are the user's: someone who rewrites
- * `reflect_mission` in the control plane means it, and re-importing the manifest on every seed pass
- * silently stamped the defaults back over it (#2492 — the same regression #1270 fixed for OpenClaw).
+ * **This plugin only ever ADDS what is missing; it never overwrites what the bank already says.**
  *
- * The retain strategies and entity labels stay, because they are not preferences: this plugin writes
- * documents under `git` / `gitlog` / `conversation` / `document`, and a bank missing one of those
- * would reject the write. A newer plugin adding a strategy needs it to land on existing banks too.
+ * Re-applying the whole template on every pass is how a plugin takes a bank over, and it has now
+ * been fixed three times over the same shape: #1270 for OpenClaw's missions, #2492 for this
+ * plugin's, and #3927 for everything those two left un-guarded. Each earlier fix protected only the
+ * fields that had just been noticed, so the rest kept being stamped back on every session start.
+ * Reading the current overrides and writing only where the bank is silent covers the whole surface
+ * at once, including whatever gets added to the template next.
+ *
+ * The two container fields merge PER ENTRY, because the server stores each as ONE config value and
+ * an import replaces it outright: re-sending the five strategies wholesale deleted any strategy the
+ * user had defined, reverted their edits to the plugin's own (mission, extraction mode, chunk
+ * size), and could leave `retain_default_strategy` naming a strategy that no longer existed.
+ * Merging still lets a strategy ADDED by a newer plugin release reach an existing bank — the reason
+ * the re-apply exists — without touching the entries already there.
+ *
+ * The consequence is deliberate: a release that REWORDS an existing strategy or label does not
+ * reach a bank that already has it. Clearing that override on the bank takes the current default
+ * back, since the next pass then finds the bank silent there.
  */
-export const CODING_BANK_STRUCTURE = {
-  version: "1",
-  bank: {
-    retain_strategies: RETAIN_STRATEGIES,
-    entity_labels: [KNOWLEDGE_LABELS],
-  },
-} as const;
+export function codingBankManifest(overrides: BankOverrides | undefined): BankManifest | undefined {
+  // Unreadable overrides — the bank does not exist yet, or the deployment has the bank-config API
+  // switched off. Nothing can have been customised through an API that is not there, and this same
+  // POST is what CREATES the bank, so `{}` seeds the lot (every branch below fires, and the result
+  // is CODING_BANK_TEMPLATE — asserted in missions.test.ts).
+  const current = overrides ?? {};
+  const template = CODING_BANK_TEMPLATE.bank;
+  const bank: Record<string, unknown> = {};
+
+  // The missions are seeded as a GROUP: the plugin writes all three together, so any one of them
+  // being present means this bank has been seeded already, or its owner wrote their own (#2492).
+  if (!MISSION_FIELDS.some((f) => isSet(current[f]))) {
+    bank.reflect_mission = template.reflect_mission;
+    bank.enable_observations = template.enable_observations;
+    bank.observations_mission = template.observations_mission;
+    bank.retain_mission = template.retain_mission;
+    bank.retain_extraction_mode = template.retain_extraction_mode;
+  }
+
+  if (!isSet(current.retain_default_strategy))
+    bank.retain_default_strategy = template.retain_default_strategy;
+  if (!isSet(current.entities_allow_free_form))
+    bank.entities_allow_free_form = template.entities_allow_free_form;
+
+  const strategies =
+    current.retain_strategies && typeof current.retain_strategies === "object"
+      ? (current.retain_strategies as Record<string, unknown>)
+      : {};
+  const missing = Object.entries(template.retain_strategies).filter(([n]) => !(n in strategies));
+  // The whole map is one config value, so the UNION has to be sent — not just the additions.
+  if (missing.length > 0)
+    bank.retain_strategies = { ...strategies, ...Object.fromEntries(missing) };
+
+  const labels = Array.isArray(current.entity_labels) ? current.entity_labels : [];
+  const [knowledgeGroup] = template.entity_labels;
+  if (!labels.some((g) => (g as { key?: unknown } | null)?.key === knowledgeGroup.key))
+    bank.entity_labels = [...labels, knowledgeGroup];
+
+  return Object.keys(bank).length > 0 ? { version: "1", bank } : undefined;
+}

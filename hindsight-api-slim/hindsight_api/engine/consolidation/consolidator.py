@@ -30,9 +30,10 @@ from itertools import combinations
 from typing import TYPE_CHECKING, Any, Literal
 
 import asyncpg
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from ...config import get_config
+from ...metrics import get_metrics_collector
 from ...worker.stage import set_stage
 from ..db import DatabaseBackend
 from ..db_utils import acquire_with_retry
@@ -348,15 +349,14 @@ async def _dedup_adjudicate(
     if best_id is None:
         return _DedupOutcome(best_id=None, merged_text="", should_merge=False)
 
-    decision = _dedup_decision_from_response(
-        await dedup_llm_config.call(
-            messages=[{"role": "user", "content": _DEDUP_PROMPT.format(new=anchor_text, existing=best_text)}],
-            response_format=_DedupDecision,
-            temperature=config.llm_temperature_consolidation,
-            scope="consolidation_dedup",
-            strict_schema=get_config().llm_strict_schema_consolidation,
-        )
+    dedup_call = await dedup_llm_config.call(
+        messages=[{"role": "user", "content": _DEDUP_PROMPT.format(new=anchor_text, existing=best_text)}],
+        response_format=_DedupDecision,
+        temperature=config.llm_temperature_consolidation,
+        scope="consolidation_dedup",
+        strict_schema=get_config().llm_strict_schema_consolidation,
     )
+    decision = _dedup_decision_from_response(dedup_call.content)
     if decision.action != "merge":
         return _DedupOutcome(best_id=best_id, merged_text="", should_merge=False, best_text=best_text)
     merged_text = (sanitize_llm_output(decision.text) or "").strip() or best_text
@@ -651,7 +651,70 @@ def _resolve_write_scopes(memory: dict[str, Any]) -> list[frozenset[str]]:
         return [frozenset()]
     if parsed == "combined" or parsed is None:
         return [frozenset(tags)]
-    return [frozenset(s) for s in parsed]  # explicit list[list[str]]
+    # Explicit list[list[str]]. An *empty* list resolves to no passes at all, and
+    # the pass loop (``if obs_tags_list:``) then falls back to the combined
+    # single pass over the memory's own tags — so report that scope here too,
+    # or the group takes no lock for the scope it actually writes.
+    return [frozenset(s) for s in parsed] or [frozenset(tags)]
+
+
+def _batch_scope_signature(memory: dict[str, Any]) -> tuple[tuple[str, ...], ...]:
+    """The exact set of observation scopes consolidating this memory will write.
+
+    Derived from the pass loop rather than from the grouping key, so it can be
+    used to *check* the key: a truthy ``_resolve_obs_tags_list`` yields one pass
+    per resolved scope (each written with that ``obs_tags_override``), and a
+    falsy one — ``None`` from ``combined``, or a degenerate empty explicit list —
+    yields the single combined pass whose tags come from the memory's own tag set.
+
+    Two memories may share an LLM call only if their signatures are equal, because
+    the batch resolves its scope once from ``sub_batch[0]`` and applies it to all.
+    """
+    obs_tags_list = _resolve_obs_tags_list(memory)
+    if not obs_tags_list:
+        return (tuple(sorted(memory.get("tags") or [])),)
+    return tuple(sorted(tuple(sorted(scope)) for scope in obs_tags_list))
+
+
+def _consolidation_batch_key(memory: dict[str, Any]) -> tuple[str, ...]:
+    """Return the key that decides which memories may share an LLM batch.
+
+    The real security requirement is "memories targeting different observation
+    scopes must never share an LLM call" — every branch below keys on the
+    memory's *resolved* scope(s), never on raw tags, so two memories with the
+    same native tags but different ``observation_scopes`` modes can never
+    collide into the same group:
+
+    - default ``combined`` (``resolved is None``), and the degenerate empty
+      resolution (an explicit ``[]``, which the pass loop below treats as
+      combined because ``if obs_tags_list:`` is falsy): the memory's target
+      scope *is* its own tag set, so it keys on those tags.
+    - a single alternate scope (``shared``, an explicit one-scope list, or
+      ``per_tag`` with exactly one tag): keys on that resolved scope instead,
+      so it batches with any other memory naming the identical scope
+      regardless of native tags — that is the whole point of requesting it.
+    - fan-out to *multiple* scopes (``per_tag`` with more than one tag,
+      ``all_combinations``, or a multi-scope explicit list): writes several
+      observations from one LLM call, so it keys on the full resolved
+      scope-list, not native tags — two fan-out memories only share a batch
+      when every one of their target scopes matches exactly. A distinct
+      leading marker per branch keeps e.g. a ``combined`` memory tagged
+      ``["a","b"]`` out of the same key as a ``per_tag`` memory tagged
+      ``["a","b"]``, even though both would otherwise sort to ``("a","b")``.
+    """
+    resolved = _resolve_obs_tags_list(memory)
+    if not resolved:
+        # ``None`` (combined) and ``[]`` (an explicit empty scope list) both fall
+        # through to the combined pass downstream — ``if obs_tags_list:`` is
+        # falsy for each — so they must key the same way. Testing ``is None``
+        # alone sent ``[]`` down the fan-out branch, where every such memory
+        # keyed to the tag-free ``("fanout",)`` and pooled with memories of
+        # unrelated tags; ``obs_tags_override`` then being ``None``, the whole
+        # group took ``memories[0]``'s tags and leaked across scopes.
+        return ("combined", *sorted(memory.get("tags") or []))
+    if len(resolved) == 1:
+        return ("scope", *sorted(resolved[0]))
+    return ("fanout", *sorted("\x1f".join(sorted(scope)) for scope in resolved))
 
 
 def _scope_sort_key(scope: frozenset[str]) -> tuple[str, ...]:
@@ -765,7 +828,24 @@ class _UpdateAction(BaseModel):
 
 
 class _DeleteAction(BaseModel):
-    observation_id: str  # UUID of the observation to remove
+    """One DELETE from an LLM response.
+
+    ``observation_id`` stays required — a delete naming no target has no defensible
+    fallback, and guessing one would remove the wrong observation. But rejecting the
+    entry rejects the ENTIRE ``_ConsolidationBatchResponse``, taking the batch's
+    perfectly good creates and updates with it (#4152), so a near-miss is worth
+    absorbing rather than paying a bisected re-run for: models that copy the
+    observation's own field name emit ``id``, which is unambiguous here because a
+    delete entry has exactly one identifier. ``populate_by_name`` keeps the
+    canonical name working for in-process construction, and the generated JSON
+    schema still advertises ``observation_id`` alone (pydantic emits the first
+    of the ``AliasChoices``), so what a grammar-constrained provider is told to
+    emit does not change — this only widens what a free-form one gets away with.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    observation_id: str = Field(validation_alias=AliasChoices("observation_id", "id"))
     reason: str = ""  # LLM's one-sentence justification (diagnostic only)
 
 
@@ -824,6 +904,10 @@ class _BatchLLMResult:
     obs_count: int = 0
     prompt_chars: int = 0
     failed: bool = False
+    #: How many attempts inside this batch call raised. Non-zero even when a later
+    #: attempt succeeded, so the run summary can report calls that were retried out
+    #: of existence — `failed` alone hides them (#4151).
+    failed_attempts: int = 0
 
 
 @dataclass
@@ -1018,6 +1102,7 @@ class ConsolidationPerfLog:
         self.llm_calls: int = 0
         self.total_obs_in_context: int = 0
         self.total_prompt_chars: int = 0
+        self.llm_batch_failures: int = 0
 
     def log(self, message: str) -> None:
         """Add a log line."""
@@ -1037,6 +1122,10 @@ class ConsolidationPerfLog:
         self.llm_calls += 1
         self.total_obs_in_context += obs_count
         self.total_prompt_chars += prompt_chars
+
+    def record_llm_batch_failures(self, count: int) -> None:
+        """Record LLM batch attempts that raised, whether or not a retry rescued them."""
+        self.llm_batch_failures += count
 
     def merge_from(self, other: "ConsolidationPerfLog") -> None:
         """Merge a per-batch perf log into this (job-level) one.
@@ -1058,6 +1147,7 @@ class ConsolidationPerfLog:
         self.llm_calls += other.llm_calls
         self.total_obs_in_context += other.total_obs_in_context
         self.total_prompt_chars += other.total_prompt_chars
+        self.llm_batch_failures += other.llm_batch_failures
 
     def flush(self) -> None:
         """Flush all log lines to the logger."""
@@ -1393,6 +1483,11 @@ async def _run_consolidation_job(
         "actions_executed": 0,
         "skipped": 0,
         "memories_failed": 0,
+        # LLM batch attempts that raised, including those a retry or the adaptive bisection
+        # later rescued. `memories_failed` counts only facts left stuck, so it reads 0 for
+        # a run that discarded every response it got (#4151, #4152). One batch call can
+        # contribute several attempts, so this is not bounded by the batch count.
+        "llm_batch_failures": 0,
     }
 
     # Track all unique tags from consolidated memories for mental model refresh filtering
@@ -1433,11 +1528,15 @@ async def _run_consolidation_job(
         if not memories:
             break  # No more unconsolidated memories
 
-        # Group memories by exact tag set before batching — security requirement:
-        # memories with different tags must never share an LLM call.
+        # Group memories by target observation scope before batching — security
+        # requirement: memories targeting different scopes must never share an
+        # LLM call. See _consolidation_batch_key for why that's scope, not raw
+        # tags: a memory requesting observation_scopes="shared" (or another
+        # single-scope override) targets a scope that can differ from its own
+        # tags, and must only batch with peers naming that same scope (#3924).
         tag_groups: dict[tuple[str, ...], list[dict[str, Any]]] = {}
         for m in memories:
-            tag_key = tuple(sorted(m.get("tags") or []))
+            tag_key = _consolidation_batch_key(m)
             tag_groups.setdefault(tag_key, []).append(dict(m))
 
         # Split each tag group into LLM batches respecting llm_batch_size, keeping
@@ -1490,6 +1589,30 @@ async def _run_consolidation_job(
             pending: list[list[dict[str, Any]]] = [llm_batch_local]
             while pending:
                 sub_batch = pending.pop(0)
+
+                # Defence in depth. Everything below writes the sub-batch at ONE
+                # resolved scope, read off ``sub_batch[0]``. If a memory with a
+                # different scope ever reaches this batch — a regression in
+                # ``_consolidation_batch_key``, or in how groups are split into
+                # batches — that single read stamps one memory's scope onto
+                # another's observation: an untagged, globally recallable
+                # observation built from a tagged fact, or a dropped override
+                # (#3953). So verify the invariant against the scopes the pass
+                # loop will actually write, independently of the grouping key,
+                # and split instead of trusting it. The cost in the case that
+                # must never happen is one extra LLM call.
+                if len(sub_batch) > 1:
+                    by_scope: dict[tuple[tuple[str, ...], ...], list[dict[str, Any]]] = {}
+                    for m in sub_batch:
+                        by_scope.setdefault(_batch_scope_signature(m), []).append(m)
+                    if len(by_scope) > 1:
+                        logger.error(
+                            f"[CONSOLIDATION] bank={bank_id} sub-batch of {len(sub_batch)} memories mixes"
+                            f" {len(by_scope)} observation scopes {sorted(by_scope)} — splitting it."
+                            " LLM batches must be scope-homogeneous; this is a grouping bug."
+                        )
+                        pending[0:0] = list(by_scope.values())
+                        continue
 
                 # No connection is held across the batch: recall, the main LLM call, the
                 # per-action embeds, and dedup adjudication all run connection-free. Only then
@@ -1617,9 +1740,7 @@ async def _run_consolidation_job(
 
             cancelled_local = False
             if operation_id and not await memory_engine._check_op_alive(operation_id):
-                logger.info(
-                    f"[CONSOLIDATION] bank={bank_id} operation {operation_id} cancelled (bank deleted), stopping early"
-                )
+                logger.info(f"[CONSOLIDATION] bank={bank_id} operation {operation_id} cancelled, stopping early")
                 cancelled_local = True
 
             # Per-batch local stats; merged into outer state once, serially,
@@ -1868,6 +1989,22 @@ async def _run_consolidation_job(
 
     if timing_parts:
         perf.log(f"[4] Timing breakdown: {', '.join(timing_parts)}")
+
+    # A run whose LLM calls kept failing schema validation looks exactly like a clean one
+    # from the counters above: adaptive bisection rescues the facts, so nothing is left
+    # carrying `consolidation_failed_at`, while everything those responses would have done
+    # -- notably their deletes -- was thrown away (#4151, #4152). Say so, loudly, and only
+    # when it happened, so a healthy summary is unchanged.
+    stats["llm_batch_failures"] = perf.llm_batch_failures
+    if perf.llm_batch_failures:
+        # Attempts, not batches: one batch call can burn up to `consolidation_max_attempts`
+        # of them, so this can exceed the batch count above rather than being a share of it.
+        perf.log(
+            f"[5] WARNING: {perf.llm_batch_failures} LLM batch attempt(s) failed and their responses were "
+            f"discarded (creates, updates AND deletes alike). Facts the retry/bisection path rescued are NOT "
+            f"reflected in failed_consolidation; see hindsight.consolidation.batch_failures for the "
+            f"per-class breakdown."
+        )
 
     # Trigger mental-model refreshes once, when the chain has fully drained. On a
     # round-limited round we skip and carry the affected tags forward (above); the
@@ -2146,6 +2283,7 @@ async def _process_memory_batch(
     if perf:
         perf.record_timing("llm", time.time() - t0)
         perf.record_llm_call(llm_result.obs_count, llm_result.prompt_chars)
+        perf.record_llm_batch_failures(llm_result.failed_attempts)
 
     # 4. Prepare every action connection-free, then apply them all in ONE transaction.
     #
@@ -3066,6 +3204,7 @@ async def _consolidate_batch_with_llm(
     inner_max_retries = config.consolidation_llm_max_retries
     last_exc: Exception | None = None
     attempts_made = 0
+    failed_attempts = 0
     # Pre-compute a stable identifier set for the batch so failure logs name the
     # exact memories whose consolidation is failing — without this, an opaque
     # "LLM batch call failed" line gives operators no way to find the offending
@@ -3103,7 +3242,8 @@ async def _consolidate_batch_with_llm(
                 call_kwargs["max_retries"] = inner_max_retries
             if cached_prefix_name is not None:
                 call_kwargs["cached_prefix"] = cached_prefix_name
-            response: _ConsolidationBatchResponse = await llm_config.call(**call_kwargs)
+            batch_call = await llm_config.call(**call_kwargs)
+            response: _ConsolidationBatchResponse = batch_call.content
             # Defensive truncation: some LLM providers may not enforce JSON schema max_length
             creates = response.creates
             if remaining_observation_slots is not None and remaining_observation_slots >= 0:
@@ -3120,9 +3260,19 @@ async def _consolidate_batch_with_llm(
                 deletes=response.deletes,
                 obs_count=len(union_observations),
                 prompt_chars=len(system_prompt) + len(user_content),
+                failed_attempts=failed_attempts,
             )
         except Exception as exc:
             failure_class = _classify_batch_failure(exc)
+            # Count every failed call, including the ones adaptive bisection goes on to
+            # rescue. `failed_consolidation` cannot show those — it is a gauge over rows
+            # still carrying `consolidation_failed_at` when the run ends — so without this
+            # a run that burned N schema-invalid calls and dropped every delete they
+            # carried reads exactly like a clean one (#4151, #4152). Exception path only.
+            get_metrics_collector().record_consolidation_batch_failure(
+                failure_class=str(failure_class), error_type=type(exc).__name__
+            )
+            failed_attempts += 1
             if failure_class is _BatchFailureClass.PROPAGATE:
                 logger.warning(
                     f"[CONSOLIDATION] LLM batch call for {batch_label} raised a non-batch failure "
@@ -3152,7 +3302,10 @@ async def _consolidate_batch_with_llm(
         f"{batch_label}, skipping batch (the caller will bisect it). Last error: {last_exc}"
     )
     return _BatchLLMResult(
-        obs_count=len(union_observations), prompt_chars=len(system_prompt) + len(user_content), failed=True
+        obs_count=len(union_observations),
+        prompt_chars=len(system_prompt) + len(user_content),
+        failed=True,
+        failed_attempts=failed_attempts,
     )
 
 

@@ -23,7 +23,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deriveBankId } from "./core/bank";
+import { bankProjectName, deriveBankIdOrSkip } from "./core/bank";
 import { ingestChats } from "./core/chat";
 import { applyBankConfig, loadConfig } from "./core/config";
 import { commitsSince, repoNameOf, retainCommit, syncGitLog } from "./core/git";
@@ -50,7 +50,9 @@ function arg(name: string, def?: string): string | undefined {
 const REPO = arg("repo");
 const cfg0 = loadConfig({ harness: arg("harness") ?? undefined, path: arg("config") });
 const BANK =
-  arg("bank") ?? (REPO ? deriveBankId(cfg0, REPO, arg("harness") ?? cfg0.harness) : cfg0.bankId);
+  arg("bank") ??
+  (REPO ? deriveBankIdOrSkip(cfg0, REPO, arg("harness") ?? cfg0.harness) : cfg0.bankId) ??
+  undefined;
 const resolved0 = BANK
   ? applyBankConfig(cfg0, BANK, REPO ?? undefined)
   : { cfg: cfg0, bankId: BANK };
@@ -61,6 +63,10 @@ if (cfg.disabled) {
   process.exit(0);
 }
 const HARNESS = arg("harness") ?? cfg0.harness;
+// The repository name the seeded knowledge pages are scoped to — see the `project` option below.
+// `resolved0.bankId !== BANK` means a `banks.<id>.bank` rename redirected this run, and several
+// repos may be renamed onto one destination, so the repo cannot claim to name it.
+const PAGE_PROJECT = REPO && resolved0.bankId === BANK ? bankProjectName(cfg, REPO) : undefined;
 const API_URL = arg("api-url") ?? cfg.apiUrl;
 const API_TOKEN = arg("api-token") ?? cfg.apiToken;
 const CONV = arg("conversations");
@@ -135,9 +141,14 @@ async function main() {
       apiToken: API_TOKEN,
       bank: FINAL_BANK!,
       // Names the repository in every seeded page's query, so page synthesis can tell this
-      // project's decisions from those of a dependency it merely discusses (#3476). Same
-      // worktree-aware name the gitlog document id uses, so all worktrees agree on it.
-      project: repoNameOf(REPO!),
+      // project's decisions from those of a dependency it merely discusses (#3476).
+      //
+      // A property of the BANK, not of this run's cwd: the query is PATCHed onto pages that
+      // outlive the session, so a bank several repos share must not be told it is whichever one
+      // ran last (#4146). `bankProjectName` answers only when the bank IS this repo's; the
+      // `banks.<id>.bank` rename below it can point many repos at one destination, so a renamed
+      // bank is not this repo's either. Undefined leaves the client to fall back to the bank id.
+      project: PAGE_PROJECT,
       maxParallelRetains: cfg.maxParallelRetains,
       observationScopes: cfg.observationScopes,
       log,
@@ -151,7 +162,10 @@ async function main() {
         sessionId,
       });
 
-    await client.configureBank({ pageTrigger: buildPageTrigger(cfg) });
+    await client.configureBank({
+      pageTrigger: buildPageTrigger(cfg),
+      manage: cfg.manageBankConfig,
+    });
     if (client.knowledgePagesSupported === false) {
       diag(harness.name, "knowledge_pages_unavailable", {
         bank: FINAL_BANK,

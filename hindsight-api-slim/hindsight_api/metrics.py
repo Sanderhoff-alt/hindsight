@@ -304,8 +304,32 @@ class MetricsCollectorBase:
         """Record one phase of a retain."""
         raise NotImplementedError
 
+    def record_validator_phase(self, operation: str, hook: str, seconds: float):
+        """Record one operation-validator hook (`hook` is "pre" or "post")."""
+        raise NotImplementedError
+
+    def record_recall_phase(self, phase: str, seconds: float, *, diagnostic: bool = False):
+        """Record one phase of a recall.
+
+        `diagnostic` marks a phase that is a SUBSET of another rather than a sibling of it, so a
+        consumer summing phases into a request total can exclude them instead of double-counting.
+        """
+        raise NotImplementedError
+
     def record_loop_stall(self, stall_seconds: float):
         """Record a detected event-loop stall (blocked longer than the watchdog threshold)."""
+        raise NotImplementedError
+
+    def record_consolidation_batch_failure(self, failure_class: str, error_type: str):
+        """Record one consolidation LLM batch call that failed.
+
+        `failed_consolidation` is a gauge over rows carrying `consolidation_failed_at`,
+        so it reports facts left STUCK — never a call that failed and whose facts the
+        caller's adaptive bisection then rescued. A run can burn dozens of schema-invalid
+        calls, drop every delete they carried, and still end with that gauge at 0 and
+        `observations_deleted` at 0, indistinguishable from a healthy run (#4151, #4152).
+        This counter is the missing signal: it counts calls, not stuck rows.
+        """
         raise NotImplementedError
 
     def set_db_pool(self, pool: "asyncpg.Pool"):
@@ -372,8 +396,18 @@ class NoOpMetricsCollector(MetricsCollectorBase):
     def record_retain_phase(self, phase: str, seconds: float, calls: int = 1, store: str = ""):
         pass
 
+    def record_validator_phase(self, operation: str, hook: str, seconds: float):
+        pass
+
+    def record_recall_phase(self, phase: str, seconds: float, *, diagnostic: bool = False):
+        pass
+
     def record_loop_stall(self, stall_seconds: float):
         """No-op loop-stall recording."""
+        pass
+
+    def record_consolidation_batch_failure(self, failure_class: str, error_type: str):
+        """No-op consolidation batch-failure recording."""
         pass
 
 
@@ -491,6 +525,55 @@ class MetricsCollector(MetricsCollectorBase):
         self.retain_phase_calls = self.meter.create_counter(
             name="hindsight.retain.phase.calls",
             description="Number of times a retain phase ran -- the round-trip count per phase",
+            unit="calls",
+        )
+        # The operation validator runs OUTSIDE the recall/retain timers -- `validate_*` before the
+        # work starts and `on_*_complete` after it ends -- so whatever it does is invisible in the
+        # `[phases]` accounting, which measures only the inner search. A validator that reaches a
+        # database (billing does: an org row and a pricing table, uncached, on a small control
+        # pool) is then latency nobody can see. Labelled by hook so the pre-check and the
+        # post-charge are separable: they fail differently and are fixed differently.
+        self.validator_phase_duration = self.meter.create_histogram(
+            name="hindsight.validator.phase.duration",
+            description="Time in an operation-validator hook, which runs outside the operation's own timer",
+            unit="s",
+        )
+        self.validator_phase_calls = self.meter.create_counter(
+            name="hindsight.validator.phase.calls",
+            description="Number of operation-validator hook invocations",
+            unit="calls",
+        )
+        # A recall's phases, from the same tracer that writes the `[phases]` log line. That line is
+        # per-request and lives in a log; this is the aggregate, so "where does a recall's time go"
+        # is answerable across a window without grepping. `hindsight.operation.duration` for a
+        # recall is one opaque number, and subtracting the store's own timings from it left the
+        # remainder -- hydration, entity build, token filtering, serialization -- as a residual
+        # nobody could attribute. On a measured window that residual was 37% of the request.
+        #
+        # `diagnostic` separates subsets from siblings: some phases are children of another
+        # (a per-arm timing inside parallel_retrieval), and summing them with their parent
+        # double-counts. Sum `diagnostic="false"` to get the request; read the rest for detail.
+        self.recall_phase_duration = self.meter.create_histogram(
+            name="hindsight.recall.phase.duration",
+            description="Time attributed to one phase of a recall (diagnostic phases are subsets, not siblings)",
+            unit="s",
+        )
+        self.recall_phase_calls = self.meter.create_counter(
+            name="hindsight.recall.phase.calls",
+            description="Number of times a recall phase ran",
+            unit="calls",
+        )
+        # Consolidation batch calls that failed. Labelled by failure class so the two
+        # populations stay separable: `retry` is transport-shaped and usually self-heals,
+        # while `fail_fast` is the model emitting something the response schema rejects —
+        # the case that silently drains the delete path (#4152). Neither reaches
+        # `failed_consolidation`, which only counts facts bisection could not rescue.
+        self.consolidation_batch_failures = self.meter.create_counter(
+            name="hindsight.consolidation.batch_failures",
+            description=(
+                "Consolidation LLM batch calls that failed, by failure class -- "
+                "including those whose facts adaptive bisection later rescued"
+            ),
             unit="calls",
         )
         self.event_loop_stalls = self.meter.create_counter(
@@ -753,10 +836,38 @@ class MetricsCollector(MetricsCollectorBase):
         self.retain_phase_duration.record(seconds, attrs)
         self.retain_phase_calls.add(calls, attrs)
 
+    def record_validator_phase(self, operation: str, hook: str, seconds: float):
+        """Record one operation-validator hook. `hook` is "pre" or "post"."""
+        attrs = {"operation": operation, "hook": hook, "tenant": _get_tenant()}
+        self.validator_phase_duration.record(seconds, attrs)
+        self.validator_phase_calls.add(1, attrs)
+
+    def record_recall_phase(self, phase: str, seconds: float, *, diagnostic: bool = False):
+        """Record one phase of a recall.
+
+        `diagnostic` marks a phase that is a SUBSET of another rather than a sibling of it — a
+        per-arm timing inside `parallel_retrieval`, say — so a consumer summing phases into a
+        request total can exclude them instead of double-counting.
+        """
+        attrs = {"phase": phase, "tenant": _get_tenant(), "diagnostic": str(bool(diagnostic)).lower()}
+        self.recall_phase_duration.record(seconds, attrs)
+        self.recall_phase_calls.add(1, attrs)
+
     def record_loop_stall(self, stall_seconds: float):
         """Record a detected event-loop stall. Called from the watchdog thread."""
         self.event_loop_stalls.add(1)
         self.event_loop_stall_duration.record(stall_seconds)
+
+    def record_consolidation_batch_failure(self, failure_class: str, error_type: str):
+        """Record one failed consolidation LLM batch call.
+
+        Called only on the exception path, so the successful batch costs nothing.
+        `error_type` is the exception class name — `ValidationError` is the #4152
+        signature — and is bounded by the exception types the LLM layer can raise.
+        """
+        self.consolidation_batch_failures.add(
+            1, {"failure_class": failure_class, "error_type": error_type, "tenant": _get_tenant()}
+        )
 
     def _setup_process_metrics(self):
         """Set up observable gauges for process metrics."""

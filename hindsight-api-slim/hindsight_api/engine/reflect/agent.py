@@ -13,9 +13,20 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
+from ...cancellation import OperationCancelledError
 from ...config import get_config
 from ..llm_interface import LLM_TOOL_CHOICE_AUTO, LLMToolChoice
-from .models import DirectiveInfo, LLMCall, ReflectAgentResult, StructuredOutputResult, TokenUsageSummary, ToolCall
+from ..llm_trace import LLMQueueWait, reset_queue_wait_sink, set_queue_wait_sink
+from ..llm_transport import describe_llm_error
+from .models import (
+    DirectiveInfo,
+    LengthRewrite,
+    LLMCall,
+    ReflectAgentResult,
+    StructuredOutputResult,
+    TokenUsageSummary,
+    ToolCall,
+)
 from .prompts import (
     _SPLIT_SYNTHESIS_WARN_CHUNKS,
     CLAIMS_SYSTEM_PROMPT,
@@ -62,6 +73,22 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_ITERATIONS = 10
 
+#: Temperature for split synthesis's map calls. They copy claims and ids out of one
+#: chunk — the mechanical half of the job, like consolidation's extraction passes,
+#: which also run at 0. The reflect temperature (0.9 by default) belongs to the calls
+#: that reason and write; at that setting a map call sometimes answered a plainly
+#: relevant chunk with the six-token "(no relevant evidence)" sentinel and
+#: finish_reason=stop, dropping that chunk's evidence from the reduce (#4054).
+#:
+#: Applied only when a reflect temperature is configured at all: ``none`` resolves the
+#: whole chain to None so the parameter is omitted, which is how reasoning models that
+#: reject any temperature are run. Hardcoding 0 here would put it back for them.
+_MAP_TEMPERATURE = 0.0
+
+
+def _map_temperature() -> float | None:
+    return None if get_config().llm_temperature_reflect is None else _MAP_TEMPERATURE
+
 
 class ReflectNoAnswerError(RuntimeError):
     """The agent finished without producing an answer.
@@ -88,6 +115,27 @@ class ReflectToolCallError(RuntimeError):
     mimic a ``done`` payload. Rather than salvage that untooled text -- and risk
     surfacing raw tool-call JSON as the answer -- we fail loudly so the caller can
     switch to a tool-calling-capable model/transport.
+    """
+
+
+class ReflectToolExecutionError(RuntimeError):
+    """A retrieval tool raised, so the run's evidence set is incomplete.
+
+    Reflect used to hand the exception text back to the model as a tool result and
+    let the loop continue. The model then answered from whatever it happened to
+    have -- often nothing -- and that answer was indistinguishable from a run over
+    a bank that genuinely holds nothing on the topic. A mental-model refresh wrote
+    it, replacing a document built across months with "I don't have information
+    about that" and recording the operation as ``completed`` (#2894).
+
+    A failed tool is an infrastructure failure (the database, the embedder, the
+    reranker), not something the model can fix by rephrasing, so the run fails
+    instead: callers that write what reflect returns never reach the write, and
+    the refresh preserves its document and its watermark.
+
+    This covers tools that *raised*. A tool that returns ``{"error": ...}`` for a
+    malformed or unavailable call is the model's mistake, is fixable by retrying
+    with different arguments, and is still fed back to it as before.
     """
 
 
@@ -236,7 +284,7 @@ INSTRUCTIONS:
 
 OUTPUT:"""
 
-        structured_result, usage = await llm_config.call(
+        call_result = await llm_config.call(
             messages=[
                 {
                     "role": "system",
@@ -255,8 +303,9 @@ OUTPUT:"""
             initial_backoff=0.25,
             max_backoff=1.0,
             skip_validation=True,  # We'll handle the dict ourselves
-            return_usage=True,
         )
+        structured_result = call_result.content
+        usage = call_result.usage
 
         # Convert to dict
         if hasattr(structured_result, "model_dump"):
@@ -664,7 +713,13 @@ async def _run_reflect_agent_inner(
             )
             or "none"
         )
-        llm_summary = ", ".join(f"{c['scope']}={c['duration_ms']}ms" for c in llm_trace) or "none"
+        llm_summary = (
+            ", ".join(
+                f"{c['scope']}={c['duration_ms']}ms" + (f"(q{c['queued_ms']}ms)" if c.get("queued_ms") else "")
+                for c in llm_trace
+            )
+            or "none"
+        )
         total_llm_ms = sum(c["duration_ms"] for c in llm_trace)
         total_tools_ms = sum(t["duration_ms"] for t in tool_trace_summary)
 
@@ -680,20 +735,31 @@ async def _run_reflect_agent_inner(
             f"total={elapsed_ms}ms"
         )
 
-    async def _tracked_llm_call(prompt: str, trace_scope: str, system_prompt: str, completion_cap: int | None) -> str:
-        """One tool-less LLM call with usage/trace accounting folded in."""
+    async def _tracked_llm_call(
+        prompt: str,
+        trace_scope: str,
+        system_prompt: str,
+        completion_cap: int | None,
+        temperature: float | None = None,
+    ) -> str:
+        """One tool-less LLM call with usage/trace accounting folded in.
+
+        ``temperature`` defaults to the reflect temperature, which is tuned for
+        writing an answer; callers that extract rather than write override it.
+        """
         nonlocal total_input_tokens, total_output_tokens, total_cached_tokens, total_thoughts_tokens
         llm_start = time.time()
-        response, usage = await llm_config.call(
+        call_result = await llm_config.call(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt},
             ],
             scope="reflect",
-            temperature=get_config().llm_temperature_reflect,
+            temperature=get_config().llm_temperature_reflect if temperature is None else temperature,
             max_completion_tokens=completion_cap,
-            return_usage=True,
         )
+        response = call_result.content
+        usage = call_result.usage
         llm_duration = int((time.time() - llm_start) * 1000)
         total_input_tokens += usage.input_tokens
         total_output_tokens += usage.output_tokens
@@ -725,9 +791,9 @@ async def _run_reflect_agent_inner(
         chunks = split_context_history(context_history, max_context_tokens)
         # Every call below uses the transport-level cap, never the caller's
         # max_tokens: that is a visible-length target carried as a prompt
-        # directive (#3365), and capping the transport with it would truncate
-        # thinking models mid-word — or, on the map calls, starve the evidence
-        # extraction.
+        # directive (#3365) and enforced by the rewrite below, and capping the
+        # transport with it would truncate thinking models mid-word — or, on the
+        # map calls, starve the evidence extraction.
         if len(chunks) <= 1:
             prompt = build_final_prompt(
                 query,
@@ -753,6 +819,7 @@ async def _run_reflect_agent_inner(
                         f"final_map_{i}",
                         CLAIMS_SYSTEM_PROMPT,
                         synthesis_max_completion_tokens,
+                        temperature=_map_temperature(),
                     )
                     for i, chunk in enumerate(chunks, 1)
                 )
@@ -775,6 +842,25 @@ async def _run_reflect_agent_inner(
             raise ReflectNoAnswerError(
                 f"Reflect's final synthesis returned no text after {iterations_completed} iteration(s) "
                 f"over {len(chunks)} context chunk(s)."
+            )
+
+        # Enforce the visible-length budget before anything derives from the answer,
+        # so structured output is built from the capped text — same order as the
+        # done path.
+        rewrite = await _rewrite_to_length_budget(answer, None, max_tokens, llm_config)
+        if rewrite.applied:
+            answer = rewrite.markdown
+            total_input_tokens += rewrite.input_tokens
+            total_output_tokens += rewrite.output_tokens
+            total_cached_tokens += rewrite.cached_tokens
+            total_thoughts_tokens += rewrite.thoughts_tokens
+            llm_trace.append(
+                {
+                    "scope": "final_rewrite",
+                    "duration_ms": rewrite.duration_ms,
+                    "input_tokens": rewrite.input_tokens,
+                    "output_tokens": rewrite.output_tokens,
+                }
             )
 
         structured_output = None
@@ -876,6 +962,11 @@ async def _run_reflect_agent_inner(
             await _resolve_pending_cache()
 
         call_msg_count = len(messages)
+        # Time spent waiting on LLM concurrency permits is collected separately so a
+        # long `agent_N` entry can be read as "the provider was slow" and nothing
+        # else -- see llm_trace.set_queue_wait_sink (#3881).
+        queue_wait = LLMQueueWait()
+        queue_token = set_queue_wait_sink(queue_wait)
         try:
             ct_kwargs: dict[str, Any] = dict(
                 messages=messages,
@@ -889,6 +980,7 @@ async def _run_reflect_agent_inner(
                 ct_kwargs["cached_prefix_message_count"] = rolling_cache_boundary
             result = await llm_config.call_with_tools(**ct_kwargs)
             llm_duration = int((time.time() - llm_start) * 1000)
+            queued_ms = int(queue_wait.seconds * 1000)
             consecutive_errors = 0
             total_input_tokens += result.input_tokens
             total_output_tokens += result.output_tokens
@@ -898,30 +990,49 @@ async def _run_reflect_agent_inner(
                 {
                     "scope": f"agent_{iteration + 1}",
                     "duration_ms": llm_duration,
+                    "queued_ms": queued_ms,
                     "input_tokens": result.input_tokens,
                     "output_tokens": result.output_tokens,
                 }
             )
 
+        except OperationCancelledError:
+            # A cancellation is not a provider failure: never retried, never
+            # synthesized around, and it must reach the HTTP layer as itself so a
+            # client disconnect stays a 499 (issue #2122).
+            raise
         except Exception as e:
             err_duration = int((time.time() - llm_start) * 1000)
+            queued_ms = int(queue_wait.seconds * 1000)
             consecutive_errors += 1
-            logger.warning(f"[REFLECT {reflect_id}] LLM error on iteration {iteration + 1}: {e} ({err_duration}ms)")
-            llm_trace.append({"scope": f"agent_{iteration + 1}_err", "duration_ms": err_duration})
-            has_gathered_evidence = (
-                bool(available_memory_ids) or bool(available_mental_model_ids) or bool(available_observation_ids)
+            logger.warning(
+                f"[REFLECT {reflect_id}] LLM error on iteration {iteration + 1}: {describe_llm_error(e)} "
+                f"({err_duration}ms, {queued_ms}ms queued)"
+            )
+            llm_trace.append(
+                {"scope": f"agent_{iteration + 1}_err", "duration_ms": err_duration, "queued_ms": queued_ms}
             )
             # Context overflow errors must never be retried — retrying would only make them worse.
-            # Skip straight to final synthesis with whatever evidence we have.
+            # Skip straight to final synthesis with whatever evidence we have: the
+            # prompt was too big for the model, which is a budgeting problem, not a
+            # broken dependency, and the evidence gathered so far is intact.
             if _is_context_overflow_error(e):
                 logger.warning(
                     f"[REFLECT {reflect_id}] Context window exceeded on iteration {iteration + 1}, "
                     "forcing final synthesis from gathered evidence."
                 )
-            # For other errors: retry if no evidence yet (but cap consecutive errors to avoid long hangs)
-            elif not has_gathered_evidence and iteration < max_iterations - 1 and consecutive_errors < 2:
+                return await _forced_final_synthesis(iteration + 1)
+            # Any other error: retry (capped, so a persistently failing provider does
+            # not hang the run), then give up. Synthesizing an answer here instead
+            # would be built on an evidence set the failed turn never finished
+            # gathering, and callers cannot tell that from a complete one (#2894).
+            # The provider's own retries (429/5xx) already ran inside the call.
+            if iteration < max_iterations - 1 and consecutive_errors < 2:
                 continue
-            return await _forced_final_synthesis(iteration + 1)
+            raise
+
+        finally:
+            reset_queue_wait_sink(queue_token)
 
         # No tool calls this turn.
         if not result.tool_calls:
@@ -1085,13 +1196,23 @@ async def _run_reflect_agent_inner(
 
             # Process results and add to messages
             for position, tc, result_data in zip(allowed_positions, other_tools, tool_results):
+                if isinstance(result_data, OperationCancelledError):
+                    # The client went away mid-tool (recall propagates this — see
+                    # issue #2122). Let it through untouched so the HTTP layer still
+                    # returns 499; wrapping it would report a cancellation as a 500.
+                    raise result_data
                 if isinstance(result_data, Exception):
-                    # Tool execution failed - send error back to LLM so it can try again
+                    # A tool that raised is an infrastructure failure, not something
+                    # the model can retry its way out of. Feeding it back as a tool
+                    # result let the loop answer from an evidence set it knows is
+                    # incomplete, and nothing downstream could tell that answer from
+                    # one over an empty bank -- see ReflectToolExecutionError (#2894).
                     logger.warning(f"[REFLECT {reflect_id}] Tool {tc.name} failed with exception: {result_data}")
-                    output = {"error": f"Tool execution failed: {result_data}"}
-                    duration_ms = 0
-                else:
-                    output, duration_ms = result_data
+                    raise ReflectToolExecutionError(
+                        f"Reflect tool '{_normalize_tool_name(tc.name)}' failed on iteration {iteration + 1}: "
+                        f"{result_data}"
+                    ) from result_data
+                output, duration_ms = result_data
 
                 # Normalize tool name for consistent tracking
                 normalized_tool_name = _normalize_tool_name(tc.name)
@@ -1246,6 +1367,88 @@ def _document_from_rewrite(rewritten: str, previous_answer: str) -> CanonicalDoc
     return CanonicalDocument(markdown=text, structure=split_markdown(text))
 
 
+async def _rewrite_to_length_budget(
+    answer: str,
+    document: StructuredDocument | None,
+    max_tokens: int | None,
+    llm_config: "LLMProvider | None",
+) -> LengthRewrite:
+    """Shorten ``answer`` to the caller's visible-length budget, if it overruns.
+
+    ``max_tokens`` is a target for the *visible* answer, not a provider cap: on
+    thinking models a hard cap is eaten by reasoning tokens and truncates the
+    answer mid-word (#3365). So it is enforced here, after the answer exists —
+    which means every completion path has to call this. It used to live inline in
+    the done path only, leaving forced final synthesis with nothing but the prompt
+    directive from #3389 onwards, on exactly the long-running questions where
+    callers are most exposed (#4156).
+
+    Cost is bounded by the separate ``reflect_max_completion_tokens`` config
+    (uncapped by default), never by ``max_tokens``.
+    """
+    if not llm_config or max_tokens is None or count_prompt_tokens(answer) <= max_tokens:
+        return LengthRewrite(applied=False, markdown=answer, structure=document)
+
+    rewrite_start = time.time()
+    # In document mode the trim is asked for as a document too. Asking for
+    # prose here would put the model back in the business of writing the
+    # markdown that gets stored — on the one path where the answer is long
+    # enough that its structure matters most.
+    if document is not None:
+        rewrite_system = (
+            "Shorten the user's document so it fits within the requested token budget. "
+            "Preserve the key facts and the document's structure; drop lower-priority detail. "
+            'Respond ONLY with JSON: {"sections": [{"heading": "...", "level": 2, '
+            '"blocks": ["...", "..."]}]}. A heading carries no "#", and each block is one '
+            "paragraph, list, table or code fence."
+        )
+        rewrite_user = f"Target budget: {max_tokens} tokens.\n\nDocument to shorten:\n{answer}"
+    else:
+        rewrite_system = (
+            "Rewrite the user's text so it fits within the requested token budget. "
+            "Preserve the key facts and structure; drop lower-priority detail. "
+            "Respond with the rewritten text only, no preamble."
+        )
+        rewrite_user = f"Target budget: {max_tokens} tokens.\n\nText to rewrite:\n{answer}"
+
+    call_result = await llm_config.call(
+        messages=[
+            {"role": "system", "content": rewrite_system},
+            {"role": "user", "content": rewrite_user},
+        ],
+        scope="reflect",
+        temperature=get_config().llm_temperature_reflect,
+        max_completion_tokens=get_config().reflect_max_completion_tokens,
+    )
+    rewritten = call_result.content
+    rewrite_usage = call_result.usage
+    if document is not None:
+        trimmed = _document_from_rewrite(rewritten, answer)
+        return LengthRewrite(
+            applied=True,
+            markdown=trimmed.markdown,
+            structure=trimmed.structure,
+            duration_ms=int((time.time() - rewrite_start) * 1000),
+            input_tokens=rewrite_usage.input_tokens,
+            output_tokens=rewrite_usage.output_tokens,
+            cached_tokens=getattr(rewrite_usage, "cached_tokens", 0) or 0,
+            thoughts_tokens=getattr(rewrite_usage, "thoughts_tokens", 0) or 0,
+        )
+    return LengthRewrite(
+        applied=True,
+        # An empty rewrite must not empty the answer -- same rule the document
+        # branch enforces in _document_from_rewrite. Returning "" here would hand
+        # back a blank answer from past the ReflectNoAnswerError guard, throwing
+        # away a complete synthesis over a model hiccup (#2959).
+        markdown=rewritten.strip() or answer,
+        duration_ms=int((time.time() - rewrite_start) * 1000),
+        input_tokens=rewrite_usage.input_tokens,
+        output_tokens=rewrite_usage.output_tokens,
+        cached_tokens=getattr(rewrite_usage, "cached_tokens", 0) or 0,
+        thoughts_tokens=getattr(rewrite_usage, "thoughts_tokens", 0) or 0,
+    )
+
+
 async def _process_done_tool(
     done_call: "LLMToolCall",
     available_memory_ids: set[str],
@@ -1295,61 +1498,22 @@ async def _process_done_tool(
         )
 
     final_usage = usage
-    if llm_config and max_tokens is not None and count_prompt_tokens(answer) > max_tokens:
-        rewrite_start = time.time()
-        # In document mode the trim is asked for as a document too. Asking for
-        # prose here would put the model back in the business of writing the
-        # markdown that gets stored — on the one path where the answer is long
-        # enough that its structure matters most.
-        if document is not None:
-            rewrite_system = (
-                "Shorten the user's document so it fits within the requested token budget. "
-                "Preserve the key facts and the document's structure; drop lower-priority detail. "
-                'Respond ONLY with JSON: {"sections": [{"heading": "...", "level": 2, '
-                '"blocks": ["...", "..."]}]}. A heading carries no "#", and each block is one '
-                "paragraph, list, table or code fence."
-            )
-            rewrite_user = f"Target budget: {max_tokens} tokens.\n\nDocument to shorten:\n{answer}"
-        else:
-            # The token budget is enforced via the prompt, not a hard provider cap:
-            # on thinking models a hard cap is eaten by reasoning tokens and would
-            # truncate the rewrite mid-word (#3365). Cost is bounded by the separate
-            # reflect_max_completion_tokens config (uncapped by default).
-            rewrite_system = (
-                "Rewrite the user's text so it fits within the requested token budget. "
-                "Preserve the key facts and structure; drop lower-priority detail. "
-                "Respond with the rewritten text only, no preamble."
-            )
-            rewrite_user = f"Target budget: {max_tokens} tokens.\n\nText to rewrite:\n{answer}"
-
-        rewritten, rewrite_usage = await llm_config.call(
-            messages=[
-                {"role": "system", "content": rewrite_system},
-                {"role": "user", "content": rewrite_user},
-            ],
-            scope="reflect",
-            temperature=get_config().llm_temperature_reflect,
-            max_completion_tokens=get_config().reflect_max_completion_tokens,
-            return_usage=True,
-        )
-        if document is not None:
-            trimmed = _document_from_rewrite(rewritten, answer)
-            document, answer = trimmed.structure, trimmed.markdown
-        else:
-            answer = rewritten.strip()
+    rewrite = await _rewrite_to_length_budget(answer, document, max_tokens, llm_config)
+    if rewrite.applied:
+        document, answer = rewrite.structure, rewrite.markdown
         final_usage = TokenUsageSummary(
-            input_tokens=usage.input_tokens + rewrite_usage.input_tokens,
-            output_tokens=usage.output_tokens + rewrite_usage.output_tokens,
-            total_tokens=usage.total_tokens + rewrite_usage.input_tokens + rewrite_usage.output_tokens,
-            cached_tokens=usage.cached_tokens + (getattr(rewrite_usage, "cached_tokens", 0) or 0),
-            thoughts_tokens=usage.thoughts_tokens + (getattr(rewrite_usage, "thoughts_tokens", 0) or 0),
+            input_tokens=usage.input_tokens + rewrite.input_tokens,
+            output_tokens=usage.output_tokens + rewrite.output_tokens,
+            total_tokens=usage.total_tokens + rewrite.input_tokens + rewrite.output_tokens,
+            cached_tokens=usage.cached_tokens + rewrite.cached_tokens,
+            thoughts_tokens=usage.thoughts_tokens + rewrite.thoughts_tokens,
         )
         llm_trace.append(
             LLMCall(
                 scope="final_rewrite",
-                duration_ms=int((time.time() - rewrite_start) * 1000),
-                input_tokens=rewrite_usage.input_tokens,
-                output_tokens=rewrite_usage.output_tokens,
+                duration_ms=rewrite.duration_ms,
+                input_tokens=rewrite.input_tokens,
+                output_tokens=rewrite.output_tokens,
             )
         )
 
