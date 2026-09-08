@@ -17,6 +17,7 @@ import time
 import tracemalloc
 from array import array
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 
 import numpy as np
 from hindsight_api.engine.retain.link_utils import compute_semantic_links_within_batch
@@ -57,16 +58,31 @@ def _baseline(unit_ids: list[str], embeddings: Sequence, top_k: int = 50, *, thr
     return links
 
 
-# (name, threshold, description) -- "clustered" is the one that resembles a real retain batch:
-# topical clusters, so a realistic fraction of pairs clears the default 0.7 threshold.
+@dataclass(frozen=True)
+class Workload:
+    """One synthetic similarity regime to measure the pass against."""
+
+    threshold: float
+    description: str
+
+
+# "clustered" is the one that resembles a real retain batch: topical clusters, so a realistic
+# fraction of pairs clears the default 0.7 threshold. "sparse" deliberately produces no links at
+# all, which isolates the matrix product from the selection and materialisation work.
 WORKLOADS = {
-    "sparse": (0.7, "uncorrelated facts, near-zero links -- isolates the matrix product"),
-    "clustered": (0.7, "topical clusters at the default threshold -- the realistic retain batch"),
-    "dense": (0.3, "everything similar -- stresses candidate extraction and top-k"),
+    "sparse": Workload(0.7, "uncorrelated facts, near-zero links -- isolates the matrix product"),
+    "clustered": Workload(0.7, "topical clusters at the default threshold -- the realistic retain batch"),
+    "dense": Workload(0.3, "everything similar -- stresses candidate extraction and top-k"),
 }
 
 
-def _make_batch(n: int, kind: str, dim: int, seed: int = 0) -> tuple[list[str], list[array]]:
+@dataclass(frozen=True)
+class Batch:
+    unit_ids: list[str]
+    embeddings: list[array]
+
+
+def _make_batch(n: int, kind: str, dim: int, seed: int = 0) -> Batch:
     """Embeddings as ``array("f")`` -- the ``PackedEmbedding`` the retain pipeline carries."""
     rng = np.random.default_rng(seed)
     if kind == "sparse":
@@ -76,39 +92,59 @@ def _make_batch(n: int, kind: str, dim: int, seed: int = 0) -> tuple[list[str], 
         matrix = centers[rng.integers(0, len(centers), n)] + rng.normal(scale=0.55, size=(n, dim))
     else:
         matrix = rng.random(size=(n, dim))
-    return [f"u{i}" for i in range(n)], [array("f", row.tolist()) for row in matrix.astype(np.float32)]
+    return Batch(
+        unit_ids=[f"u{i}" for i in range(n)],
+        embeddings=[array("f", row.tolist()) for row in matrix.astype(np.float32)],
+    )
 
 
-def _one_round_ms(fn: Callable, unit_ids, embeddings, threshold: float, top_k: int) -> tuple[float, int]:
+@dataclass(frozen=True)
+class Round:
+    elapsed_ms: float
+    links: int
+
+
+@dataclass(frozen=True)
+class Timings:
+    before_ms: float
+    after_ms: float
+    links: int
+
+    @property
+    def speedup(self) -> float:
+        return self.before_ms / self.after_ms
+
+
+def _one_round(fn: Callable, batch: Batch, threshold: float, top_k: int) -> Round:
     gc.collect()
     started = time.perf_counter()
-    links = fn(unit_ids, embeddings, top_k=top_k, threshold=threshold)
+    links = fn(batch.unit_ids, batch.embeddings, top_k=top_k, threshold=threshold)
     elapsed = (time.perf_counter() - started) * 1000
     count = len(links)
     del links
-    return elapsed, count
+    return Round(elapsed_ms=elapsed, links=count)
 
 
-def _interleaved_best_ms(
-    before: Callable, after: Callable, unit_ids, embeddings, threshold: float, top_k: int, repeats: int
-) -> tuple[float, float, int]:
+def _interleaved_best(
+    before: Callable, after: Callable, batch: Batch, threshold: float, top_k: int, repeats: int
+) -> Timings:
     """Alternate the two implementations so CPU frequency drift hits both equally."""
     for fn in (before, after):
-        fn(unit_ids, embeddings, top_k=top_k, threshold=threshold)  # warm BLAS and the allocator
+        fn(batch.unit_ids, batch.embeddings, top_k=top_k, threshold=threshold)  # warm BLAS and the allocator
     best_before = best_after = float("inf")
     links = 0
     for _ in range(repeats):
-        elapsed, _ = _one_round_ms(before, unit_ids, embeddings, threshold, top_k)
-        best_before = min(best_before, elapsed)
-        elapsed, links = _one_round_ms(after, unit_ids, embeddings, threshold, top_k)
-        best_after = min(best_after, elapsed)
-    return best_before, best_after, links
+        best_before = min(best_before, _one_round(before, batch, threshold, top_k).elapsed_ms)
+        round_after = _one_round(after, batch, threshold, top_k)
+        best_after = min(best_after, round_after.elapsed_ms)
+        links = round_after.links
+    return Timings(before_ms=best_before, after_ms=best_after, links=links)
 
 
-def _peak_mb(fn: Callable, unit_ids, embeddings, threshold: float, top_k: int) -> float:
+def _peak_mb(fn: Callable, batch: Batch, threshold: float, top_k: int) -> float:
     gc.collect()
     tracemalloc.start()
-    links = fn(unit_ids, embeddings, top_k=top_k, threshold=threshold)
+    links = fn(batch.unit_ids, batch.embeddings, top_k=top_k, threshold=threshold)
     _, peak = tracemalloc.get_traced_memory()
     tracemalloc.stop()
     del links
@@ -123,8 +159,8 @@ def run_benchmark(
     workloads: Sequence[str],
 ) -> None:
     for kind in workloads:
-        threshold, description = WORKLOADS[kind]
-        table = Table(title=f"{kind} (threshold={threshold}) -- {description}", title_justify="left")
+        workload = WORKLOADS[kind]
+        table = Table(title=f"{kind} (threshold={workload.threshold}) -- {workload.description}", title_justify="left")
         table.add_column("N", justify="right", style="cyan")
         table.add_column("Links", justify="right")
         table.add_column("Before (ms)", justify="right")
@@ -135,18 +171,18 @@ def run_benchmark(
         table.add_column("Peak RAM", justify="right", style="bold yellow")
 
         for n in n_values:
-            unit_ids, embeddings = _make_batch(n, kind, dim)
-            before_ms, after_ms, links = _interleaved_best_ms(
-                _baseline, compute_semantic_links_within_batch, unit_ids, embeddings, threshold, top_k, repeats
+            batch = _make_batch(n, kind, dim)
+            timings = _interleaved_best(
+                _baseline, compute_semantic_links_within_batch, batch, workload.threshold, top_k, repeats
             )
-            before_mb = _peak_mb(_baseline, unit_ids, embeddings, threshold, top_k)
-            after_mb = _peak_mb(compute_semantic_links_within_batch, unit_ids, embeddings, threshold, top_k)
+            before_mb = _peak_mb(_baseline, batch, workload.threshold, top_k)
+            after_mb = _peak_mb(compute_semantic_links_within_batch, batch, workload.threshold, top_k)
             table.add_row(
                 str(n),
-                f"{links:,}",
-                f"{before_ms:.2f}",
-                f"{after_ms:.2f}",
-                f"{before_ms / after_ms:.2f}x",
+                f"{timings.links:,}",
+                f"{timings.before_ms:.2f}",
+                f"{timings.after_ms:.2f}",
+                f"{timings.speedup:.2f}x",
                 f"{before_mb:.2f}",
                 f"{after_mb:.2f}",
                 f"-{(1 - after_mb / before_mb) * 100:.0f}%",
