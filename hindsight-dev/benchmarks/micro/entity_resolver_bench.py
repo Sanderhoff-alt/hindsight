@@ -1,9 +1,18 @@
-"""Microbenchmark for entity resolver and intrabatch deduplication (PERF-R17 / PERF-R18 / P0-17).
+"""Microbenchmark for the in-batch entity name dedup on the retain path.
 
-Measures wall time, CPU time, and peak memory (tracemalloc) comparing:
-- ``baseline_quadratic``: Previous O(N^2) pairwise comparisons without candidate caching;
-- ``length_pruned_quadratic``: O(N^2) with length pre-pruning;
-- ``prefix_filtering (prod)``: Production Prefix Filtering Principle (All-Pairs Set Similarity Join).
+``EntityResolver`` folds same-batch surface variants of a new entity name together before
+inserting them, by finding every pair of new names whose pg_trgm similarity clears the merge
+cutoff. Measures wall time, CPU time and peak memory (tracemalloc) for three ways of finding
+those pairs:
+
+- ``baseline_quadratic``: the O(N^2) double loop this replaced — also the conformance reference;
+- ``length_pruned_quadratic``: the same loop with a set-size pre-filter, the obvious cheaper fix;
+- ``prefix_filtering (prod)``: what ``_find_intrabatch_similar_pairs`` does today.
+
+Every variant must return the same pairs; the ``status`` column says whether it did. Workloads
+are built from *distinct* names because the caller passes ``rep_by_lower.values()`` — one entry
+per distinct new name in the batch — and include the shape that defeats prefix filtering, so a
+regression on it is visible here rather than only in review.
 
 Usage:
     ./scripts/benchmarks/run-entity-resolver-bench.sh
@@ -56,7 +65,7 @@ class VariantResult:
     peak_kib: float  # tracemalloc peak of a separate single run
     total_entities: int
     pairs_found: int
-    matches_baseline: bool
+    matches_baseline: bool  # same pairs as baseline_quadratic, which is the reference for every variant
 
 
 # --- Baseline and Variant implementations ---
@@ -261,19 +270,24 @@ def _measure_peak_kib(
     return peak / 1024
 
 
+def _normalised_pairs(pairs: Sequence[_SimilarNamePair]) -> set[tuple[str, str]]:
+    """Pairs as an order-insensitive set, so variants are compared on membership alone."""
+    return {(p.name_a, p.name_b) if p.name_a < p.name_b else (p.name_b, p.name_a) for p in pairs}
+
+
 def run(workloads: Sequence[Workload], repeats: int) -> list[VariantResult]:
     variants = build_variants()
     results: list[VariantResult] = []
 
     for wl in workloads:
-        baseline_pairs: set[tuple[str, str]] | None = None
+        # Conformance is measured against the quadratic loop specifically, not against whichever
+        # variant happened to run first — taking the first would have compared the optimisation
+        # to itself and reported "exact" however wrong it was.
+        baseline_pairs = _normalised_pairs(_v_baseline_quadratic(wl.entity_names, wl.threshold))
         for name, fn in variants.items():
             timing = _measure(fn, wl.entity_names, wl.threshold, repeats)
             peak_kib = _measure_peak_kib(fn, wl.entity_names, wl.threshold)
-            pair_set = {(p.name_a, p.name_b) if p.name_a < p.name_b else (p.name_b, p.name_a) for p in timing.pairs}
-
-            if baseline_pairs is None:
-                baseline_pairs = pair_set
+            pair_set = _normalised_pairs(timing.pairs)
 
             results.append(
                 VariantResult(
