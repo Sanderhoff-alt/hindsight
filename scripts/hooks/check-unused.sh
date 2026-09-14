@@ -11,7 +11,7 @@
 # This script is ADVISORY (always exits 0): vulture's function/argument
 # heuristics produce false positives against FastAPI / SQLAlchemy / Pydantic /
 # ABC patterns, so its output is a review aid, not a gate. The CI job
-# (check-unused-code) additionally runs `knip --include files,dependencies` as a
+# (check-unused-code) additionally runs `knip --include files,dependencies,unlisted` as a
 # separate BLOCKING step — orphaned files and dead package.json deps are
 # unambiguous and fail the build.
 #
@@ -40,7 +40,21 @@ done
 
 # --- TypeScript: knip (unused files / exports / dependencies) -----------------
 section "knip: hindsight-control-plane"
-(cd "$REPO_ROOT/hindsight-control-plane" && npx --yes knip@5 --no-progress 2>&1) || true
+# npm workspaces hoist binaries to repo-root node_modules/.bin, but support
+# standalone workspace node_modules as well. Directly invoke the probed binary
+# rather than npx to eliminate registry fallback / dynamic upgrade surfaces.
+KNIP_BIN=""
+if [ -x "$REPO_ROOT/hindsight-control-plane/node_modules/.bin/knip" ]; then
+  KNIP_BIN="$REPO_ROOT/hindsight-control-plane/node_modules/.bin/knip"
+elif [ -x "$REPO_ROOT/node_modules/.bin/knip" ]; then
+  KNIP_BIN="$REPO_ROOT/node_modules/.bin/knip"
+fi
+
+if [ -n "$KNIP_BIN" ]; then
+  (cd "$REPO_ROOT/hindsight-control-plane" && "$KNIP_BIN" --no-progress 2>&1) || true
+else
+  echo "(control plane dependencies not installed; skipped advisory knip scan)"
+fi
 
 printf '\n\033[2m(advisory — informational only, does not fail the build)\033[0m\n'
 exit 0

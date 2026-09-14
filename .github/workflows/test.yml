@@ -5226,8 +5226,10 @@ jobs:
   # BLOCKING via the ruff config + the verify-generated-files job).
   #
   # - knip (control plane): BLOCKING on unused files / dependencies / unlisted
-  #   dependencies. These are unambiguous — an orphaned file or a dead
-  #   package.json entry — so they fail the build.
+  #   dependencies, using the version locked in control-plane devDependencies
+  #   (npx --no-install prevents silent fallback/upgrade to latest major).
+  #   These are unambiguous — an orphaned file or a dead package.json entry — so
+  #   they fail the build.
   # - vulture (Python) + knip unused *exports*: ADVISORY only. vulture's
   #   function/argument heuristics false-positive on FastAPI/SQLAlchemy/Pydantic
   #   patterns, and the control plane intentionally keeps an unused shadcn/ui
@@ -5263,7 +5265,7 @@ jobs:
 
     - name: knip — unused files / dependencies (blocking)
       working-directory: hindsight-control-plane
-      run: npx --yes knip@5 --no-progress --include files,dependencies,unlisted
+      run: npx --no-install knip --no-progress --include files,dependencies,unlisted
 
     - name: Advisory scan — vulture + knip exports
       continue-on-error: true
