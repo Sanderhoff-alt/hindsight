@@ -8564,20 +8564,16 @@ class MemoryEngine(MemoryEngineInterface):
                     superseded_ids: set[str] = set()
                     from .memories import get_memories
 
-                    # A backend that carries an observation's sources on the recalled result has
-                    # already paid for this record — hydration fetched it whole. Re-fetching it to
-                    # read one field back off is a second addressed read per recall, and against a
-                    # store whose reads are round trips that is most of what this step costs. Same
-                    # all-or-nothing shape as the entity fast path: one observation that did not
-                    # carry its sources means the read has to happen anyway, so it covers them all.
-                    if all(sr.retrieval.source_memory_ids is not None for sr in observation_srs):
-                        obs_rows = [{"source_memory_ids": sr.retrieval.source_memory_ids} for sr in observation_srs]
-                    else:
+                    # An observation whose sources were already resolved (e.g. by hydration
+                    # or an earlier pass) carries them on its candidate result, skipping the
+                    # store read. If any candidate lacks its sources, resolve them all in one
+                    # addressed read and cache them onto sr.retrieval.source_memory_ids: Step
+                    # 5.5 (chunk resolution) and Step 6 (source facts) reuse this in-memory
+                    # mapping to avoid re-querying observation sources across the pipeline.
+                    if not all(sr.retrieval.source_memory_ids is not None for sr in observation_srs):
                         async with acquire_with_retry(backend) as dedup_conn:
-                            # The observation carries its sources; the store resolves
-                            # them all in one addressed read.
-                            obs_rows = [
-                                {"source_memory_ids": m.source_memory_ids}
+                            obs_by_id = {
+                                m.unit_id: [str(s) for s in (m.source_memory_ids or [])]
                                 for m in await get_memories().get_memories(
                                     conn=dedup_conn,
                                     fq_table=fq_table,
@@ -8585,14 +8581,17 @@ class MemoryEngine(MemoryEngineInterface):
                                     unit_ids=[str(o) for o in observation_ids],
                                 )
                                 if m.fact_type == "observation"
-                            ]
+                            }
+                            for sr in observation_srs:
+                                if sr.id in obs_by_id:
+                                    sr.retrieval.source_memory_ids = obs_by_id[sr.id]
                     tracer.add_phase_metric(
                         "prefer_observations_dedup",
                         time.time() - dedup_start,
                         {"observations_considered": len(observation_ids)},
                     )
-                    for obs_row in obs_rows:
-                        for sid in obs_row["source_memory_ids"] or []:
+                    for sr in observation_srs:
+                        for sid in sr.retrieval.source_memory_ids or []:
                             superseded_ids.add(str(sid))
                     if superseded_ids:
                         before_count = len(scored_results)
@@ -8666,7 +8665,10 @@ class MemoryEngine(MemoryEngineInterface):
                             bank_id=bank_id,
                             unit_ids=[str(o) for o in observation_ids_ordered],
                         )
-                        sources_by_obs = {u.unit_id: list(u.source_memory_ids) for u in obs_units}
+                        sources_by_obs = {u.unit_id: [str(s) for s in (u.source_memory_ids or [])] for u in obs_units}
+                        for sr in top_scored:
+                            if sr.retrieval.fact_type == "observation" and sr.id in sources_by_obs:
+                                sr.retrieval.source_memory_ids = sources_by_obs[sr.id]
                     src_ids = [sid for sids in sources_by_obs.values() for sid in sids]
                     srcs = await _obs_store.get_memories(
                         conn=None, fq_table=fq_table, bank_id=bank_id, unit_ids=list(dict.fromkeys(src_ids))
@@ -8682,39 +8684,71 @@ class MemoryEngine(MemoryEngineInterface):
                                 obs_chunk_ids.setdefault(str(_obs_uuid), []).append(_cid)
                                 seen_chunk_ids.add(_cid)
                 elif observation_ids_ordered:
-                    async with acquire_with_retry(backend) as obs_conn:
-                        if self._backend.ops.uses_observation_sources_table:
-                            obs_source_rows = await obs_conn.fetch(
-                                f"""
-                                SELECT os.observation_id AS obs_id, mu.chunk_id
-                                FROM {fq_table("observation_sources")} os
-                                JOIN {fq_table("memory_units")} mu
-                                  ON mu.id = os.source_id
-                                WHERE os.observation_id = ANY($1::uuid[])
-                                  AND mu.chunk_id IS NOT NULL
-                                ORDER BY array_position($1::uuid[], os.observation_id)
-                                """,
-                                observation_ids_ordered,
-                            )
-                        else:
-                            obs_source_rows = await obs_conn.fetch(
-                                f"""
-                                SELECT obs.id AS obs_id, mu.chunk_id
-                                FROM {fq_table("memory_units")} obs
-                                JOIN {fq_table("memory_units")} mu
-                                  ON mu.id = ANY(obs.source_memory_ids)
-                                WHERE obs.id = ANY($1::uuid[])
-                                  AND mu.chunk_id IS NOT NULL
-                                ORDER BY array_position($1::uuid[], obs.id)
-                                """,
-                                observation_ids_ordered,
-                            )
-                    for row in obs_source_rows:
-                        obs_id = str(row["obs_id"])
-                        cid = row["chunk_id"]
-                        if cid not in seen_chunk_ids:
-                            obs_chunk_ids.setdefault(obs_id, []).append(cid)
-                            seen_chunk_ids.add(cid)
+                    # On backends where source_memory_ids column is the single source of truth
+                    # (e.g., PostgreSQL) and the observation candidates already carry their
+                    # source IDs (from hydration or Step 4.8), resolve chunk IDs directly by
+                    # querying memory_units for the source IDs in memory without re-joining
+                    # observation rows.
+                    # Backends using an observation_sources junction table (e.g., Oracle) must
+                    # use the junction table JOIN because external paths such as transfer import
+                    # populate only the junction table.
+                    if not self._backend.ops.uses_observation_sources_table and all(
+                        carried_sources.get(str(o)) is not None for o in observation_ids_ordered
+                    ):
+                        sources_by_obs = {str(o): (carried_sources[str(o)] or []) for o in observation_ids_ordered}
+                        all_src_ids = list(dict.fromkeys(sid for sids in sources_by_obs.values() for sid in sids))
+                        if all_src_ids:
+                            async with acquire_with_retry(backend) as obs_conn:
+                                src_rows = await obs_conn.fetch(
+                                    f"""
+                                    SELECT id, chunk_id
+                                    FROM {fq_table("memory_units")}
+                                    WHERE id = ANY($1::uuid[])
+                                      AND chunk_id IS NOT NULL
+                                    """,
+                                    [uuid.UUID(sid) for sid in all_src_ids],
+                                )
+                            src_chunk = {str(r["id"]): r["chunk_id"] for r in src_rows}
+                            for _obs_uuid in observation_ids_ordered:
+                                for _sid in sources_by_obs.get(str(_obs_uuid), []):
+                                    _cid = src_chunk.get(_sid)
+                                    if _cid and _cid not in seen_chunk_ids:
+                                        obs_chunk_ids.setdefault(str(_obs_uuid), []).append(_cid)
+                                        seen_chunk_ids.add(_cid)
+                    else:
+                        async with acquire_with_retry(backend) as obs_conn:
+                            if self._backend.ops.uses_observation_sources_table:
+                                obs_source_rows = await obs_conn.fetch(
+                                    f"""
+                                    SELECT os.observation_id AS obs_id, mu.chunk_id
+                                    FROM {fq_table("observation_sources")} os
+                                    JOIN {fq_table("memory_units")} mu
+                                      ON mu.id = os.source_id
+                                    WHERE os.observation_id = ANY($1::uuid[])
+                                      AND mu.chunk_id IS NOT NULL
+                                    ORDER BY array_position($1::uuid[], os.observation_id)
+                                    """,
+                                    observation_ids_ordered,
+                                )
+                            else:
+                                obs_source_rows = await obs_conn.fetch(
+                                    f"""
+                                    SELECT obs.id AS obs_id, mu.chunk_id
+                                    FROM {fq_table("memory_units")} obs
+                                    JOIN {fq_table("memory_units")} mu
+                                      ON mu.id = ANY(obs.source_memory_ids)
+                                    WHERE obs.id = ANY($1::uuid[])
+                                      AND mu.chunk_id IS NOT NULL
+                                    ORDER BY array_position($1::uuid[], obs.id)
+                                    """,
+                                    observation_ids_ordered,
+                                )
+                        for row in obs_source_rows:
+                            obs_id = str(row["obs_id"])
+                            cid = row["chunk_id"]
+                            if cid not in seen_chunk_ids:
+                                obs_chunk_ids.setdefault(obs_id, []).append(cid)
+                                seen_chunk_ids.add(cid)
 
                 # Flatten ordered_items into chunk_ids_ordered, expanding obs placeholders
                 chunk_ids_ordered = []

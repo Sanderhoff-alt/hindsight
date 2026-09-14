@@ -14,6 +14,11 @@ Everything is seeded directly through SQL (no LLM) so the assertions are exact:
 With ``prefer_observations=True`` the raw fact is dropped from the results, so all
 three enrichments have to reach it transitively: chunks via the observation's
 source, source_facts from the source row, entities inherited from the source.
+
+Also asserts the query execution plan: verifying that Step 4.8 carries observation
+sources through to Step 5.5 and Step 6, so Step 5.5 resolves chunks directly
+without re-joining observation rows and Step 6 reuses the in-memory sources without
+issuing a redundant round-trip.
 """
 
 import uuid
@@ -103,12 +108,43 @@ async def seeded_combo(memory, request_context):
 
 @pytest.mark.asyncio
 @pytest.mark.memory_backend_incompatible
-async def test_recall_all_enrichments_together_on_default_store(memory, request_context, seeded_combo):
-    """All three enrichment flags at once on PostgresMemories, with prefer_observations."""
+async def test_recall_all_enrichments_together_on_default_store(memory, request_context, seeded_combo, monkeypatch):
+    """All three enrichment flags at once on PostgresMemories, with prefer_observations.
+
+    Verifies functional enrichment correctness (chunks, source facts, and entities)
+    and asserts the SQL plan avoids redundant observation source queries and joins.
+    """
     bank_id = seeded_combo["bank_id"]
     fact_id = seeded_combo["fact_id"]
     obs_id = seeded_combo["obs_id"]
     chunk_id = seeded_combo["chunk_id"]
+
+    backend = await memory._get_backend()
+    executed_queries: list[str] = []
+    orig_acquire = backend.acquire
+
+    class _InterceptingAcquire:
+        def __init__(self, ctx):
+            self._ctx = ctx
+
+        async def __aenter__(self):
+            conn = await self._ctx.__aenter__()
+            orig_fetch = conn.fetch
+
+            async def logged_fetch(query, *args, **kwargs):
+                executed_queries.append(str(query))
+                return await orig_fetch(query, *args, **kwargs)
+
+            conn.fetch = logged_fetch
+            return conn
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            return await self._ctx.__aexit__(exc_type, exc_val, exc_tb)
+
+    def hooked_acquire(*args, **kwargs):
+        return _InterceptingAcquire(orig_acquire(*args, **kwargs))
+
+    monkeypatch.setattr(backend, "acquire", hooked_acquire)
 
     result = await memory.recall_async(
         bank_id=bank_id,
@@ -140,3 +176,22 @@ async def test_recall_all_enrichments_together_on_default_store(memory, request_
     # entities: inherited by the observation from its source through source_memory_ids
     assert by_id[obs_id].entities and "billing service" in by_id[obs_id].entities
     assert result.entities and "billing service" in result.entities
+
+    # Interception sanity check: ensure queries were actually recorded
+    assert executed_queries, "Query interceptor did not record any queries"
+
+    # Step 6: observation source_memory_ids should NOT be re-queried since Step 4.8 carried them
+    redundant_sf_queries = [
+        q for q in executed_queries if "SELECT id, source_memory_ids FROM" in q and "fact_type = 'observation'" in q
+    ]
+    assert len(redundant_sf_queries) == 0, (
+        f"Expected Step 6 redundant query to be eliminated, but executed: {redundant_sf_queries}"
+    )
+
+    # Step 5.5: chunk IDs resolved directly via WHERE id = ANY(...) rather than re-joining observation rows
+    join_chunk_queries = [q for q in executed_queries if "ON mu.id = ANY(obs.source_memory_ids)" in q]
+    assert len(join_chunk_queries) == 0, (
+        f"Expected Step 5.5 observation JOIN query to be skipped, but executed: {join_chunk_queries}"
+    )
+    direct_chunk_queries = [q for q in executed_queries if "SELECT id, chunk_id" in q and "WHERE id = ANY" in q]
+    assert len(direct_chunk_queries) >= 1, f"Expected direct chunk query in Step 5.5, got none: {executed_queries}"
