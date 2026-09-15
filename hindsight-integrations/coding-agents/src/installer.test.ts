@@ -724,6 +724,34 @@ describe("dsh installer", () => {
     expect(readFileSync(patchPath(ctx), "utf8").trim()).toBe("[]");
   });
 
+  it("survives install -> uninstall -> install without writing two YAML documents", () => {
+    const ctx = makeCtx();
+    run(["install", "dsh"], ctx);
+    run(["uninstall", "dsh"], ctx);
+    run(["install", "dsh"], ctx);
+    const patch = readFileSync(patchPath(ctx), "utf8");
+    // The previous version carried the `[]` placeholder uninstall leaves behind into `others`,
+    // which is truthy, so it emitted `[]` AND our block — two top-level documents. dsh parses this
+    // file as a top-level array, refuses that, and then fails BOOT for EVERY profile.
+    expect(patch).not.toContain("[]");
+    // Nothing precedes our block: the file opens on our marker, not on a stray `[]` document.
+    expect(patch.trim().startsWith("# HINDSIGHT_CODING_AGENTS_DSH_START")).toBe(true);
+    expect(patch.match(/- id: hindsight/g)).toHaveLength(1);
+  });
+
+  it("repairs a home layer an earlier version already corrupted with a leading `[]`", () => {
+    const ctx = makeCtx();
+    run(["install", "dsh"], ctx);
+    // Byte-for-byte the state that install-after-uninstall used to leave on disk.
+    writeFileSync(patchPath(ctx), `[]\n\n${readFileSync(patchPath(ctx), "utf8")}`);
+    run(["install", "dsh"], ctx);
+    const patch = readFileSync(patchPath(ctx), "utf8");
+    // A re-install is the documented repair for a moved package, so it has to heal this too —
+    // otherwise the machine stays unbootable with no way out but hand-editing the file.
+    expect(patch).not.toContain("[]");
+    expect(patch.match(/- id: hindsight/g)).toHaveLength(1);
+  });
+
   it("uninstall keeps the user's own patches", () => {
     const ctx = makeCtx();
     run(["install", "dsh"], ctx);
