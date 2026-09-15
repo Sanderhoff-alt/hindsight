@@ -59,14 +59,32 @@ function writeJsonAt(path: string, value: unknown): void {
 
 // configureServer honors HINDSIGHT_CONFIG — a developer shell exporting it must not leak the
 // suite's --server writes into their real config file ("" is falsy → the per-test home is used).
+//
+// DSH_HOME leaks the same way, and more sharply: `dshHome()` is `process.env.DSH_HOME ||
+// join(c.home, ".dsh")`, so the roster tests that install the dsh entrypoint into a temp `ctx.home`
+// write the DEVELOPER'S own home patch whenever their shell exports it — and the row they leave
+// behind points at a temp dir this suite then deletes, i.e. a dsh that no longer boots. Unset for
+// the whole FILE, not just the dsh block: the loops that leak live outside that block, and the
+// reader in core/history.ts honors DSH_HOME too.
 beforeEach(() => {
   vi.stubEnv("HINDSIGHT_CONFIG", "");
+  vi.stubEnv("DSH_HOME", "");
+  delete process.env.DSH_HOME;
 });
 
 afterEach(() => {
   vi.unstubAllEnvs();
   while (homes.length) rmSync(homes.pop()!, { recursive: true, force: true });
   vi.clearAllMocks();
+});
+
+// The env guards above are load-bearing rather than hygiene, and dropping one is silent on CI: the
+// leak they prevent only shows up on a machine whose shell exports the variable. This is what
+// notices.
+describe("env isolation", () => {
+  it("unsets DSH_HOME, so no test can write a real dsh home patch", () => {
+    expect(process.env.DSH_HOME).toBeUndefined();
+  });
 });
 
 describe("claude-code installer", () => {
@@ -688,11 +706,6 @@ describe("cline-cli installer", () => {
 
 describe("dsh installer", () => {
   const patchPath = (ctx: InstallCtx) => join(ctx.home, ".dsh", "cordis.patch.yml");
-
-  // The harness home is env-driven; pin it to the test home so a developer's real $DSH_HOME
-  // (or a CI runner's) can never be the thing this suite writes to.
-  beforeEach(() => vi.stubEnv("DSH_HOME", ""));
-  afterEach(() => vi.unstubAllEnvs());
 
   it("registers the plugin as a file:// row in the home patch layer", () => {
     const ctx = makeCtx();
