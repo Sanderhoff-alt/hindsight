@@ -52,9 +52,7 @@ import { binOnPath } from "./util";
 
 export const PACKAGE_NAME = "@vectorize-io/hindsight-coding-agents";
 
-/** What `npm view` may hand back before the value is allowed anywhere near a spawn: strictly
- *  digits.digits.digits with an optional pre-release suffix. See npmViewVersion for why this is
- *  a whitelist rather than "whatever isNewer can chew". */
+/** A version `npm view` may return: digits.digits.digits with an optional pre-release. */
 const RELEASE_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$/;
 
 /** How often the registry is asked. One session a day pays ~1.2s (the npm CLI startup behind
@@ -67,12 +65,8 @@ export const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
  *  the request, measured at ~1.2s where a bare registry fetch takes ~0.9s. */
 const NPM_VIEW_TIMEOUT_MS = 5000;
 
-/** Hard wall on the whole lookup, past the spawn timeout. The spawn timeout SIGTERMs npm itself,
- *  but `close` — unlike `exit` — waits for the stdio pipes to drain, and a grandchild that
- *  inherited this pipe would stall the promise past the kill with nobody left to reap it. npm
- *  view spawns no children today; this deadline is what keeps that true from mattering: it
- *  force-settles the lookup as failed and SIGKILLs the direct child, so the update lock is
- *  released on the spot instead of being held to LOCK_STALE_MS. */
+/** Hard wall past the spawn timeout: `close` waits for stdio to drain, so a grandchild holding
+ *  the pipe could stall the lookup (and hold the update lock) after npm itself is killed. */
 const NPM_VIEW_HARD_DEADLINE_MS = NPM_VIEW_TIMEOUT_MS + 1000;
 
 /** Where the last check's timestamp lives — inside the staged runtime, so it is removed with it. */
@@ -270,38 +264,15 @@ function stampCheck(file: string, now: number, latest: string): void {
 
 /** Ask npm for the published version, or "" if it cannot be determined.
  *
- * `npm view <pkg> version --json`, deliberately NOT a bare fetch of
- * `https://registry.npmjs.org/<pkg>/latest`: the update this triggers is `npx <pkg>@<version>`,
- * and npx resolves through the user's npm config — registry mirror, proxy, private registry
- * auth in .npmrc. A hardcoded registry.npmjs.org fetch desynchronises the two: on a mirrored
- * machine the check times out while npx works fine (auto-update silently never fires), and
- * where the two registries are reachable but differ, the check can pin `@<version>` to
- * something the configured registry cannot resolve yet. Going through npm itself makes the
- * check and the install read the same registry by construction. Costs a real npm invocation
- * (once per CHECK_INTERVAL_MS, inside NPM_VIEW_TIMEOUT_MS) — measured ~0.3s over a bare fetch.
+ * `npm view`, not a fetch of registry.npmjs.org: the update this triggers is `npx <pkg>@<v>`,
+ * which resolves through the user's npm config (mirror, proxy, private registry). The hardcoded
+ * fetch disagreed with it — on a mirrored machine it timed out while npx worked, so auto-update
+ * silently never fired. Runs in the caller's cwd on purpose, like the npx spawn, so both read
+ * the same project .npmrc.
  *
- * Deliberately run in the caller's cwd rather than a pinned homedir: `npm view` reads the
- * project-level .npmrc and package.json sitting in it, exactly as the `npx` update spawn does
- * (it inherits the same cwd), so the check and the install stay consistent. The cost is cwd
- * sensitivity — a broken project package.json or a project .npmrc pointing at an unreachable
- * private registry makes this fail — but that is the same verdict npx would reach, which is the
- * point. Do not "fix" this by chdir-ing; it would reintroduce the two-source desync.
- *
- * History: the bare-fetch era also carried a 406 bug — the abbreviated-packument accept header
- * is only served on the packument (`/<pkg>`), not `/<pkg>/latest` — whose "" was read as "no
- * newer version". The lesson transfers: any failure here must read as "no newer version", never
- * as "unknown, try harder next session".
- *
- * Every failure path also logs its reason at info, from HERE rather than from the caller: only
- * the leaf has the "why" (exit code, signal, the stdout that did not parse), the caller only
- * sees "", and the state file's `latest: ""` is indistinguishable from "already current" —
- * without the line, "auto-update never works on my machine" is unfalsifiable. This restores the
- * symmetry every other did-nothing exit already has (managed outside npx, not on PATH, update
- * spawn failed). Exactly one line per lookup, by structure: the reason rides done(), so the
- * settled guard covers the log as well — Node reports a spawn failure as error FOLLOWED BY
- * close, and the trailing event must not add a second, wronger line. Bounded cost: after the
- * 24h gate and the lock, at most one line per machine per day. Level is info, not warn:
- * offline is a normal state, not something to act on.
+ * Every failure resolves "" ("no newer version") and logs exactly one info line with the
+ * reason — without it a failed check is indistinguishable from "already current". The reason
+ * rides done() so the settled guard also dedupes the log (a spawn failure is error THEN close).
  */
 export async function npmViewVersion(
   pkg: string,
@@ -328,44 +299,27 @@ export async function npmViewVersion(
       child.stdout?.on("data", (d: string) => {
         out += d;
       });
-      // A pipe socket's 'error' with no listener is an uncaught exception — an async event
-      // the try/catch around the spawn cannot see. This runs in a session-start hook process,
-      // where "an update check must never break a session" is the module's first invariant.
+      // An unhandled pipe 'error' would crash the session-start hook.
       child.stdout?.on("error", (e) => done("", describeError(e)));
-      // ENOENT (no npm — or Windows, where the binary is npm.cmd and spawn without a shell
-      // cannot see it), EACCES. Node follows this with close(-2); done's guard keeps that
-      // trailing event from logging "exited -2" about a process that never ran.
+      // ENOENT / EACCES (incl. Windows, where spawn without a shell can't see npm.cmd).
       child.on("error", (e) => done("", describeError(e)));
-      // close, not exit: the stdout data must have finished arriving before the parse. The
-      // grandchild-pipe stall this can wait on is what NPM_VIEW_HARD_DEADLINE_MS covers.
+      // close, not exit: stdout must have fully arrived before the parse.
       child.on("close", (code, signal) => {
-        // `timeout`'s kill arrives as close(null, "SIGTERM"), so the signal is part of the story.
         if (code !== 0) return done("", `npm view exited ${code ?? signal}`);
         try {
           const v = JSON.parse(out.trim()) as unknown;
-          // --json on a single field is a quoted string; anything else (an array when npm
-          // matches multiple, an object on an old npm) is not a version we can pin. The raw
-          // stdout riding the failure line is the only clue separating "npm's --json output
-          // changed" from a network failure.
+          // --json on one field is a quoted string; anything else is not a version to pin.
           if (typeof v !== "string")
             return done("", `unparsable npm output: ${out.trim().slice(0, 80)}`);
-          // A whitelist, not "looks parseable". Today the value lands in one argv entry, where
-          // it is inert — but it is destined for a command line the moment a Windows shell
-          // wrapper lands (npm.cmd, deliberately deferred to its own issue), and isNewer does
-          // NOT stop hostile strings: parseInt("3 && calc") is 3, so isNewer("1.2.3 && calc",
-          // "1.0.0") is true. A tainted mirror, a hijacked private registry or one MITM is
-          // enough to deliver the payload, so nothing crosses to the spawn without matching.
+          // Whitelist: the value reaches a spawn argv, and isNewer("1.2.3 && calc", ...) is true.
           if (!RELEASE_RE.test(v)) return done("", `not a release: ${v.slice(0, 40)}`);
           done(v);
         } catch {
           done("", `unparsable npm output: ${out.trim().slice(0, 80)}`);
         }
       });
-      // The backstop timer only ever fires when nothing above could: the process and its pipe
-      // are gone past the kill. SIGKILL may race an already-dead child (ESRCH) — ignore it.
-      // Deliberately NOT unref'd: in the stall this exists for, this timer is what keeps the
-      // hook process alive long enough to settle the promise and release the update lock; the
-      // normal path clears it inside done() within ~1.2s. Don't "optimize" it away.
+      // Backstop for a stalled pipe past the kill. Not unref'd: it must keep the process alive
+      // long enough to settle and release the update lock.
       deadline = setTimeout(() => {
         try {
           child.kill("SIGKILL");
