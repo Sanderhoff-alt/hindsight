@@ -40,7 +40,14 @@ const UNRELATED_PROMPT = "completely unrelated banana smoothie question";
 
 function makeClient(
   overrides: Partial<{
-    reflect: (query: string, opts: { budget?: string; timeoutMs: number }) => Promise<string>;
+    reflect: (
+      query: string,
+      opts: {
+        budget?: string;
+        timeoutMs: number;
+        factTypes?: ("world" | "experience" | "observation")[];
+      }
+    ) => Promise<string>;
     listPages: () => Promise<unknown>;
     getPage: (pageId: string) => Promise<unknown>;
     searchKnowledgePages: (
@@ -240,6 +247,7 @@ describe("buildHookOutput", () => {
     expect(client.reflect).toHaveBeenCalledWith(buildReflectQuery("the prompt"), {
       budget: "low",
       timeoutMs: 20000,
+      factTypes: ["world", "experience"],
     });
   });
 
@@ -257,6 +265,7 @@ describe("buildHookOutput", () => {
     expect(client.reflect).toHaveBeenCalledWith(buildReflectQuery("the prompt"), {
       budget: "low",
       timeoutMs: ms,
+      factTypes: ["world", "experience"],
     });
   });
 

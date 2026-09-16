@@ -542,13 +542,27 @@ export class HindsightClient {
    * tool (minutes, on a populated bank). This used to default to 120s, which silently overrode the
    * tool's configured window and aborted every high-budget synthesis mid-flight (#3590).
    */
-  async reflect(query: string, opts: { budget?: string; timeoutMs: number }): Promise<string> {
+  async reflect(
+    query: string,
+    opts: {
+      budget?: string;
+      timeoutMs: number;
+      factTypes?: ("world" | "experience" | "observation")[];
+    }
+  ): Promise<string> {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs);
     try {
+      const body: Record<string, unknown> = {
+        query,
+        budget: opts.budget ?? "high",
+      };
+      if (opts.factTypes) {
+        body.fact_types = opts.factTypes;
+      }
       const resp = await this.fetchWithAuth(this.bankUrl("/reflect"), {
         method: "POST",
-        body: JSON.stringify({ query, budget: opts.budget ?? "high" }),
+        body: JSON.stringify(body),
         signal: ctrl.signal,
       });
       // Keep the server's body: a bare "reflect 500" in the diag trail is undebuggable after the fact.

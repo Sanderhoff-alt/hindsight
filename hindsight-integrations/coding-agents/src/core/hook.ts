@@ -69,7 +69,14 @@ export interface HookSpec {
 
 /** Minimal client shape `buildHookOutput` needs — `HindsightClient` satisfies it structurally. */
 interface HookClient {
-  reflect(query: string, opts: { budget?: string; timeoutMs: number }): Promise<string>;
+  reflect(
+    query: string,
+    opts: {
+      budget?: string;
+      timeoutMs: number;
+      factTypes?: ("world" | "experience" | "observation")[];
+    }
+  ): Promise<string>;
   listPages(): Promise<unknown>;
   searchKnowledgePages(
     query: string,
@@ -194,6 +201,10 @@ export async function buildHookOutput(args: {
         // tool still get the deeper high-budget path.
         budget: "low",
         timeoutMs,
+        // Scope reflection to world and experience facts. Knowledge pages (mental models) are
+        // retrieved in turn 0, and raw git/chat facts in turn 1. Omit observations to eliminate
+        // an unnecessary serial search round and avoid exceeding harness hook timeouts.
+        factTypes: ["world", "experience"],
       });
       diag(harness, reflectAnswer ? "reflect_ok" : "reflect_empty", {
         ms: Date.now() - t0,

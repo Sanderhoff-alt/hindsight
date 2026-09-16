@@ -520,6 +520,51 @@ describe("every client-building entrypoint forwards observationScopes", () => {
   });
 });
 
+describe("HindsightClient.reflect", () => {
+  it("serializes fact_types in request payload when provided", async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
+      jsonResponse(200, { text: "answer" })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new HindsightClient({ apiUrl: "http://x", bank: "b" });
+
+    const out = await client.reflect("why?", {
+      budget: "low",
+      factTypes: ["world", "experience"],
+      timeoutMs: 5_000,
+    });
+
+    expect(out).toBe("answer");
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toBe("http://x/v1/default/banks/b/reflect");
+    expect(JSON.parse(String(init?.body))).toEqual({
+      query: "why?",
+      budget: "low",
+      fact_types: ["world", "experience"],
+    });
+  });
+
+  it("omits fact_types when not provided", async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
+      jsonResponse(200, { text: "answer" })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new HindsightClient({ apiUrl: "http://x", bank: "b" });
+
+    const out = await client.reflect("why?", {
+      timeoutMs: 5_000,
+    });
+
+    expect(out).toBe("answer");
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toBe("http://x/v1/default/banks/b/reflect");
+    expect(JSON.parse(String(init?.body))).toEqual({
+      query: "why?",
+      budget: "high",
+    });
+  });
+});
+
 describe("HindsightClient.reflect failures", () => {
   it("keeps the server's error body, not just the status", async () => {
     vi.stubGlobal(
