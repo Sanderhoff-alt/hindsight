@@ -1548,7 +1548,7 @@
     "errorPrefix": "Error: {error}"
   },
   "mentalModelDetailModal": {
-    "noBasedOnData": "No based_on data.",
+    "noBasedOnData": "No basis data available.",
     "viewArrow": "View →",
     "unchanged": "unchanged",
     "diffBefore": "Before",

@@ -130,7 +130,7 @@
     "failedToTriggerConsolidation": "Error al iniciar la consolidación",
     "templateCopied": "Plantilla copiada al portapapeles",
     "failedToExportTemplate": "Error al exportar la plantilla",
-    "recoveredMemories": "Se recuperaron {count} {count, plural, one {memoria fallida} other {memorias fallidas}} para re-consolidación",
+    "recoveredMemories": "{count, plural, one {Se recuperó # memoria fallida} other {Se recuperaron # memorias fallidas}} para reconsolidación",
     "failedToRecoverConsolidation": "Error al recuperar la consolidación",
     "configResetToDefaults": "Configuración restablecida a los valores predeterminados",
     "failedToResetConfig": "Error al restablecer la configuración",

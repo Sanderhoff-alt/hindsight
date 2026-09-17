@@ -130,7 +130,7 @@
     "failedToTriggerConsolidation": "未能觸發整合",
     "templateCopied": "範本已複製到剪貼簿",
     "failedToExportTemplate": "範本匯出失敗",
-    "recoveredMemories": "已復原 {count} 個失敗的{count, plural, one {記憶} other {記憶}}以供重新整合",
+    "recoveredMemories": "已復原 {count} 條失敗記憶以供重新整合",
     "failedToRecoverConsolidation": "未能復原整合",
     "configResetToDefaults": "設定已重設為預設值",
     "failedToResetConfig": "重設設定失敗",
@@ -839,7 +839,7 @@
     "errorLoadingEntityDetail": "載入實體詳情時發生錯誤",
     "errorLoadingEntityGraph": "載入實體圖時發生錯誤",
     "na": "無",
-    "entityCount": "{count, plural, one {# 個實體} other {# 個實體}}",
+    "entityCount": "{count, plural, other {# 個實體}}",
     "linkedMemoriesLabel": "時間線",
     "loadingLinkedMemories": "正在載入時間線...",
     "noLinkedMemories": "此實體仲未有帶日期嘅關聯記憶。"
@@ -942,7 +942,7 @@
     "optionsExcludeAllLabel": "排除所有心智模型",
     "optionsExcludeIdsLabel": "排除心智模型 ID",
     "optionsExcludeIdsPlaceholder": "例如：model-a, model-b（逗號分隔）",
-    "count": "{count, plural, one {# 個心智模型} other {# 個心智模型}}",
+    "count": "{count, plural, other {# 個心智模型}}",
     "viewList": "清單",
     "clearDialogTitle": "清除心智模型內容",
     "clearDialogDescription": "清除<bold>「{name}」</bold>的內容?",
@@ -1237,7 +1237,7 @@
     "toastUpdateFailed": "未能更新 Webhook",
     "toastDeliveriesFailed": "載入傳送記錄失敗",
     "toastMoreDeliveriesFailed": "載入更多傳送記錄失敗",
-    "webhookCount": "{count, plural, one {# 個 webhook} other {# 個 webhooks}}"
+    "webhookCount": "{count, plural, other {# 個 Webhook}}"
   },
   "auditLogsView": {
     "requestVolume": "請求量",
@@ -1291,7 +1291,7 @@
     "detailRequest": "請求",
     "detailResponse": "回應",
     "detailMetadata": "中繼資料",
-    "entryCount": "{count, plural, one {# 條記錄} other {# 條記錄}}"
+    "entryCount": "{count, plural, other {# 條記錄}}"
   },
   "llmRequestsView": {
     "callVolume": "呼叫量",
@@ -1356,7 +1356,7 @@
     "traceFilterClear": "清除",
     "groupByRun": "分組",
     "groupByRunHint": "按操作執行將 LLM 呼叫分組",
-    "entryCount": "{count, plural, one {# 條記錄} other {# 條記錄}}",
+    "entryCount": "{count, plural, other {# 條記錄}}",
     "memoriesCreated": "已建立記憶 ({count}):",
     "memoriesSource": "來源記憶 ({count}):"
   },
@@ -1376,7 +1376,7 @@
   "entityLabelsEditor": {
     "labelGroups": "標籤組",
     "labelGroupsDescription": "在 Retain 時擷取的分類標籤。留空則停用。",
-    "groupCount": "{count, plural, one {# 個組} other {# 個組}}",
+    "groupCount": "{count, plural, other {# 個組}}",
     "noLabelGroups": "尚未定義標籤組。",
     "keyPlaceholder": "鍵（例如：pedagogy）",
     "descriptionPlaceholder": "描述",
@@ -1391,7 +1391,7 @@
     "addAttribute": "新增屬性",
     "entityLabelsTitle": "實體標籤",
     "entityLabelsDescription": "在 retain 時按記憶擷取。每個欄位都是選填，僅在明確適用時才填寫。",
-    "labelCount": "{count, plural, one {# 個標籤} other {# 個標籤}}",
+    "labelCount": "{count, plural, other {# 個標籤}}",
     "noEntityLabelsDefined": "未定義實體標籤。",
     "addLabel": "新增標籤",
     "alsoStoreAsTagTooltip": "將擷取的值也作為標籤儲存在記憶上（不只是作為實體）",
@@ -1414,7 +1414,7 @@
     "colText": "文字",
     "noFailedConsolidations": "沒有失敗的整合。",
     "loadError": "載入失敗記憶時發生錯誤",
-    "recoverSuccess": "已將 {count, plural, one {# 條記憶} other {# 條記憶}} 加入重新整合佇列",
+    "recoverSuccess": "已將 {count, plural, other {# 條記憶}} 加入重新整合佇列",
     "recoverError": "未能復原整合",
     "timeUnknown": "未知",
     "timeJustNow": "剛剛",
@@ -1548,7 +1548,7 @@
     "errorPrefix": "錯誤：{error}"
   },
   "mentalModelDetailModal": {
-    "noBasedOnData": "沒有 based_on 資料。",
+    "noBasedOnData": "暫無依據資料。",
     "viewArrow": "檢視 →",
     "unchanged": "未更改",
     "diffBefore": "修訂前",
@@ -1710,7 +1710,7 @@
     "toastFilesUploadedDescription": "檔案已上傳 — 正在背景處理。",
     "errorFailedToCreate": "建立文件失敗",
     "errorFailedToUpload": "未能上傳檔案",
-    "uploadFiles": "{count, plural, one {上傳 # 個檔案} other {上傳 # 個檔案}}",
+    "uploadFiles": "{count, plural, other {上傳 # 個檔案}}",
     "strategyLabel": "策略",
     "strategyDefault": "預設",
     "strategyPlaceholder": "策略名稱（可選）…",

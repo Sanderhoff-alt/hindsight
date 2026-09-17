@@ -130,7 +130,7 @@
     "failedToTriggerConsolidation": "Konsolidierung konnte nicht ausgelöst werden",
     "templateCopied": "Vorlage in die Zwischenablage kopiert",
     "failedToExportTemplate": "Vorlage konnte nicht exportiert werden",
-    "recoveredMemories": "{count} fehlgeschlagene {count, plural, one {Erinnerung} other {Erinnerungen}} zur erneuten Konsolidierung wiederhergestellt",
+    "recoveredMemories": "{count, plural, one {# fehlgeschlagene Erinnerung} other {# fehlgeschlagene Erinnerungen}} zur erneuten Konsolidierung wiederhergestellt",
     "failedToRecoverConsolidation": "Konsolidierung konnte nicht wiederhergestellt werden",
     "configResetToDefaults": "Konfiguration auf Standardwerte zurückgesetzt",
     "failedToResetConfig": "Konfiguration konnte nicht zurückgesetzt werden",
@@ -1237,7 +1237,7 @@
     "toastUpdateFailed": "Webhook konnte nicht aktualisiert werden",
     "toastDeliveriesFailed": "Zustellungen konnten nicht geladen werden",
     "toastMoreDeliveriesFailed": "Weitere Zustellungen konnten nicht geladen werden",
-    "webhookCount": "{count, plural, one {# webhook} other {# webhooks}}"
+    "webhookCount": "{count, plural, one {# Webhook} other {# Webhooks}}"
   },
   "auditLogsView": {
     "requestVolume": "Anfragevolumen",

@@ -130,7 +130,7 @@
     "failedToTriggerConsolidation": "触发整合失败",
     "templateCopied": "模板已复制到剪贴板",
     "failedToExportTemplate": "模板导出失败",
-    "recoveredMemories": "已恢复 {count} 个失败的{count, plural, one {记忆} other {记忆}}以供重新整合",
+    "recoveredMemories": "已恢复 {count} 条失败记忆以供重新整合",
     "failedToRecoverConsolidation": "恢复整合失败",
     "configResetToDefaults": "配置已重置为默认值",
     "failedToResetConfig": "重置配置失败",
@@ -839,7 +839,7 @@
     "errorLoadingEntityDetail": "加载实体详情出错",
     "errorLoadingEntityGraph": "加载实体图出错",
     "na": "无",
-    "entityCount": "{count, plural, one {# 个实体} other {# 个实体}}",
+    "entityCount": "{count, plural, other {# 个实体}}",
     "linkedMemoriesLabel": "时间线",
     "loadingLinkedMemories": "正在加载时间线...",
     "noLinkedMemories": "此实体尚无带日期的关联记忆。"
@@ -942,7 +942,7 @@
     "optionsExcludeAllLabel": "排除所有心智模型",
     "optionsExcludeIdsLabel": "排除心智模型 ID",
     "optionsExcludeIdsPlaceholder": "例如：model-a, model-b（逗号分隔）",
-    "count": "{count, plural, one {# 个心智模型} other {# 个心智模型}}",
+    "count": "{count, plural, other {# 个心智模型}}",
     "viewList": "列表",
     "clearDialogTitle": "清除心智模型内容",
     "clearDialogDescription": "清除<bold>“{name}”</bold>的内容?",
@@ -1228,7 +1228,7 @@
     "kvKeyPlaceholder": "键",
     "kvValuePlaceholder": "单值",
     "formatDateNA": "无",
-    "toastLoadFailed": "加载 webhooks 失败",
+    "toastLoadFailed": "加载 Webhook 失败",
     "toastCreated": "Webhook 已创建",
     "toastCreateFailed": "创建 Webhook 失败",
     "toastDeleted": "Webhook 已删除",
@@ -1237,7 +1237,7 @@
     "toastUpdateFailed": "更新 Webhook 失败",
     "toastDeliveriesFailed": "加载投递记录失败",
     "toastMoreDeliveriesFailed": "加载更多投递记录失败",
-    "webhookCount": "{count, plural, one {# 个 webhook} other {# 个 webhooks}}"
+    "webhookCount": "{count, plural, other {# 个 Webhook}}"
   },
   "auditLogsView": {
     "requestVolume": "请求量",
@@ -1291,7 +1291,7 @@
     "detailRequest": "请求",
     "detailResponse": "响应",
     "detailMetadata": "元数据",
-    "entryCount": "{count, plural, one {# 条记录} other {# 条记录}}"
+    "entryCount": "{count, plural, other {# 条记录}}"
   },
   "llmRequestsView": {
     "callVolume": "调用量",
@@ -1356,7 +1356,7 @@
     "traceFilterClear": "清除",
     "groupByRun": "分组",
     "groupByRunHint": "按操作运行对 LLM 调用进行分组",
-    "entryCount": "{count, plural, one {# 条记录} other {# 条记录}}",
+    "entryCount": "{count, plural, other {# 条记录}}",
     "memoriesCreated": "已创建记忆 ({count}):",
     "memoriesSource": "来源记忆 ({count}):"
   },
@@ -1376,7 +1376,7 @@
   "entityLabelsEditor": {
     "labelGroups": "标签组",
     "labelGroupsDescription": "在 Retain 时提取的分类标签。留空则禁用。",
-    "groupCount": "{count, plural, one {# 个组} other {# 个组}}",
+    "groupCount": "{count, plural, other {# 个组}}",
     "noLabelGroups": "尚未定义标签组。",
     "keyPlaceholder": "键（例如：pedagogy）",
     "descriptionPlaceholder": "描述",
@@ -1391,7 +1391,7 @@
     "addAttribute": "添加属性",
     "entityLabelsTitle": "实体标签",
     "entityLabelsDescription": "在 retain 时按记忆提取。每个字段都是可选的——仅在明确适用时才填写。",
-    "labelCount": "{count, plural, one {# 个标签} other {# 个标签}}",
+    "labelCount": "{count, plural, other {# 个标签}}",
     "noEntityLabelsDefined": "未定义实体标签。",
     "addLabel": "添加标签",
     "alsoStoreAsTagTooltip": "将提取的值也作为标签存储在记忆上（而不仅仅是作为实体）",
@@ -1414,7 +1414,7 @@
     "colText": "文本",
     "noFailedConsolidations": "没有失败的整合。",
     "loadError": "加载失败记忆时出错",
-    "recoverSuccess": "已将 {count, plural, one {# 条记忆} other {# 条记忆}} 加入重新整合队列",
+    "recoverSuccess": "已将 {count, plural, other {# 条记忆}} 加入重新整合队列",
     "recoverError": "恢复整合失败",
     "timeUnknown": "未知",
     "timeJustNow": "刚刚",
@@ -1548,7 +1548,7 @@
     "errorPrefix": "错误：{error}"
   },
   "mentalModelDetailModal": {
-    "noBasedOnData": "没有 based_on 数据。",
+    "noBasedOnData": "暂无依据数据。",
     "viewArrow": "查看 →",
     "unchanged": "未更改",
     "diffBefore": "修订前",
@@ -1710,7 +1710,7 @@
     "toastFilesUploadedDescription": "文件已上传 — 正在后台处理。",
     "errorFailedToCreate": "创建文档失败",
     "errorFailedToUpload": "上传文件失败",
-    "uploadFiles": "{count, plural, one {上传 # 个文件} other {上传 # 个文件}}",
+    "uploadFiles": "{count, plural, other {上传 # 个文件}}",
     "strategyLabel": "策略",
     "strategyDefault": "默认",
     "strategyPlaceholder": "策略名称（可选）…",
