@@ -682,7 +682,7 @@
     "noTimelineDataDescription": "Nenhuma memória possui datas de occurred_at.",
     "memoriesWithoutDatesInTable": "{count} memórias sem datas na Visualização de Tabela.",
     "timelineMemoriesCount": "{count} memórias",
-    "timelineWithoutDates": "· {count} sem datas",
+    "timelineWithoutDates": "· {count} sem data",
     "zoomOut": "Diminuir zoom",
     "zoomIn": "Aumentar zoom",
     "first": "Primeiro",

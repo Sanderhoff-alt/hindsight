@@ -682,7 +682,7 @@
     "noTimelineDataDescription": "occurred_at 날짜가 있는 메모리가 없습니다.",
     "memoriesWithoutDatesInTable": "표 뷰에 날짜 없는 메모리 {count}개.",
     "timelineMemoriesCount": "메모리 {count}개",
-    "timelineWithoutDates": "· 날짜 없음 {count}개",
+    "timelineWithoutDates": "· 날짜 없는 메모리 {count}개",
     "zoomOut": "축소",
     "zoomIn": "확대",
     "first": "처음",
