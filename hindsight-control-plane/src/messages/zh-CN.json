@@ -307,7 +307,7 @@
     "relativeTimeMinutes": "{mins}分钟前",
     "relativeTimeHours": "{hours}小时前",
     "relativeTimeDays": "{days}天前",
-    "memoriesByTimeChartTitle": "按 {field} 时间的记忆",
+    "memoriesByTimeChartTitle": "记忆分布（按{field}）",
     "timeFieldIngestedShort": "摄入时间",
     "timeFieldIngestedLong": "记录摄入的时间",
     "timeFieldMentionedShort": "提及时间",

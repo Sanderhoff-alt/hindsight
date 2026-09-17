@@ -307,7 +307,7 @@
     "relativeTimeMinutes": "há {mins}m",
     "relativeTimeHours": "há {hours}h",
     "relativeTimeDays": "há {days}d",
-    "memoriesByTimeChartTitle": "Memórias por tempo de {field}",
+    "memoriesByTimeChartTitle": "Distribuição de memórias ({field})",
     "timeFieldIngestedShort": "Ingerido",
     "timeFieldIngestedLong": "Quando os registros foram ingeridos",
     "timeFieldMentionedShort": "Mencionado",

@@ -307,10 +307,10 @@
     "relativeTimeMinutes": "{mins}分前",
     "relativeTimeHours": "{hours}時間前",
     "relativeTimeDays": "{days}日前",
-    "memoriesByTimeChartTitle": "{field}時刻別のメモリ",
-    "timeFieldIngestedShort": "取込済み",
+    "memoriesByTimeChartTitle": "メモリ分布（{field}別）",
+    "timeFieldIngestedShort": "取込",
     "timeFieldIngestedLong": "レコードが取り込まれた時刻",
-    "timeFieldMentionedShort": "言及済み",
+    "timeFieldMentionedShort": "言及",
     "timeFieldMentionedLong": "事実が言及された時刻（イベント時刻）",
     "timeFieldOccurredShort": "発生",
     "timeFieldOccurredLong": "基となるイベントが開始した時刻"

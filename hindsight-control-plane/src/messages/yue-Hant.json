@@ -307,7 +307,7 @@
     "relativeTimeMinutes": "{mins}分鐘前",
     "relativeTimeHours": "{hours}小時前",
     "relativeTimeDays": "{days}天前",
-    "memoriesByTimeChartTitle": "按 {field} 時間的記憶",
+    "memoriesByTimeChartTitle": "記憶分佈（按{field}）",
     "timeFieldIngestedShort": "匯入時間",
     "timeFieldIngestedLong": "記錄匯入嘅時間",
     "timeFieldMentionedShort": "提及時間",
