@@ -712,7 +712,7 @@
     "noTimelineDataDescription": "Aucun souvenir ne possède de date occurred_at.",
     "memoriesWithoutDatesInTable": "{count} souvenirs sans dates dans la vue tableau.",
     "timelineMemoriesCount": "{count} souvenirs",
-    "timelineWithoutDates": "· {count} sans dates",
+    "timelineWithoutDates": "· {count} sans date",
     "zoomOut": "Dézoomer",
     "zoomIn": "Zoomer",
     "first": "Premier",

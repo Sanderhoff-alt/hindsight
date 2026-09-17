@@ -712,7 +712,7 @@
     "noTimelineDataDescription": "沒有帶 occurred_at 日期的記憶。",
     "memoriesWithoutDatesInTable": "{count} 條沒有日期記憶已在表格視圖中顯示。",
     "timelineMemoriesCount": "{count} 條記憶",
-    "timelineWithoutDates": "· {count} 條沒有日期",
+    "timelineWithoutDates": "· {count} 條記憶沒有日期",
     "zoomOut": "縮小",
     "zoomIn": "放大",
     "first": "首頁",

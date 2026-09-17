@@ -712,7 +712,7 @@
     "noTimelineDataDescription": "Ninguna memoria tiene fechas occurred_at.",
     "memoriesWithoutDatesInTable": "{count} memorias sin fechas en la vista de tabla.",
     "timelineMemoriesCount": "{count} memorias",
-    "timelineWithoutDates": "· {count} sin fechas",
+    "timelineWithoutDates": "· {count} sin fecha",
     "zoomOut": "Alejar",
     "zoomIn": "Acercar",
     "first": "Primero",

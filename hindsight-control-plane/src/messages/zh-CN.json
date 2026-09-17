@@ -712,7 +712,7 @@
     "noTimelineDataDescription": "没有带 occurred_at 日期的记忆。",
     "memoriesWithoutDatesInTable": "{count} 条无日期记忆已在表格视图中显示。",
     "timelineMemoriesCount": "{count} 条记忆",
-    "timelineWithoutDates": "· {count} 条无日期",
+    "timelineWithoutDates": "· {count} 条记忆无日期",
     "zoomOut": "缩小",
     "zoomIn": "放大",
     "first": "首页",
