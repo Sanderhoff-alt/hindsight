@@ -471,6 +471,7 @@ def create_llm_provider(
     # tests/test_llm_wrapper.py), so a parameter added mid-list silently steals
     # another one's slot. New parameters go at the end.
     codex_home: str | None = None,
+    native_named_tool_choice: bool = False,
 ) -> Any:  # Returns LLMInterface
     """
     Factory function to create the appropriate LLM provider implementation.
@@ -505,6 +506,10 @@ def create_llm_provider(
             OpenAI-compatible wire format): "none" (default), "xai_conv_id",
             "openai_prompt_cache_key", or "auto". Providers on other branches do their own
             cache work or none at all. See ``engine/cache_affinity.py``.
+        native_named_tool_choice: Whether an OpenAI Chat Completions / Responses
+            endpoint can enforce a named tool choice while receiving the complete
+            tool schema. False preserves the compatible single-tool request;
+            true trusts the configured endpoint's native behavior.
         structured_output_forced_tool: Ask the LiteLLM-backed providers (``litellm``,
             ``litellmrouter``, ``bedrock``) for structured output via a forced tool call
             instead of ``response_format``. For backends that reject the response_format
@@ -708,6 +713,7 @@ def create_llm_provider(
             chat_format=config.llamacpp_chat_format,
             no_grammar=config.llamacpp_no_grammar,
             extra_args=config.llamacpp_extra_args,
+            native_named_tool_choice=native_named_tool_choice,
         )
 
     elif provider_lower == "fireworks":
@@ -724,6 +730,7 @@ def create_llm_provider(
             default_headers=default_headers,
             cache_affinity=cache_affinity,
             timeout=timeout,
+            native_named_tool_choice=native_named_tool_choice,
         )
 
     elif provider_lower == "nous":
@@ -744,6 +751,7 @@ def create_llm_provider(
             default_headers=default_headers,
             cache_affinity=cache_affinity,
             timeout=timeout,
+            native_named_tool_choice=native_named_tool_choice,
         )
 
     elif provider_lower == "xai-oauth":
@@ -761,6 +769,7 @@ def create_llm_provider(
             model=model,
             reasoning_effort=reasoning_effort,
             timeout=timeout,
+            native_named_tool_choice=native_named_tool_choice,
         )
 
     elif provider_lower == "openai-responses":
@@ -777,6 +786,7 @@ def create_llm_provider(
             extra_body=extra_body,
             default_headers=default_headers,
             timeout=timeout,
+            native_named_tool_choice=native_named_tool_choice,
         )
 
     elif provider_lower in (
@@ -808,6 +818,7 @@ def create_llm_provider(
             cache_affinity=cache_affinity,
             ollama_num_ctx=ollama_num_ctx,
             timeout=timeout,
+            native_named_tool_choice=native_named_tool_choice,
         )
 
     else:
@@ -851,6 +862,7 @@ class LLMProvider:
         # callers that pass these positionally would otherwise have one argument
         # land in the wrong slot.
         codex_home: str | None = None,
+        native_named_tool_choice: bool = False,
     ):
         """
         Initialize LLM provider.
@@ -878,6 +890,9 @@ class LLMProvider:
                 "auto"). Validated here for every provider so a typo never fails silently;
                 providers on other factory branches ignore it. Used verbatim — callers
                 resolve the per-operation/global fallback.
+            native_named_tool_choice: Endpoint capability for native named tool
+                choice on Chat Completions / Responses. False preserves the
+                compatible single-tool request; true trusts the endpoint.
             litellmrouter_config: Provider-specific config for ``provider="litellmrouter"``.
                 JSON object passed verbatim to ``litellm.Router(**config)`` — see
                 https://docs.litellm.ai/docs/routing. Ignored unless ``provider == "litellmrouter"``.
@@ -959,6 +974,7 @@ class LLMProvider:
         # it — the setting has no visible effect in the response, so a silent
         # fallback to "none" would be indistinguishable from it working.
         self.cache_affinity = parse_cache_affinity(cache_affinity).value
+        self.native_named_tool_choice = native_named_tool_choice
 
         # Validate provider
         valid_providers = [
@@ -1102,6 +1118,7 @@ class LLMProvider:
             timeout=self.timeout,
             cache_affinity=self.cache_affinity,
             structured_output_forced_tool=self.structured_output_forced_tool,
+            native_named_tool_choice=self.native_named_tool_choice,
         )
 
         # Backward compatibility: Keep mock provider properties

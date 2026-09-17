@@ -648,7 +648,12 @@ class _LLMCallDefaults:
         }
 
 
-def _member_to_llm(member: "LLMMemberConfig", config: HindsightConfig, defaults: _LLMCallDefaults) -> LLMConfig:
+def _member_to_llm(
+    member: "LLMMemberConfig",
+    config: HindsightConfig,
+    defaults: _LLMCallDefaults,
+    native_named_tool_choice: bool = False,
+) -> LLMConfig:
     """Build an LLMProvider from one indexed multi-LLM member.
 
     ``LLMProvider`` uses its arguments verbatim (it no longer reads global config),
@@ -682,6 +687,9 @@ def _member_to_llm(member: "LLMMemberConfig", config: HindsightConfig, defaults:
         extra_body=member.extra_body,
         default_headers=member.default_headers or config.llm_default_headers,
         cache_affinity=member.cache_affinity or config.llm_cache_affinity,
+        native_named_tool_choice=(
+            member.native_named_tool_choice if member.native_named_tool_choice is not None else native_named_tool_choice
+        ),
         ollama_num_ctx=config.llm_ollama_num_ctx,
         bedrock_service_tier=member.bedrock_service_tier,
         structured_output_forced_tool=config.llm_structured_output_forced_tool,
@@ -717,6 +725,7 @@ def _build_llm(
     prefix: str,
     defaults: _LLMCallDefaults,
     fallback_prefix: str = "",
+    native_named_tool_choice: bool = False,
 ) -> "LLMConfig | MultiLLMProvider":
     """Resolve an operation's multi-LLM chain and wrap ``base`` (member 0) in it.
 
@@ -759,7 +768,7 @@ def _build_llm(
 
     if not strategy or not members:
         return base
-    extra = [_member_to_llm(m, config, defaults) for m in members]
+    extra = [_member_to_llm(m, config, defaults, native_named_tool_choice) for m in members]
     return MultiLLMProvider([base, *extra], strategy)
 
 
@@ -2515,6 +2524,7 @@ class MemoryEngine(MemoryEngineInterface):
             extra_body=config.reflect_llm_extra_body or config.llm_extra_body,
             default_headers=config.llm_default_headers,
             cache_affinity=config.reflect_llm_cache_affinity or config.llm_cache_affinity,
+            native_named_tool_choice=config.reflect_llm_native_named_tool_choice,
             ollama_num_ctx=config.llm_ollama_num_ctx,
             litellmrouter_config=config.reflect_llm_litellmrouter_config or config.llm_litellmrouter_config,
             bedrock_service_tier=config.llm_bedrock_service_tier,
@@ -2530,7 +2540,13 @@ class MemoryEngine(MemoryEngineInterface):
             vertexai_service_account_key=config.llm_vertexai_service_account_key,
             **reflect_call_defaults.as_kwargs(),
         )
-        self._reflect_llm_config = _build_llm(_reflect_base_llm, config, "reflect_", reflect_call_defaults)
+        self._reflect_llm_config = _build_llm(
+            _reflect_base_llm,
+            config,
+            "reflect_",
+            reflect_call_defaults,
+            native_named_tool_choice=config.reflect_llm_native_named_tool_choice,
+        )
 
         # Mental-model refresh LLM config - the automatic refresh runs the reflect
         # pipeline in the background, where a human is not waiting and the job must
