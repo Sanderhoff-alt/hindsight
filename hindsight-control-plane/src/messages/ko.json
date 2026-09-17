@@ -290,10 +290,10 @@
     "relativeTimeMinutes": "{mins}분 전",
     "relativeTimeHours": "{hours}시간 전",
     "relativeTimeDays": "{days}일 전",
-    "memoriesByTimeChartTitle": "{field} 시간별 메모리",
-    "timeFieldIngestedShort": "수집됨",
+    "memoriesByTimeChartTitle": "메모리 분포 ({field} 기준)",
+    "timeFieldIngestedShort": "수집",
     "timeFieldIngestedLong": "레코드가 수집된 시점",
-    "timeFieldMentionedShort": "언급됨",
+    "timeFieldMentionedShort": "언급",
     "timeFieldMentionedLong": "사실이 언급된 시점(이벤트 시간)",
     "timeFieldOccurredShort": "발생",
     "timeFieldOccurredLong": "기본 이벤트가 시작된 시점"

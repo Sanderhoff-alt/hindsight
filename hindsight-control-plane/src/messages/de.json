@@ -290,7 +290,7 @@
     "relativeTimeMinutes": "vor {mins}m",
     "relativeTimeHours": "vor {hours}h",
     "relativeTimeDays": "vor {days}d",
-    "memoriesByTimeChartTitle": "Erinnerungen nach {field}-Zeit",
+    "memoriesByTimeChartTitle": "Erinnerungsverteilung ({field})",
     "timeFieldIngestedShort": "Erfasst",
     "timeFieldIngestedLong": "Wann Datensätze erfasst wurden",
     "timeFieldMentionedShort": "Erwähnt",

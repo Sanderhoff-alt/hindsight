@@ -290,7 +290,7 @@
     "relativeTimeMinutes": "il y a {mins} min",
     "relativeTimeHours": "il y a {hours} h",
     "relativeTimeDays": "il y a {days} j",
-    "memoriesByTimeChartTitle": "Mémoires par temps {field}",
+    "memoriesByTimeChartTitle": "Distribution des souvenirs ({field})",
     "timeFieldIngestedShort": "Ingéré",
     "timeFieldIngestedLong": "Quand les enregistrements ont été ingérés",
     "timeFieldMentionedShort": "Mentionné",
