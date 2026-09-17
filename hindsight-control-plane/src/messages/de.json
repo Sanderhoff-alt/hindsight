@@ -1186,7 +1186,7 @@
     "errorRunningSearch": "Fehler beim Ausführen der Suche",
     "tooltipCrossEncoder": "Cross-Encoder-Score (primäres Relevanzsignal)",
     "tooltipTemporal": "Zeitliche Nähe-Verstärkung (±10 % — nur bei zeitbezogenen Abfragen aktiv)",
-    "tooltipRecency": "Aktualitäts-Verstärkung (±10 % — basierend auf dem Alter der Erinnerung)",
+    "tooltipRecency": "Aktualitäts-Verstärkung (±10 % — basierend auf zeitlicher Dämpfung)",
     "temporalWindowLabel": "Zeitfenster",
     "helpTypes": "Welche Gedächtnisebenen durchsucht werden: Weltfakten, eigene Erfahrungen der Bank und konsolidierte Beobachtungen.",
     "helpBudget": "Wie gründlich der Abruf sucht. Ein höheres Budget prüft mehr Kandidaten und Graph-Verknüpfungen: besserer Abruf, mehr Latenz.",
