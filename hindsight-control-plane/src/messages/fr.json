@@ -130,7 +130,7 @@
     "failedToTriggerConsolidation": "Échec du déclenchement de la consolidation",
     "templateCopied": "Modèle copié dans le presse-papiers",
     "failedToExportTemplate": "Échec de l'exportation du modèle",
-    "recoveredMemories": "{count} {count, plural, one {souvenir échoué récupéré} other {souvenirs échoués récupérés}} pour re-consolidation",
+    "recoveredMemories": "{count, plural, one {# souvenir échoué récupéré} other {# souvenirs échoués récupérés}} pour la reconsolidation",
     "failedToRecoverConsolidation": "Échec de la récupération de la consolidation",
     "configResetToDefaults": "Configuration réinitialisée aux valeurs par défaut",
     "failedToResetConfig": "Échec de la réinitialisation de la configuration",

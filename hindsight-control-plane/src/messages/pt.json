@@ -130,7 +130,7 @@
     "failedToTriggerConsolidation": "Falha ao acionar a consolidação",
     "templateCopied": "Modelo copiado para a área de transferência",
     "failedToExportTemplate": "Falha ao exportar o modelo",
-    "recoveredMemories": "{count} {count, plural, one {memória com falha recuperada} other {memórias com falha recuperadas}} para re-consolidação",
+    "recoveredMemories": "{count, plural, one {# memória com falha recuperada} other {# memórias com falha recuperadas}} para reconsolidação",
     "failedToRecoverConsolidation": "Falha ao recuperar a consolidação",
     "configResetToDefaults": "Configuração redefinida para os padrões",
     "failedToResetConfig": "Falha ao redefinir a configuração",
@@ -1597,7 +1597,7 @@
     "errorPrefix": "Erro: {error}"
   },
   "mentalModelDetailModal": {
-    "noBasedOnData": "Nenhum dado de based_on.",
+    "noBasedOnData": "Nenhum dado de base.",
     "viewArrow": "Ver →",
     "unchanged": "sem alteração",
     "diffBefore": "Antes",

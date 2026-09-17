@@ -130,7 +130,7 @@
     "failedToTriggerConsolidation": "統合のトリガーに失敗しました",
     "templateCopied": "テンプレートをクリップボードにコピーしました",
     "failedToExportTemplate": "テンプレートのエクスポートに失敗しました",
-    "recoveredMemories": "再統合のために{count}件の失敗した{count, plural, one {メモリ} other {メモリ}}を回復しました",
+    "recoveredMemories": "再統合のために {count} 件の失敗したメモリを回復しました",
     "failedToRecoverConsolidation": "統合の回復に失敗しました",
     "configResetToDefaults": "設定がデフォルトにリセットされました",
     "failedToResetConfig": "設定のリセットに失敗しました",
@@ -882,7 +882,7 @@
     "errorLoadingEntityDetail": "エンティティ詳細の読み込みエラー",
     "errorLoadingEntityGraph": "エンティティグラフの読み込みエラー",
     "na": "N/A",
-    "entityCount": "{count, plural, one {#件のエンティティ} other {#件のエンティティ}}",
+    "entityCount": "{count, plural, other {#件のエンティティ}}",
     "linkedMemoriesLabel": "タイムライン",
     "loadingLinkedMemories": "タイムラインを読み込み中...",
     "noLinkedMemories": "このエンティティに関連付けられた日付付きメモリはまだありません。"
@@ -991,7 +991,7 @@
     "optionsExcludeAllLabel": "すべてのメンタルモデルを除外",
     "optionsExcludeIdsLabel": "メンタルモデルIDを除外",
     "optionsExcludeIdsPlaceholder": "例：model-a、model-b（カンマ区切り）",
-    "count": "{count, plural, one {#件のメンタルモデル} other {#件のメンタルモデル}}",
+    "count": "{count, plural, other {#件のメンタルモデル}}",
     "viewList": "リスト",
     "clearDialogTitle": "メンタルモデルの内容をクリア",
     "clearDialogDescription": "<bold>「{name}」</bold>の内容をクリアしますか?",
@@ -1286,7 +1286,7 @@
     "toastUpdateFailed": "Webhookの更新に失敗しました",
     "toastDeliveriesFailed": "配信履歴の読み込みに失敗しました",
     "toastMoreDeliveriesFailed": "追加の配信履歴の読み込みに失敗しました",
-    "webhookCount": "{count, plural, one {#件のwebhook} other {#件のwebhook}}"
+    "webhookCount": "{count, plural, other {#件の Webhook}}"
   },
   "auditLogsView": {
     "requestVolume": "リクエスト数",
@@ -1340,7 +1340,7 @@
     "detailRequest": "リクエスト",
     "detailResponse": "レスポンス",
     "detailMetadata": "メタデータ",
-    "entryCount": "{count, plural, one {#件のエントリ} other {#件のエントリ}}"
+    "entryCount": "{count, plural, other {#件のエントリ}}"
   },
   "llmRequestsView": {
     "callVolume": "呼び出し数",
@@ -1405,7 +1405,7 @@
     "traceFilterClear": "クリア",
     "groupByRun": "グループ化",
     "groupByRunHint": "LLM呼び出しを操作実行ごとにグループ化",
-    "entryCount": "{count, plural, one {#件のエントリ} other {#件のエントリ}}",
+    "entryCount": "{count, plural, other {#件のエントリ}}",
     "memoriesCreated": "作成されたメモリ ({count}):",
     "memoriesSource": "ソースメモリ ({count}):"
   },
@@ -1440,7 +1440,7 @@
     "addAttribute": "属性を追加",
     "entityLabelsTitle": "エンティティラベル",
     "entityLabelsDescription": "retain 時にメモリごとに抽出されます。すべてのフィールドは任意で、明確に該当する場合のみ入力されます。",
-    "labelCount": "{count, plural, one {# 個のラベル} other {# 個のラベル}}",
+    "labelCount": "{count, plural, other {# 個のラベル}}",
     "noEntityLabelsDefined": "エンティティラベルが定義されていません。",
     "addLabel": "ラベルを追加",
     "alsoStoreAsTagTooltip": "抽出した値をエンティティだけでなくメモリのタグとしても保存する",
@@ -1463,7 +1463,7 @@
     "colText": "テキスト",
     "noFailedConsolidations": "失敗したコンソリデーションはありません。",
     "loadError": "失敗したメモリの読み込みに失敗しました",
-    "recoverSuccess": "{count, plural, other {# 件のメモリ}}を再コンソリデーション用にキューに追加しました",
+    "recoverSuccess": "{count, plural, other {# 件のメモリ}}を再統合キューに追加しました",
     "recoverError": "コンソリデーションの回復に失敗しました",
     "timeUnknown": "不明",
     "timeJustNow": "たった今",
@@ -1597,7 +1597,7 @@
     "errorPrefix": "エラー：{error}"
   },
   "mentalModelDetailModal": {
-    "noBasedOnData": "based_onデータがありません。",
+    "noBasedOnData": "根拠データがありません。",
     "viewArrow": "表示 →",
     "unchanged": "変更なし",
     "diffBefore": "変更前",
@@ -1759,7 +1759,7 @@
     "toastFilesUploadedDescription": "ファイルがアップロードされました — バックグラウンドで処理中。",
     "errorFailedToCreate": "ドキュメントの作成に失敗しました",
     "errorFailedToUpload": "ファイルのアップロードに失敗しました",
-    "uploadFiles": "{count, plural, one {#件のファイルをアップロード} other {#件のファイルをアップロード}}",
+    "uploadFiles": "{count, plural, other {#件のファイルをアップロード}}",
     "strategyLabel": "ストラテジー",
     "strategyDefault": "デフォルト",
     "strategyPlaceholder": "ストラテジー名(任意)…",
