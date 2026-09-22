@@ -17585,6 +17585,7 @@ class MemoryEngine(MemoryEngineInterface):
                     f"[MENTAL_MODELS] Could not load structured doc for {mental_model_id} "
                     f"({exc}); delta has no baseline to edit"
                 )
+                warnings.append(f"Structured delta baseline document unreadable: {exc}")
                 mode_fallback_reason = "structured_doc_unreadable"
 
             if current_doc is not None:
@@ -17778,6 +17779,9 @@ class MemoryEngine(MemoryEngineInterface):
                             f"{len(apply_outcome.skipped)} op(s) were skipped, nothing applied"
                         )
                         mode_fallback_reason = "delta_ops_all_skipped"
+                        warnings.append(
+                            f"Structured delta operations were all skipped ({len(apply_outcome.skipped)} op(s) rejected): nothing applied."
+                        )
                     else:
                         final_structured = apply_outcome.document
                         final_content = render_document(apply_outcome.document)
@@ -17811,6 +17815,7 @@ class MemoryEngine(MemoryEngineInterface):
                         f"({exc}); delta operations were not applied"
                     )
                     mode_fallback_reason = "delta_ops_failed"
+                    warnings.append(f"Structured delta operation failed: {exc}")
 
             # The unsay ops edited the same document, in the same refresh, before the
             # new-facts ops did — so they belong in the same log, in that order.
@@ -18106,6 +18111,7 @@ class MemoryEngine(MemoryEngineInterface):
                 logger.warning(f"[MENTAL_MODELS] Refresh for {mental_model_id} failed ({reason}); {detail}")
                 reflect_response_payload["refresh_skipped"] = reason
                 reflect_response_payload["outcome"] = outcome
+                reflect_response_payload["refresh_error"] = detail
                 await self.update_mental_model(
                     bank_id,
                     mental_model_id,
@@ -18140,13 +18146,18 @@ class MemoryEngine(MemoryEngineInterface):
             if run.outcome == "refresh_failed_delta_not_applied":
                 # #3112: the reflect candidate only covers the delta window, so it is
                 # not a document — see the guard in _execute_mental_model_refresh.
+                error_detail = next(
+                    (w for w in run.warnings if w.startswith("Structured delta")),
+                    None,
+                )
+                delta_detail = (f"{error_detail.rstrip('.')}; " if error_detail else "") + (
+                    "delta operations did not reach the document, and the reflect candidate covers only "
+                    "memories newer than the last refresh, so writing it would drop the rest of the document."
+                )
                 await _preserve_and_fail(
                     reason=_delta_failure_reason(run.mode_fallback_reason),
                     outcome="refresh_failed_delta_not_applied",
-                    detail=(
-                        "delta operations did not reach the document, and the reflect candidate covers only "
-                        "memories newer than the last refresh, so writing it would drop the rest of the document."
-                    ),
+                    detail=delta_detail,
                 )
 
             # Parse the final stored content into structured_output when a schema is

@@ -1314,6 +1314,7 @@ class TestDeltaRefreshPlumbing:
         rr = preserved.get("reflect_response") or {}
         assert rr.get("refresh_skipped") == "delta_ops_failed"
         assert rr.get("delta_applied") is False
+        assert "simulated provider 500" in (rr.get("refresh_error") or "")
 
         await memory.delete_bank(bank_id, request_context=request_context)
 
@@ -1381,6 +1382,7 @@ class TestDeltaRefreshPlumbing:
         assert preserved["content"] == existing
         rr = preserved.get("reflect_response") or {}
         assert rr.get("refresh_skipped") == "delta_ops_all_skipped"
+        assert "Structured delta operations were all skipped" in (rr.get("refresh_error") or "")
         # The rejected ops are persisted so the reason each was dropped is
         # recoverable without re-running the refresh.
         assert len(rr.get("delta_operations_skipped") or []) == 2
@@ -1577,6 +1579,9 @@ class TestDeltaRefreshPlumbing:
         assert preserved["content"] == existing
         rr = preserved.get("reflect_response") or {}
         assert rr.get("refresh_skipped") == "structured_doc_unreadable"
+        assert "Structured delta baseline document unreadable: simulated unreadable structured document" in (
+            rr.get("refresh_error") or ""
+        )
 
         await memory.delete_bank(bank_id, request_context=request_context)
 

@@ -15,7 +15,6 @@ so what is under test is the refresh's own branching and reporting, not model
 behaviour.
 """
 
-from hindsight_api.engine.response_models import LLMCallResult, TokenUsage
 import uuid
 from typing import Any
 
@@ -24,7 +23,7 @@ import pytest
 import pytest_asyncio
 
 from hindsight_api import MemoryEngine, RequestContext
-from hindsight_api.engine.response_models import ReflectResult
+from hindsight_api.engine.response_models import LLMCallResult, ReflectResult, TokenUsage
 from tests.conftest import stub_refresh_has_sources
 
 
@@ -286,6 +285,7 @@ class TestDryRunExplainsTheModeDecision:
         assert result.preview_content == result.current_content
         assert "Only the newest fact." in result.candidate_content
         assert result.diff == ""
+        assert any("Structured delta operation failed: provider exploded" in w for w in result.warnings)
         assert any("preserved and the refresh fails" in w for w in result.warnings), result.warnings
 
         await memory.delete_bank(bank_id, request_context=request_context)
