@@ -1853,6 +1853,8 @@
       },
       "validation": {
         "bankIdRequired": "bank_id は必須です",
+        "documentIdRequired": "document_id は必須です",
+        "chunkIdRequired": "chunk_id は必須です",
         "bankAndDirectiveIdRequired": "bank_id と directive_id は必須です",
         "bankAndMentalModelIdRequired": "bank_id と mental_model_id は必須です",
         "bankAndModelIdRequired": "bank_id と model_id は必須です",

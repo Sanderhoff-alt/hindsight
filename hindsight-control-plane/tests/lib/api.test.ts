@@ -333,3 +333,129 @@ describe("ControlPlaneClient direct fetch error formatting", () => {
     });
   });
 });
+
+describe("ControlPlaneClient document and chunk URL query parameter formatting", () => {
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  let client: ControlPlaneClient;
+
+  beforeEach(() => {
+    client = new ControlPlaneClient();
+    fetchSpy = vi.spyOn(globalThis, "fetch");
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  it("formats document ID and bank ID as query parameters in getDocument", async () => {
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ id: "folder/file.md" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+
+    await client.getDocument("folder/file.md", "bank-1");
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      expect.stringContaining("/api/documents?bank_id=bank-1&document_id=folder%2Ffile.md"),
+      expect.anything()
+    );
+  });
+
+  it("formats document ID and bank ID as query parameters in updateDocument", async () => {
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+
+    await client.updateDocument("folder/file.md", "bank-1", ["tag1"]);
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      expect.stringContaining("/api/documents?bank_id=bank-1&document_id=folder%2Ffile.md"),
+      expect.objectContaining({ method: "PATCH" })
+    );
+  });
+
+  it("formats document ID and bank ID as query parameters in deleteDocument", async () => {
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          success: true,
+          message: "Deleted",
+          document_id: "folder/file.md",
+          memory_units_deleted: 1,
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }
+      )
+    );
+
+    await client.deleteDocument("folder/file.md", "bank-1");
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      expect.stringContaining("/api/documents?bank_id=bank-1&document_id=folder%2Ffile.md"),
+      expect.objectContaining({ method: "DELETE" })
+    );
+  });
+
+  it("formats document ID and pagination as query parameters in listDocumentChunks", async () => {
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ items: [], total: 0, limit: 50, offset: 10 }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+
+    await client.listDocumentChunks({
+      document_id: "folder/subfolder/file.md",
+      bank_id: "test-bank",
+      limit: 50,
+      offset: 10,
+    });
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "/api/documents/chunks?bank_id=test-bank&document_id=folder%2Fsubfolder%2Ffile.md&limit=50&offset=10",
+      expect.anything()
+    );
+  });
+
+  it("formats chunk ID as query parameter in getChunk", async () => {
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ chunk_id: "bank_folder/file.md_0", chunk_text: "content" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+
+    await client.getChunk("bank_folder/file.md_0");
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "/api/chunks?chunk_id=bank_folder%2Ffile.md_0",
+      expect.anything()
+    );
+  });
+
+  it("formats document ID and bank ID in reprocessDocument", async () => {
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ success: true, operation_id: "op-1", items_count: 1 }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }
+      )
+    );
+
+    await client.reprocessDocument("folder/doc.md", "agent::channel::user");
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "/api/documents/reprocess?bank_id=agent%3A%3Achannel%3A%3Auser&document_id=folder%2Fdoc.md",
+      expect.objectContaining({ method: "POST" })
+    );
+  });
+});

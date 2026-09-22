@@ -1853,6 +1853,8 @@
       },
       "validation": {
         "bankIdRequired": "bank_id 为必填项",
+        "documentIdRequired": "document_id 为必填项",
+        "chunkIdRequired": "chunk_id 为必填项",
         "bankAndDirectiveIdRequired": "bank_id 和 directive_id 为必填项",
         "bankAndMentalModelIdRequired": "bank_id 和 mental_model_id 为必填项",
         "bankAndModelIdRequired": "bank_id 和 model_id 为必填项",

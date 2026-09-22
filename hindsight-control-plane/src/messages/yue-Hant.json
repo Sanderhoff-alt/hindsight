@@ -1853,6 +1853,8 @@
       },
       "validation": {
         "bankIdRequired": "必須提供 bank_id",
+        "documentIdRequired": "必須提供 document_id",
+        "chunkIdRequired": "必須提供 chunk_id",
         "bankAndDirectiveIdRequired": "必須提供 bank_id 及 directive_id",
         "bankAndMentalModelIdRequired": "必須提供 bank_id 及 mental_model_id",
         "bankAndModelIdRequired": "必須提供 bank_id 及 model_id",

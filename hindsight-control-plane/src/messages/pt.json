@@ -1853,6 +1853,8 @@
       },
       "validation": {
         "bankIdRequired": "bank_id é obrigatório",
+        "documentIdRequired": "document_id é obrigatório",
+        "chunkIdRequired": "chunk_id é obrigatório",
         "bankAndDirectiveIdRequired": "bank_id e directive_id são obrigatórios",
         "bankAndMentalModelIdRequired": "bank_id e mental_model_id são obrigatórios",
         "bankAndModelIdRequired": "bank_id e model_id são obrigatórios",

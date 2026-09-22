@@ -1853,6 +1853,8 @@
       },
       "validation": {
         "bankIdRequired": "bank_id는 필수입니다",
+        "documentIdRequired": "document_id는 필수입니다",
+        "chunkIdRequired": "chunk_id는 필수입니다",
         "bankAndDirectiveIdRequired": "bank_id와 directive_id는 필수입니다",
         "bankAndMentalModelIdRequired": "bank_id와 mental_model_id는 필수입니다",
         "bankAndModelIdRequired": "bank_id와 model_id는 필수입니다",

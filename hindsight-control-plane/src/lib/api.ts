@@ -4,7 +4,15 @@
  */
 
 import { toast } from "sonner";
-import { bankApi, bankStatsApi, documentApi, memoryApi } from "./bank-url";
+import {
+  bankApi,
+  bankStatsApi,
+  chunkApi,
+  documentApi,
+  documentChunksApi,
+  documentReprocessApi,
+  memoryApi,
+} from "./bank-url";
 import { stripBasePath, withBasePath } from "./base-path";
 
 /**
@@ -1029,10 +1037,6 @@ export class ControlPlaneClient {
     limit?: number;
     offset?: number;
   }) {
-    const queryParams = new URLSearchParams();
-    queryParams.append("bank_id", params.bank_id);
-    if (params.limit) queryParams.append("limit", params.limit.toString());
-    if (params.offset) queryParams.append("offset", params.offset.toString());
     return this.fetchApi<{
       items: Array<{
         chunk_id: string;
@@ -1045,7 +1049,12 @@ export class ControlPlaneClient {
       total: number;
       limit: number;
       offset: number;
-    }>(`/api/documents/${params.document_id}/chunks?${queryParams}`);
+    }>(
+      documentChunksApi(params.document_id, params.bank_id, {
+        limit: params.limit,
+        offset: params.offset,
+      })
+    );
   }
 
   /**
@@ -1056,7 +1065,7 @@ export class ControlPlaneClient {
       success: boolean;
       operation_id: string;
       items_count: number;
-    }>(`/api/documents/${encodeURIComponent(documentId)}/reprocess?bank_id=${bankId}`, {
+    }>(documentReprocessApi(documentId, bankId), {
       method: "POST",
     });
   }
@@ -1231,7 +1240,7 @@ export class ControlPlaneClient {
    * Get chunk
    */
   async getChunk(chunkId: string) {
-    return this.fetchApi(`/api/chunks/${chunkId}`);
+    return this.fetchApi(chunkApi(chunkId));
   }
 
   /**
