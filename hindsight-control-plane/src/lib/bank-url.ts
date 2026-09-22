@@ -34,6 +34,11 @@ export function memoryApi(memoryId: string, bankId: string, suffix = ""): string
 }
 
 /** Control-plane proxy URL for document operations scoped to a bank via query string. */
-export function documentApi(documentId: string, bankId: string): string {
-  return `/api/documents/${enc(documentId)}?bank_id=${enc(bankId)}`;
+export function documentApi(documentId: string, bankId: string, suffix = ""): string {
+  return `/api/documents/${enc(documentId)}${suffix}${suffix.includes("?") ? "&" : "?"}bank_id=${enc(bankId)}`;
+}
+
+/** Control-plane proxy URL under `/api/chunks/...` for a specific chunk. */
+export function chunkApi(chunkId: string): string {
+  return `/api/chunks/${enc(chunkId)}`;
 }

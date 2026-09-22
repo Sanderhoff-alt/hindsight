@@ -4,7 +4,7 @@
  */
 
 import { toast } from "sonner";
-import { bankApi, bankStatsApi, documentApi, memoryApi } from "./bank-url";
+import { bankApi, bankStatsApi, chunkApi, documentApi, memoryApi } from "./bank-url";
 import { stripBasePath, withBasePath } from "./base-path";
 
 /**
@@ -1045,7 +1045,7 @@ export class ControlPlaneClient {
       total: number;
       limit: number;
       offset: number;
-    }>(`/api/documents/${params.document_id}/chunks?${queryParams}`);
+    }>(`/api/documents/${encodeURIComponent(params.document_id)}/chunks?${queryParams}`);
   }
 
   /**
@@ -1056,7 +1056,7 @@ export class ControlPlaneClient {
       success: boolean;
       operation_id: string;
       items_count: number;
-    }>(`/api/documents/${encodeURIComponent(documentId)}/reprocess?bank_id=${bankId}`, {
+    }>(documentApi(documentId, bankId, "/reprocess"), {
       method: "POST",
     });
   }
@@ -1231,7 +1231,7 @@ export class ControlPlaneClient {
    * Get chunk
    */
   async getChunk(chunkId: string) {
-    return this.fetchApi(`/api/chunks/${chunkId}`);
+    return this.fetchApi(chunkApi(chunkId));
   }
 
   /**

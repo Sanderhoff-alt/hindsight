@@ -333,3 +333,115 @@ describe("ControlPlaneClient direct fetch error formatting", () => {
     });
   });
 });
+
+describe("ControlPlaneClient document and chunk URL encoding", () => {
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  let client: ControlPlaneClient;
+
+  beforeEach(() => {
+    client = new ControlPlaneClient();
+    fetchSpy = vi.spyOn(globalThis, "fetch");
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: {
+        location: {
+          href: "",
+          pathname: "/en/dashboard",
+          search: "",
+        },
+      },
+    });
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+    delete (globalThis as { window?: unknown }).window;
+  });
+
+  it("encodes slashes and reserved characters in document ID for listDocumentChunks", async () => {
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ items: [], total: 0, limit: 50, offset: 0 }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+
+    await client.listDocumentChunks({
+      document_id: "folder/subfolder/file.md",
+      bank_id: "test-bank",
+      limit: 50,
+      offset: 10,
+    });
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      expect.stringContaining("/api/documents/folder%2Fsubfolder%2Ffile.md/chunks?"),
+      expect.anything()
+    );
+    expect(fetchSpy).toHaveBeenCalledWith(
+      expect.stringContaining("bank_id=test-bank"),
+      expect.anything()
+    );
+    expect(fetchSpy).toHaveBeenCalledWith(
+      expect.stringContaining("limit=50"),
+      expect.anything()
+    );
+    expect(fetchSpy).toHaveBeenCalledWith(
+      expect.stringContaining("offset=10"),
+      expect.anything()
+    );
+  });
+
+  it("encodes literal %2F and reserved characters in document ID for listDocumentChunks", async () => {
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ items: [], total: 0, limit: 100, offset: 0 }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+
+    await client.listDocumentChunks({
+      document_id: "folder%2Fspecial#id",
+      bank_id: "team::agent",
+    });
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      expect.stringContaining("/api/documents/folder%252Fspecial%23id/chunks?"),
+      expect.anything()
+    );
+  });
+
+  it("encodes slashes in chunk ID for getChunk", async () => {
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ chunk_id: "bank_folder/file.md_0", chunk_text: "content" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+
+    await client.getChunk("bank_folder/file.md_0");
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      expect.stringContaining("/api/chunks/bank_folder%2Ffile.md_0"),
+      expect.anything()
+    );
+  });
+
+  it("encodes document ID and bank ID in reprocessDocument", async () => {
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ success: true, operation_id: "op-1", items_count: 1 }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }
+      )
+    );
+
+    await client.reprocessDocument("folder/doc.md", "agent::channel::user");
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "/api/documents/folder%2Fdoc.md/reprocess?bank_id=agent%3A%3Achannel%3A%3Auser",
+      expect.objectContaining({ method: "POST" })
+    );
+  });
+});
