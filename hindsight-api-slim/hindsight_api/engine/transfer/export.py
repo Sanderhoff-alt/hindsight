@@ -13,7 +13,8 @@ import io
 import json
 import logging
 import zipfile
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -21,6 +22,7 @@ from typing import Any
 from uuid import UUID
 
 import anyio.to_thread
+import pydantic_core
 
 from ..causal_links import CAUSAL_LINK_TYPES
 from ..chunk_ids import parse_chunk_id
@@ -46,6 +48,7 @@ from .schema import (
     TransferScope,
     TransferScopeManifest,
 )
+from .stream_archive import ZipStreamer
 
 logger = logging.getLogger(__name__)
 
@@ -225,6 +228,141 @@ def _is_store_owned(memories: Any, bank_id: str) -> bool:
         return False
 
 
+@asynccontextmanager
+async def _as_connection(conn_or_backend: Any) -> AsyncIterator[Any]:
+    if hasattr(conn_or_backend, "acquire"):
+        async with acquire_with_retry(conn_or_backend) as conn:
+            yield conn
+    else:
+        yield conn_or_backend
+
+
+async def stream_export_documents(
+    backend: Any,
+    bank_id: str,
+    document_ids: list[str] | None = None,
+    *,
+    include_observations: bool = False,
+    include_knowledge_base: bool = False,
+    memories: Any = None,
+    batch_size: int = 100,
+) -> AsyncIterator[bytes]:
+    """Stream documents from ``bank_id`` as an async generator of ZIP archive chunks."""
+    if (include_observations or include_knowledge_base) and document_ids is not None:
+        raise ValueError(
+            "include_observations and include_knowledge_base are only supported when exporting the whole bank (omit document_id)"
+        )
+
+    memories = _resolve_memories(memories)
+    streamer = ZipStreamer()
+    unit_index: dict[Any, _UnitLocation] = {}
+    fact_total = 0
+    global_doc_idx = 0
+    mental_models: list[dict] = []
+    knowledge_pages: list[TransferKnowledgePage] = []
+
+    if _is_store_owned(memories, bank_id):
+        loaded = await _load_documents_from_store(
+            memories, bank_id, document_ids, include_lifecycle=include_observations
+        )
+        for doc in loaded.documents:
+            fact_total += len(doc.facts)
+            doc_bytes = pydantic_core.to_json(doc, exclude_none=True)
+            async for chunk in streamer.write_file_bytes(
+                f"documents/{global_doc_idx:06d}.json", doc_bytes, compress=True
+            ):
+                yield chunk
+            global_doc_idx += 1
+        unit_index = loaded.unit_index
+
+        observations: list[TransferObservation] = []
+        if include_observations:
+            observations = await _load_observations_from_store(memories, bank_id, unit_index)
+        if include_knowledge_base:
+            async with _as_connection(backend) as conn:
+                mental_models = await _dump_bank_rows(conn, "mental_models", bank_id)
+                knowledge_pages = await _load_knowledge_pages(conn, bank_id)
+    else:
+        doc_filter = "AND id = ANY($2)" if document_ids else ""
+        params: list[Any] = [bank_id]
+        if document_ids:
+            params.append(document_ids)
+
+        async with _as_connection(backend) as conn:
+            id_rows = await conn.fetch(
+                f"""
+                SELECT id FROM {fq_table("documents")}
+                WHERE bank_id = $1 {doc_filter}
+                ORDER BY created_at, id
+                """,
+                *params,
+            )
+        all_doc_ids = [r["id"] for r in id_rows]
+
+        for i in range(0, len(all_doc_ids), batch_size):
+            batch_ids = all_doc_ids[i : i + batch_size]
+            async with _as_connection(backend) as conn:
+                loaded_batch = await _load_documents(conn, bank_id, batch_ids, include_lifecycle=include_observations)
+            for doc in loaded_batch.documents:
+                fact_total += len(doc.facts)
+                doc_bytes = pydantic_core.to_json(doc, exclude_none=True)
+                async for chunk in streamer.write_file_bytes(
+                    f"documents/{global_doc_idx:06d}.json", doc_bytes, compress=True
+                ):
+                    yield chunk
+                global_doc_idx += 1
+            unit_index.update(loaded_batch.unit_index)
+
+        observations = []
+        if include_observations:
+            async with _as_connection(backend) as conn:
+                observations = await _load_observations(conn, bank_id, unit_index)
+
+        if include_knowledge_base:
+            async with _as_connection(backend) as conn:
+                mental_models = await _dump_bank_rows(conn, "mental_models", bank_id)
+                knowledge_pages = await _load_knowledge_pages(conn, bank_id)
+
+    if observations:
+        obs_bytes = pydantic_core.to_json(observations, exclude_none=True)
+        async for chunk in streamer.write_file_bytes("observations.json", obs_bytes, compress=True):
+            yield chunk
+
+    if mental_models:
+        mm_bytes = json.dumps(mental_models, default=_row_json_default).encode("utf-8")
+        async for chunk in streamer.write_file_bytes("mental_models.json", mm_bytes, compress=True):
+            yield chunk
+
+    if knowledge_pages:
+        kp_bytes = pydantic_core.to_json(knowledge_pages, exclude_none=True)
+        async for chunk in streamer.write_file_bytes("knowledge_pages.json", kp_bytes, compress=True):
+            yield chunk
+
+    manifest = TransferManifest(
+        schema_version=SCHEMA_VERSION,
+        source_bank_id=bank_id,
+        exported_at=datetime.now(UTC),
+        document_count=global_doc_idx,
+        fact_count=fact_total,
+        observation_count=len(observations),
+        mental_model_count=len(mental_models),
+        knowledge_page_count=len(knowledge_pages),
+    )
+    manifest_bytes = pydantic_core.to_json(manifest, indent=2)
+    async for chunk in streamer.write_file_bytes("manifest.json", manifest_bytes, compress=True):
+        yield chunk
+
+    yield streamer.finish()
+
+    logger.info(
+        "[transfer] Exported %d document(s), %d fact(s), %d observation(s) from bank %s",
+        global_doc_idx,
+        fact_total,
+        len(observations),
+        bank_id,
+    )
+
+
 async def export_documents(
     backend: Any,
     bank_id: str,
@@ -236,123 +374,20 @@ async def export_documents(
 ) -> bytes:
     """Export documents from ``bank_id`` into an in-memory ZIP archive.
 
-    Args:
-        backend: Database backend (provides ``acquire()``).
-        bank_id: Source bank.
-        document_ids: Specific document ids to export. ``None`` exports every
-            document in the bank.
-        include_observations: Also export consolidated observations (written to
-            ``observations.json``). Only valid for a whole-bank export.
-
-    Returns:
-        The ZIP archive as bytes.
-
-    Raises:
-        ValueError: if a bank-level section is combined with ``document_ids``.
+    Convenience wrapper buffering ``stream_export_documents`` into memory.
+    Production paths use ``stream_export_documents`` directly for O(1) streaming.
     """
-    # Observations are bank-level and can be derived from facts spanning several
-    # documents, so they're only coherent when the whole bank is exported. For a
-    # document subset we'd have to silently drop every cross-document observation
-    # — reject the combination instead so the caller isn't surprised.
-    if (include_observations or include_knowledge_base) and document_ids is not None:
-        raise ValueError(
-            "include_observations and include_knowledge_base are only supported when exporting the whole bank (omit document_id)"
-        )
-
-    memories = _resolve_memories(memories)
-
-    # Carry per-fact consolidation lifecycle exactly when observations are
-    # carried: with observations in the archive the target must NOT re-derive
-    # them, so imported facts keep their consolidated/failed state. Without
-    # observations (the default document export) the target re-consolidates
-    # from scratch, so lifecycle is deliberately dropped.
-    mental_models: list[dict] = []
-    knowledge_pages: list[TransferKnowledgePage] = []
-    if _is_store_owned(memories, bank_id):
-        # No connection is taken at all: for this bank every table the SQL loaders read is empty,
-        # so holding one would only make the empty result look better-founded than it is.
-        loaded = await _load_documents_from_store(
-            memories, bank_id, document_ids, include_lifecycle=include_observations
-        )
-        documents = loaded.documents
-        observations = (
-            await _load_observations_from_store(memories, bank_id, loaded.unit_index) if include_observations else []
-        )
-        if include_knowledge_base:
-            async with acquire_with_retry(backend) as conn:
-                mental_models = await _dump_bank_rows(conn, "mental_models", bank_id)
-                knowledge_pages = await _load_knowledge_pages(conn, bank_id)
-    else:
-        async with acquire_with_retry(backend) as conn:
-            loaded = await _load_documents(conn, bank_id, document_ids, include_lifecycle=include_observations)
-            documents = loaded.documents
-            observations = await _load_observations(conn, bank_id, loaded.unit_index) if include_observations else []
-            if include_knowledge_base:
-                mental_models = await _dump_bank_rows(conn, "mental_models", bank_id)
-                knowledge_pages = await _load_knowledge_pages(conn, bank_id)
-
-    fact_total = sum(len(document.facts) for document in documents)
-    manifest = TransferManifest(
-        schema_version=SCHEMA_VERSION,
-        source_bank_id=bank_id,
-        exported_at=datetime.now(UTC),
-        document_count=len(documents),
-        fact_count=fact_total,
-        observation_count=len(observations),
-        mental_model_count=len(mental_models),
-        knowledge_page_count=len(knowledge_pages),
-    )
-
-    # ZIP compression and per-document JSON serialisation are CPU-bound and, on a
-    # large bank, would block the event loop for seconds (issue #3321). Run the
-    # assembly in a worker thread so unrelated requests/tasks keep progressing.
-    archive_bytes = await anyio.to_thread.run_sync(
-        _build_archive_bytes, documents, observations, mental_models, knowledge_pages, manifest
-    )
-
-    logger.info(
-        "[transfer] Exported %d document(s), %d fact(s), %d observation(s) from bank %s",
-        len(documents),
-        fact_total,
-        len(observations),
+    chunks = []
+    async for chunk in stream_export_documents(
+        backend,
         bank_id,
-    )
-    return archive_bytes
-
-
-def _build_archive_bytes(
-    documents: list[TransferDocument],
-    observations: list[TransferObservation],
-    mental_models: list[dict],
-    knowledge_pages: list[TransferKnowledgePage],
-    manifest: TransferManifest,
-) -> bytes:
-    """Serialise the loaded documents/observations/manifest into a ZIP archive.
-
-    Pure CPU work (DEFLATE + Pydantic JSON dumps) with no I/O, so it runs off the
-    event loop via :func:`anyio.to_thread.run_sync`.
-    """
-    archive = io.BytesIO()
-    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
-        for index, document in enumerate(documents):
-            zf.writestr(
-                f"documents/{index:06d}.json",
-                document.model_dump_json(indent=2, exclude_none=False),
-            )
-
-        if observations:
-            payload = "[\n" + ",\n".join(o.model_dump_json(indent=2) for o in observations) + "\n]\n"
-            zf.writestr("observations.json", payload)
-
-        if mental_models:
-            zf.writestr("mental_models.json", json.dumps(mental_models, indent=2, default=_row_json_default))
-        if knowledge_pages:
-            payload = "[\n" + ",\n".join(p.model_dump_json(indent=2) for p in knowledge_pages) + "\n]\n"
-            zf.writestr("knowledge_pages.json", payload)
-
-        zf.writestr("manifest.json", manifest.model_dump_json(indent=2))
-
-    return archive.getvalue()
+        document_ids,
+        include_observations=include_observations,
+        include_knowledge_base=include_knowledge_base,
+        memories=memories,
+    ):
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _row_json_default(obj: Any) -> Any:
@@ -437,6 +472,267 @@ async def _dump_history_rows(conn: Any, table: str, bank_id: str) -> list[dict]:
     return [{k: v for k, v in dict(row).items() if k not in _DERIVED_COLUMNS and k != "id"} for row in rows]
 
 
+async def stream_export_bank(
+    conn_or_backend: Any,
+    bank_id: str,
+    *,
+    scope: TransferScope | None = None,
+    bank_rows_json_encoding: BankRowsJSONEncoding = "serialized",
+    memories: Any = None,
+    file_storage: Any = None,
+    batch_size: int = 100,
+) -> AsyncIterator[bytes]:
+    """Stream an entire bank into a portable ZIP archive with O(1) memory footprint.
+
+    Design note on snapshot consistency vs. connection starvation:
+    Instead of holding a single database connection and transaction open across
+    the entire export (which could take minutes or hours for large banks with gigabytes
+    of attachments and starve connection pools), streaming reads release connections
+    between batches.
+
+    Consistency semantics:
+    - This export produces an eventual/multi-query snapshot rather than a strict
+      single-transaction point-in-time snapshot.
+    - Only `observations` explicitly filter out memory units that were not part of
+      the initial document batch (`unit_index`).
+    - Other sections (mental models with `based_on`, knowledge pages, invalidated
+      facts, and operational/history rows) are dumped in subsequent queries and may
+      reference documents or units created concurrently that do not appear in the
+      emitted document batches.
+    - Note on comparison with `clone_bank`: while `clone_bank` (internal server-side clone)
+      executes inside a single `conn.transaction()` block, it runs under the server default
+      `READ COMMITTED` isolation level (not `REPEATABLE READ`), meaning each statement sees its
+      own snapshot rather than a strict point-in-time isolation across all tables. Streaming
+      export similarly operates under `READ COMMITTED` but deliberately releases connections
+      between batch queries to avoid connection pool starvation during long-running streaming.
+      (If strict point-in-time isolation is ever needed for clone, a separate PR could pass
+      `isolation="repeatable_read"`).
+    - `document_count` in the manifest records the exact number of documents actually
+      emitted to the archive (`document_count`).
+    """
+    scope = scope or TransferScope()
+    memories = _resolve_memories(memories)
+    streamer = ZipStreamer()
+
+    document_count = 0
+    fact_total = 0
+    observation_count = 0
+    attachments_count = 0
+    mental_models_count = 0
+    knowledge_pages_count = 0
+    directive_count = 0
+    webhook_count = 0
+    operational_rows: dict[str, list[dict]] = {}
+    invalidated_rows: list[dict] = []
+
+    if scope.data:
+        if _is_store_owned(memories, bank_id):
+            loaded = await _load_documents_from_store(memories, bank_id, None, include_lifecycle=True)
+            for index, doc in enumerate(loaded.documents):
+                fact_total += len(doc.facts)
+                doc_bytes = pydantic_core.to_json(doc, exclude_none=True)
+                async for chunk in streamer.write_file_bytes(f"documents/{index:06d}.json", doc_bytes, compress=True):
+                    yield chunk
+            document_count = len(loaded.documents)
+            observations = await _load_observations_from_store(memories, bank_id, loaded.unit_index)
+        else:
+            async with _as_connection(conn_or_backend) as conn:
+                doc_rows = await conn.fetch(
+                    f"""
+                    SELECT id FROM {fq_table("documents")}
+                    WHERE bank_id = $1
+                    ORDER BY created_at, id
+                    """,
+                    bank_id,
+                )
+            all_doc_ids = [r["id"] for r in doc_rows]
+            unit_index: dict[Any, _UnitLocation] = {}
+            global_doc_idx = 0
+            for i in range(0, len(all_doc_ids), batch_size):
+                batch_ids = all_doc_ids[i : i + batch_size]
+                async with _as_connection(conn_or_backend) as conn:
+                    loaded_batch = await _load_documents(conn, bank_id, batch_ids, include_lifecycle=True)
+                for doc in loaded_batch.documents:
+                    fact_total += len(doc.facts)
+                    doc_bytes = pydantic_core.to_json(doc, exclude_none=True)
+                    async for chunk in streamer.write_file_bytes(
+                        f"documents/{global_doc_idx:06d}.json", doc_bytes, compress=True
+                    ):
+                        yield chunk
+                    global_doc_idx += 1
+                unit_index.update(loaded_batch.unit_index)
+
+            document_count = global_doc_idx
+            async with _as_connection(conn_or_backend) as conn:
+                observations = await _load_observations(conn, bank_id, unit_index)
+
+        observation_count = len(observations)
+        if observations:
+            obs_bytes = pydantic_core.to_json(observations, exclude_none=True)
+            async for chunk in streamer.write_file_bytes("observations.json", obs_bytes, compress=True):
+                yield chunk
+
+        # Attachments and blobs
+        async with _as_connection(conn_or_backend) as conn:
+            att_rows = await conn.fetch(
+                f"SELECT bank_id, document_id, attachment_hash, short_id, media_type, byte_size, storage_key, kind, "
+                f"filename, created_at "
+                f"FROM {fq_table('attachments')} WHERE bank_id = $1 ORDER BY document_id, attachment_hash",
+                bank_id,
+            )
+        if att_rows:
+            if file_storage is None:
+                raise ValueError(
+                    f"Bank '{bank_id}' has {len(att_rows)} attachment(s) but no file storage was supplied to the export; "
+                    f"their bytes cannot be carried."
+                )
+            attachments: list[TransferAttachment] = []
+            for index, row in enumerate(att_rows):
+                storage_key = row["storage_key"]
+                byte_size = row.get("byte_size")
+                if byte_size is not None and byte_size >= 0xFFFFFFFF:
+                    raise OverflowError(
+                        f"Attachment '{row['short_id']}' ({row.get('filename') or storage_key}) "
+                        f"exceeds the 4 GB single-entry limit ({byte_size} bytes). "
+                        "Streaming individual entries exceeding 4 GB requires pre-allocated Zip64 extra headers."
+                    )
+                if not await file_storage.exists(storage_key):
+                    logger.warning(
+                        "[transfer] Attachment %s of bank %s has no bytes at %s; not carried",
+                        row["short_id"],
+                        bank_id,
+                        storage_key,
+                    )
+                    continue
+                entry = f"blobs/{index:06d}.bin"
+                attachments.append(
+                    TransferAttachment(
+                        bank_id=row["bank_id"],
+                        document_id=row["document_id"],
+                        attachment_hash=row["attachment_hash"],
+                        short_id=row["short_id"],
+                        media_type=row["media_type"],
+                        byte_size=row["byte_size"],
+                        kind=row["kind"],
+                        filename=row["filename"],
+                        created_at=row["created_at"],
+                        entry=entry,
+                    )
+                )
+                blob_stream = file_storage.retrieve_stream(storage_key)
+                async for chunk in streamer.write_file_chunks(entry, blob_stream, compress=True, compression_level=0):
+                    yield chunk
+
+            if attachments:
+                attachments_count = len(attachments)
+                att_bytes = pydantic_core.to_json(attachments, exclude_none=True)
+                async for chunk in streamer.write_file_bytes("attachments.json", att_bytes, compress=True):
+                    yield chunk
+
+        # Operational rows
+        async with _as_connection(conn_or_backend) as conn:
+            operational_rows = await _dump_operational_rows(conn, bank_id)
+        for table, rows in operational_rows.items():
+            rows_bytes = json.dumps(rows, default=_row_json_default).encode("utf-8")
+            async for chunk in streamer.write_file_bytes(f"data/{table}.json", rows_bytes, compress=True):
+                yield chunk
+
+        async with _as_connection(conn_or_backend) as conn:
+            invalidated_rows = await _dump_invalidated_units(conn, bank_id)
+        inv_bytes = json.dumps(invalidated_rows, default=_row_json_default).encode("utf-8")
+        async for chunk in streamer.write_file_bytes("data/invalidated_memory_units.json", inv_bytes, compress=True):
+            yield chunk
+
+        # Synthesized knowledge (mental models, carried history, knowledge pages)
+        async with _as_connection(conn_or_backend) as conn:
+            mental_models_rows = await _dump_bank_rows(conn, "mental_models", bank_id)
+        mental_models_count = len(mental_models_rows)
+        mm_bytes = json.dumps(mental_models_rows, default=_row_json_default).encode("utf-8")
+        async for chunk in streamer.write_file_bytes("mental_models.json", mm_bytes, compress=True):
+            yield chunk
+
+        for table in CARRIED_HISTORY_TABLES:
+            async with _as_connection(conn_or_backend) as conn:
+                h_rows = await _dump_history_rows(conn, table, bank_id)
+            h_bytes = json.dumps(h_rows, default=_row_json_default).encode("utf-8")
+            async for chunk in streamer.write_file_bytes(f"{table}.json", h_bytes, compress=True):
+                yield chunk
+
+        async with _as_connection(conn_or_backend) as conn:
+            knowledge_pages = await _load_knowledge_pages(conn, bank_id)
+        knowledge_pages_count = len(knowledge_pages)
+        if knowledge_pages:
+            kp_bytes = pydantic_core.to_json(knowledge_pages, exclude_none=True)
+            async for chunk in streamer.write_file_bytes("knowledge_pages.json", kp_bytes, compress=True):
+                yield chunk
+        else:
+            async for chunk in streamer.write_file_bytes("knowledge_pages.json", b"[]\n", compress=True):
+                yield chunk
+
+    if scope.bank_config:
+        for table in _CONFIG_ROW_TABLES:
+            async with _as_connection(conn_or_backend) as conn:
+                rows = await _dump_bank_rows(conn, table, bank_id)
+            if table == "directives":
+                directive_count = len(rows)
+            elif table == "webhooks":
+                webhook_count = len(rows)
+            cfg_bytes = json.dumps(rows, default=_row_json_default).encode("utf-8")
+            async for chunk in streamer.write_file_bytes(f"{table}.json", cfg_bytes, compress=True):
+                yield chunk
+
+    if scope.history:
+        for table in HISTORY_TABLES:
+            async with _as_connection(conn_or_backend) as conn:
+                rows = await _dump_bank_rows(conn, table, bank_id)
+            h_bytes = json.dumps(rows, default=_row_json_default).encode("utf-8")
+            async for chunk in streamer.write_file_bytes(f"history/{table}.json", h_bytes, compress=True):
+                yield chunk
+
+    manifest = TransferManifest(
+        schema_version=SCHEMA_VERSION,
+        source_bank_id=bank_id,
+        exported_at=datetime.now(UTC),
+        document_count=document_count,
+        fact_count=fact_total,
+        observation_count=observation_count,
+        archive_type="bank",
+        mental_model_count=mental_models_count,
+        knowledge_page_count=knowledge_pages_count,
+        directive_count=directive_count,
+        webhook_count=webhook_count,
+        includes_history=scope.history,
+        scope=TransferScopeManifest(data=scope.data, bank_config=scope.bank_config, history=scope.history),
+        attachment_count=attachments_count,
+        operation_count=len(operational_rows.get("async_operations", [])),
+        invalidated_memory_count=len(invalidated_rows),
+        bank_rows_json_encoding=bank_rows_json_encoding,
+    )
+    manifest_bytes = pydantic_core.to_json(manifest, indent=2)
+    async for chunk in streamer.write_file_bytes("manifest.json", manifest_bytes, compress=True):
+        yield chunk
+
+    yield streamer.finish()
+
+    logger.info(
+        "[transfer] Exported bank %s (data=%s, bank_config=%s, history=%s): %d document(s), "
+        "%d observation(s), %d attachment(s), %d operation(s), %d mental model(s), %d knowledge page(s), "
+        "%d directive(s), %d webhook(s)",
+        bank_id,
+        scope.data,
+        scope.bank_config,
+        scope.history,
+        document_count,
+        observation_count,
+        attachments_count,
+        len(operational_rows.get("async_operations", [])),
+        mental_models_count,
+        knowledge_pages_count,
+        directive_count,
+        webhook_count,
+    )
+
+
 async def export_bank(
     conn: Any,
     bank_id: str,
@@ -448,34 +744,21 @@ async def export_bank(
 ) -> bytes:
     """Export an entire bank into a portable ZIP archive (no embeddings).
 
-    ``scope`` decides what travels — see :class:`TransferScope` for the mapping
-    from its three booleans to tables. The default carries data and bank config
-    but not the operational history tails. Intended for migrating a bank to a new
-    instance configured with a different embedding model / vector / text-search
-    backend — every vector is regenerated on the target, so nothing here is
-    encoder-specific.
-
-    ``conn`` is a live connection scoped to the bank's schema (the admin CLI sets
-    ``_current_schema`` and passes its raw connection; the engine acquires one
-    after tenant auth). ``file_storage`` is needed only for attachment bytes; a
-    bank with attachments exported without one raises rather than silently
-    producing rows that point at blobs the archive does not carry.
-
-    This convenience form keeps ``conn`` for the whole call, including the
-    compression — fine for the admin CLI, which owns a connection of its own and
-    has no event loop to share. A server path wants
-    :func:`load_bank_export` and :func:`build_bank_archive` instead, so the
-    connection returns to the pool as soon as the reads are done.
+    Convenience wrapper buffering ``stream_export_bank`` into memory.
+    Production export endpoints and CLI use ``stream_export_bank`` directly
+    for constant O(1) memory streaming.
     """
-    payload = await load_bank_export(
+    chunks = []
+    async for chunk in stream_export_bank(
         conn,
         bank_id,
         scope=scope,
         bank_rows_json_encoding=bank_rows_json_encoding,
         memories=memories,
         file_storage=file_storage,
-    )
-    return await build_bank_archive(payload)
+    ):
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 @dataclass

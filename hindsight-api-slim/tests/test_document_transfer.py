@@ -2869,13 +2869,12 @@ async def test_a_copy_keeps_a_name_someone_chose(api_client, memory, request_con
 
 
 def test_archive_assembly_is_confined_to_threadable_builders():
-    """Every ZIP is written by a plain function whose name starts with `_build_`.
+    """Every non-streamed ZIP is written by a plain function whose name starts with `_build_`.
 
-    Those are the ones the async wrappers hand to a worker thread. Assembling an
-    archive inline in an async function instead — which `export_bank` did until
-    the transfer and clone endpoints started calling it inside the API process —
-    serialises the whole bank and DEFLATEs it on the event loop, stalling every
-    other request for as long as the bank is big (the shape of issue #3321).
+    Those are the ones the async wrappers hand to a worker thread. Both document
+    and whole-bank external exports stream directly via ZipStreamer, while internal
+    whole-bank archive assembly for clone_bank runs off the event loop via
+    _build_bank_archive_bytes under a single-transaction read snapshot.
     """
     import ast
     from pathlib import Path
@@ -2900,7 +2899,7 @@ def test_archive_assembly_is_confined_to_threadable_builders():
             offenders.append(node.name)
 
     assert offenders == [], f"archive written outside a threadable builder: {offenders}"
-    assert {"_build_archive_bytes", "_build_bank_archive_bytes"} <= builders
+    assert {"_build_bank_archive_bytes"} <= builders
 
 
 def test_the_engine_never_compresses_inside_a_read_transaction():
