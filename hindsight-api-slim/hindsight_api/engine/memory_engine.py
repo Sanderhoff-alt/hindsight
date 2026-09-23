@@ -3462,7 +3462,7 @@ class MemoryEngine(MemoryEngineInterface):
         """
         rows = await conn.fetch(
             f"""SELECT result_metadata FROM {table}
-                WHERE operation_type = 'export_documents'
+                WHERE operation_type IN ('export_documents', 'export_bank')
                   AND status IN ('completed', 'failed', 'cancelled')
                   AND updated_at < $1
                 ORDER BY updated_at, operation_id

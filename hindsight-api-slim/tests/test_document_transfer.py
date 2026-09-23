@@ -1989,6 +1989,39 @@ async def test_purge_expired_export_archives(memory, request_context):
 
 
 @pytest.mark.asyncio
+async def test_purge_expired_export_archives_includes_export_bank(memory, request_context):
+    """Retention's archive purge also deletes archives produced by whole-bank exports."""
+    from datetime import timedelta
+
+    bank = _unique_bank("bank_export_purge")
+    try:
+        await _retain(memory, bank, "Whole bank export retention test.", request_context, "doc-1")
+        submission = await memory.submit_bank_export_async(bank, request_context)
+        op_id = submission["operation_id"]
+        status = await memory.get_operation_status(bank, op_id, request_context=request_context)
+        storage_key = status["result_metadata"]["storage_key"]
+        assert await memory._file_storage.retrieve(storage_key)
+
+        backend = await memory._get_backend()
+        old = datetime.now(timezone.utc) - timedelta(days=100)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=1)
+        async with acquire_with_retry(backend) as conn:
+            await conn.execute(
+                f"UPDATE {fq_table('async_operations')} SET updated_at = $1 WHERE operation_id = $2",
+                old,
+                uuid.UUID(op_id),
+            )
+            purged = await memory.purge_expired_export_archives(
+                conn, fq_table("async_operations"), cutoff, batch_size=100
+            )
+        assert purged >= 1
+        with pytest.raises(FileNotFoundError):
+            await memory._file_storage.retrieve(storage_key)
+    finally:
+        await memory.delete_bank(bank, request_context=request_context)
+
+
+@pytest.mark.asyncio
 async def test_purge_expired_export_archives_honours_the_batch_bound(memory, request_context):
     """The purge deletes at most ``batch_size`` archives per call.
 
