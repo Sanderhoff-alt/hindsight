@@ -58,7 +58,7 @@ async def test_oracle_reassert_locks_in_stable_order_then_reinserts():
 
     insert_sql, rows = conn.executemany.await_args.args
     assert "ON CONFLICT DO NOTHING" in insert_sql
-    assert rows == [(_ID_A, "bank-1", "Alice", "regular"), (_ID_B, "bank-1", "Bob", "label")]
+    assert rows == [(_ID_A, "bank-1", "Alice", "alice", "regular"), (_ID_B, "bank-1", "Bob", "bob", "label")]
 
 
 @pytest.mark.asyncio

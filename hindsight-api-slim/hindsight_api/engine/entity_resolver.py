@@ -30,6 +30,7 @@ from .retain.entity_labels import (
 from .retain.entity_labels import (
     parse_entity_labels as _parse_entity_labels,
 )
+from .retain.link_utils import fold_entity_name
 from .retain.types import ResolvedEntity
 
 logger = logging.getLogger(__name__)
@@ -79,10 +80,11 @@ _TRGM_WORD = re.compile(r"[^\W_]+", re.UNICODE)
 
 
 def _trigram_set(text: str) -> set[str]:
-    """Trigrams of ``text`` the way PostgreSQL pg_trgm generates them: lowercase, split into words,
-    pad each word with two leading + one trailing blank, and take every 3-char window."""
+    """Trigrams of ``text`` the way PostgreSQL pg_trgm generates them on folded_name:
+    whitespace-collapsed, lowercase, CJK-folded, split into words, pad each word
+    with two leading + one trailing blank, and take every 3-char window."""
     trigrams: set[str] = set()
-    for word in _TRGM_WORD.findall(text.lower()):
+    for word in _TRGM_WORD.findall(fold_entity_name(text)):
         padded = f"  {word} "
         for i in range(len(padded) - 2):
             trigrams.add(padded[i : i + 3])
@@ -151,7 +153,7 @@ def _tokens_are_compatible(a: str, b: str) -> bool:
     token check, and imposing this on top would reject real variants that have no long shared word
     to hide behind ("Nick"/"Nicolas" is 0.55).
     """
-    ta, tb = _TRGM_WORD.findall(a.lower()), _TRGM_WORD.findall(b.lower())
+    ta, tb = _TRGM_WORD.findall(fold_entity_name(a)), _TRGM_WORD.findall(fold_entity_name(b))
     if len(ta) < 2 and len(tb) < 2:
         return True
     short, rest = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
@@ -317,22 +319,22 @@ def _find_intrabatch_similar_pairs(names: list[str], threshold: float) -> list[_
 
 
 def _cluster_new_entity_names(
-    rep_by_lower: dict[str, str],
-    count_by_lower: dict[str, int],
+    rep_by_folded: dict[str, str],
+    count_by_folded: dict[str, int],
     pairs: list[_SimilarNamePair],
 ) -> dict[str, str]:
     """Union-find the similar-name pairs into clusters and pick one canonical name each.
 
     Args:
-        rep_by_lower: lowercase name -> a representative original-case spelling of it.
-        count_by_lower: lowercase name -> how many mentions carry it (for canonical choice).
-        pairs: name pairs judged similar (order/case irrelevant; compared lowercased).
+        rep_by_folded: folded name -> a representative original-case spelling of it.
+        count_by_folded: folded name -> how many mentions carry it (for canonical choice).
+        pairs: name pairs judged similar (order/case irrelevant; compared folded).
 
     Returns:
-        lowercase name -> canonical original-case name for its cluster. Singletons map to
+        folded name -> canonical original-case name for its cluster. Singletons map to
         themselves, so the caller can look up every member uniformly.
     """
-    parent: dict[str, str] = {nl: nl for nl in rep_by_lower}
+    parent: dict[str, str] = {nl: nl for nl in rep_by_folded}
 
     def find(x: str) -> str:
         while parent[x] != x:
@@ -341,22 +343,22 @@ def _cluster_new_entity_names(
         return x
 
     for pair in pairs:
-        a, b = pair.name_a.lower(), pair.name_b.lower()
+        a, b = fold_entity_name(pair.name_a), fold_entity_name(pair.name_b)
         if a in parent and b in parent:
             ra, rb = find(a), find(b)
             if ra != rb:
                 parent[ra] = rb
 
     clusters: dict[str, list[str]] = {}
-    for nl in rep_by_lower:
+    for nl in rep_by_folded:
         clusters.setdefault(find(nl), []).append(nl)
 
     canonical_by_member: dict[str, str] = {}
     for members in clusters.values():
         # Canonical = most-mentioned, then shortest, then lexicographically smallest — a
         # deterministic pick that prefers the plainest spelling in the cluster.
-        canonical_lower = min(members, key=lambda nl: (-count_by_lower[nl], len(rep_by_lower[nl]), rep_by_lower[nl]))
-        canonical_name = rep_by_lower[canonical_lower]
+        canonical_key = min(members, key=lambda nl: (-count_by_folded[nl], len(rep_by_folded[nl]), rep_by_folded[nl]))
+        canonical_name = rep_by_folded[canonical_key]
         for nl in members:
             canonical_by_member[nl] = canonical_name
     return canonical_by_member
@@ -440,7 +442,7 @@ _nlp = None
 _SCORING_YIELD_EVERY: Final = 256
 
 
-def _cheap_rank_key(entity_text_lower: str, candidate: tuple[Any, str, Any, datetime | None, int | None]) -> tuple:
+def _cheap_rank_key(entity_text_folded: str, candidate: tuple[Any, str, Any, datetime | None, int | None]) -> tuple:
     """Ordering key (not a multi-value return) approximating match quality cheaply.
 
     Used only to truncate oversized candidate sets: the fuzzy strategies already
@@ -449,10 +451,10 @@ def _cheap_rank_key(entity_text_lower: str, candidate: tuple[Any, str, Any, date
     exact match first, then a close name length, then a well-established entity —
     all O(1) per candidate, unlike the SequenceMatcher pass it protects.
     """
-    name_lower = candidate[1].lower()
+    name_folded = fold_entity_name(candidate[1])
     return (
-        0 if name_lower == entity_text_lower else 1,
-        abs(len(name_lower) - len(entity_text_lower)),
+        0 if name_folded == entity_text_folded else 1,
+        abs(len(name_folded) - len(entity_text_folded)),
         -(candidate[4] or 0),
         candidate[1],
     )
@@ -755,7 +757,7 @@ class EntityResolver:
         )
 
         # Build entity ID to name mapping for co-occurrence lookups
-        entity_id_to_name = {row["id"]: row["canonical_name"].lower() for row in all_entities}
+        entity_id_to_name = {row["id"]: fold_entity_name(row["canonical_name"]) for row in all_entities}
 
         # Query ALL co-occurrences for this bank's entities in one query
         # This builds a map of entity_id -> set of co-occurring entity names
@@ -780,19 +782,19 @@ class EntityResolver:
 
         for entity_text in entity_texts:
             matching = []
-            entity_text_lower = entity_text.lower()
+            entity_text_folded = fold_entity_name(entity_text)
             for row in all_entities:
                 canonical_name = row["canonical_name"]
                 ent_id = row["id"]
                 metadata = row["metadata"]
                 last_seen = row["last_seen"]
                 mention_count = row["mention_count"]
-                canonical_lower = canonical_name.lower()
+                canonical_folded = fold_entity_name(canonical_name)
                 # Match if exact or substring match
                 if (
-                    entity_text_lower == canonical_lower
-                    or entity_text_lower in canonical_lower
-                    or canonical_lower in entity_text_lower
+                    entity_text_folded == canonical_folded
+                    or entity_text_folded in canonical_folded
+                    or canonical_folded in entity_text_folded
                 ):
                     matching.append((ent_id, canonical_name, metadata, last_seen, mention_count))
             all_candidates[entity_text] = matching
@@ -841,24 +843,26 @@ class EntityResolver:
 
         # Exact, index-only lookup for label texts.
         for entity_text_batch in self._chunked(label_texts, self.entity_resolution_batch_size):
+            folded_batch = [fold_entity_name(t) for t in entity_text_batch]
             rows.extend(
                 await conn.fetch(
                     f"""
                     SELECT e.id, e.canonical_name, e.metadata, e.last_seen, e.mention_count,
                            q.query_text
-                    FROM unnest($2::text[]) AS q(query_text)
+                    FROM unnest($2::text[], $3::text[]) AS q(query_text, folded_text)
                     JOIN {fq_table("entities")} e ON (
                         e.bank_id = $1
-                        AND LOWER(e.canonical_name) = LOWER(q.query_text)
+                        AND e.folded_name = q.folded_text
                     )
                     """,
                     bank_id,
                     entity_text_batch,
+                    folded_batch,
                 )
             )
 
         # Fetch candidates for the remaining texts in bounded batches.
-        # Uses the GIN trigram index on LOWER(canonical_name) for case-insensitive
+        # Uses the GIN trigram index on folded_name for normalized
         # similarity lookup. Previous version also had LIKE '%...' substring fallbacks,
         # but those forced full sequential scans of the entities table and caused
         # TimeoutErrors on banks with 10k+ entities. The pg_trgm similarity threshold
@@ -878,24 +882,26 @@ class EntityResolver:
         # _resolve_from_candidates (GH-3211). Ranking by pg_trgm similarity — which
         # the index scan computes anyway — keeps the truncation at the noise end.
         for entity_text_batch in self._chunked(fuzzy_texts, self.entity_resolution_batch_size):
+            folded_batch = [fold_entity_name(t) for t in entity_text_batch]
             rows.extend(
                 await conn.fetch(
                     f"""
                     SELECT c.id, c.canonical_name, c.metadata, c.last_seen, c.mention_count,
                            q.query_text
-                    FROM unnest($2::text[]) AS q(query_text)
+                    FROM unnest($2::text[], $3::text[]) AS q(query_text, folded_text)
                     CROSS JOIN LATERAL (
                         SELECT e.id, e.canonical_name, e.metadata, e.last_seen, e.mention_count
                         FROM {fq_table("entities")} e
                         WHERE e.bank_id = $1
                           AND e.entity_kind != 'label'
-                          AND LOWER(e.canonical_name) % LOWER(q.query_text)
-                        ORDER BY similarity(LOWER(e.canonical_name), LOWER(q.query_text)) DESC, e.id
-                        LIMIT $3
+                          AND e.folded_name % q.folded_text
+                        ORDER BY similarity(e.folded_name, q.folded_text) DESC, e.id
+                        LIMIT $4
                     ) c
                     """,
                     bank_id,
                     entity_text_batch,
+                    folded_batch,
                     self.entity_resolution_max_candidates,
                 )
             )
@@ -926,7 +932,7 @@ class EntityResolver:
             )
             # Build name lookup for co-occurrence mapping
             id_to_name = {
-                row["id"]: row["canonical_name"].lower()
+                row["id"]: fold_entity_name(row["canonical_name"])
                 for cands in all_candidates.values()
                 for row in [{"id": c[0], "canonical_name": c[1]} for c in cands]
             }
@@ -990,7 +996,7 @@ class EntityResolver:
                         FROM JSON_TABLE($2, '$[*]' COLUMNS (query_text VARCHAR2(4000) PATH '$')) q
                         JOIN {entities_table} e ON (
                             e.bank_id = $1
-                            AND LOWER(e.canonical_name) = LOWER(q.query_text)
+                            AND e.folded_name = LOWER(q.query_text)
                         )
                         """,
                         bank_id,
@@ -1013,14 +1019,14 @@ class EntityResolver:
                                    ROW_NUMBER() OVER (
                                        PARTITION BY q.query_text
                                        ORDER BY UTL_MATCH.JARO_WINKLER_SIMILARITY(
-                                           LOWER(e.canonical_name), LOWER(q.query_text)
+                                           e.folded_name, LOWER(q.query_text)
                                        ) DESC, e.id
                                    ) AS rn
                             FROM JSON_TABLE($2, '$[*]' COLUMNS (query_text VARCHAR2(4000) PATH '$')) q
                             JOIN {entities_table} e ON (
                                 e.bank_id = $1
                                 AND e.entity_kind != 'label'
-                                AND UTL_MATCH.JARO_WINKLER_SIMILARITY(LOWER(e.canonical_name), LOWER(q.query_text)) > 70
+                                AND UTL_MATCH.JARO_WINKLER_SIMILARITY(e.folded_name, LOWER(q.query_text)) > 70
                             )
                         )
                         WHERE rn <= $3
@@ -1068,7 +1074,7 @@ class EntityResolver:
             )
             # Build name lookup for co-occurrence mapping
             id_to_name = {
-                row["id"]: row["canonical_name"].lower()
+                row["id"]: fold_entity_name(row["canonical_name"])
                 for cands in all_candidates.values()
                 for row in [{"id": c[0], "canonical_name": c[1]} for c in cands]
             }
@@ -1112,33 +1118,33 @@ class EntityResolver:
         come down, run the check inside the union-find instead, only for pairs whose roots differ —
         same clusters, ~12x fewer checks on that shape.
         """
-        rep_by_lower: dict[str, str] = {}
-        count_by_lower: dict[str, int] = {}
+        rep_by_folded: dict[str, str] = {}
+        count_by_folded: dict[str, int] = {}
         for e in entities_to_create:
             if e.is_label or not e.resolve:
                 continue
-            name_lower = e.name.lower()
-            rep_by_lower.setdefault(name_lower, e.name)
-            count_by_lower[name_lower] = count_by_lower.get(name_lower, 0) + 1
+            name_folded = fold_entity_name(e.name)
+            rep_by_folded.setdefault(name_folded, e.name)
+            count_by_folded[name_folded] = count_by_folded.get(name_folded, 0) + 1
 
-        if len(rep_by_lower) < 2:
+        if len(rep_by_folded) < 2:
             return {}  # nothing to compare
-        if len(rep_by_lower) > _INTRABATCH_MAX_NAMES:
+        if len(rep_by_folded) > _INTRABATCH_MAX_NAMES:
             logger.warning(
                 "Skipping in-batch entity dedup: %d unique new names exceeds the %d cap "
                 "(O(N^2) trigram comparison); same-batch surface variants may not be merged.",
-                len(rep_by_lower),
+                len(rep_by_folded),
                 _INTRABATCH_MAX_NAMES,
             )
             return {}
         pairs = [
             pair
-            for pair in _find_intrabatch_similar_pairs(list(rep_by_lower.values()), self._intrabatch_merge_similarity)
+            for pair in _find_intrabatch_similar_pairs(list(rep_by_folded.values()), self._intrabatch_merge_similarity)
             if _tokens_are_compatible(pair.name_a, pair.name_b)
         ]
         if not pairs:
             return {}
-        return _cluster_new_entity_names(rep_by_lower, count_by_lower, pairs)
+        return _cluster_new_entity_names(rep_by_folded, count_by_folded, pairs)
 
     async def _resolve_from_candidates(
         self,
@@ -1179,7 +1185,7 @@ class EntityResolver:
 
         for idx, entity_data in enumerate(entities_data):
             entity_text = entity_data["text"]
-            entity_text_lower = entity_text.lower()
+            entity_text_folded = fold_entity_name(entity_text)
             nearby_entities = entity_data.get("nearby_entities", [])
             # Use per-entity date if available, otherwise fall back to batch-level date
             entity_event_date = entity_data.get("event_date", unit_event_date)
@@ -1200,11 +1206,10 @@ class EntityResolver:
                     self.entity_resolution_max_candidates,
                     entity_text,
                 )
-                entity_text_lower_for_rank = entity_text.lower()
                 candidates = heapq.nsmallest(
                     self.entity_resolution_max_candidates,
                     candidates,
-                    key=lambda c: _cheap_rank_key(entity_text_lower_for_rank, c),
+                    key=lambda c: _cheap_rank_key(entity_text_folded, c),
                 )
 
             # Label entities (from entity_labels config) use exact matching only.
@@ -1230,7 +1235,7 @@ class EntityResolver:
                 # Exact case-insensitive match only for label entities
                 exact_match: ResolvedEntity | None = None
                 for candidate_id, canonical_name, metadata, last_seen, mention_count in candidates:
-                    if canonical_name.lower() == entity_text_lower:
+                    if fold_entity_name(canonical_name) == entity_text_folded:
                         exact_match = ResolvedEntity(
                             entity_id=candidate_id, canonical_name=canonical_name, entity_kind="label"
                         )
@@ -1250,8 +1255,8 @@ class EntityResolver:
             best_candidate: ResolvedEntity | None = None
             best_score = 0.0
 
-            nearby_entity_set = {e["text"].lower() for e in nearby_entities if e["text"] != entity_text}
-            mention_trigrams = _trigram_set(entity_text_lower)
+            nearby_entity_set = {fold_entity_name(e["text"]) for e in nearby_entities if e["text"] != entity_text}
+            mention_trigrams = _trigram_set(entity_text)
             # Weight each nearby name by how selective it is, once per mention rather than
             # once per candidate. Only the numerator is weighted: dividing by the weights too
             # would normalise the damping straight back out whenever the hub is the *only*
@@ -1290,7 +1295,7 @@ class EntityResolver:
                 # ranks them correctly. Gate on trigram, and leave the score above the gate
                 # alone: SequenceMatcher stays load-bearing for typo variants that arrive
                 # with no co-occurrence context at all ("Dr Waler" -> "Dr Wall").
-                canonical_lower = canonical_name.lower()
+                canonical_folded = fold_entity_name(canonical_name)
                 candidate_trigrams = candidate_trigram_map.get(canonical_name)
                 if candidate_trigrams is None:
                     candidate_trigrams = _trigram_set(canonical_name)
@@ -1301,7 +1306,7 @@ class EntityResolver:
 
                 # ...and word by word, since whole-name similarity lets one long shared word drown
                 # out a completely different short one (see _tokens_are_compatible).
-                if not _tokens_are_compatible(entity_text_lower, canonical_lower):
+                if not _tokens_are_compatible(entity_text, canonical_name):
                     continue
 
                 if name_trigram_similarity >= _IDENTICAL_TRIGRAMS:
@@ -1315,7 +1320,7 @@ class EntityResolver:
                     score = 0.0
 
                     # 1. Name similarity (0-0.5)
-                    name_similarity = SequenceMatcher(None, entity_text_lower, canonical_lower).ratio()
+                    name_similarity = SequenceMatcher(None, entity_text_folded, canonical_folded).ratio()
                     score += name_similarity * 0.5
 
                     # 2. Co-occurring entities (0-0.3), each weighted by how selective it is
@@ -1378,6 +1383,7 @@ class EntityResolver:
             @dataclass
             class _NameGroup:
                 name: str
+                folded_name: str
                 event_date: datetime | None
                 is_label: bool
                 indices: list[int] = field(default_factory=list)
@@ -1386,28 +1392,31 @@ class EntityResolver:
             for e in entities_to_create:
                 # Non-label variants fold into their cluster's canonical name; everything else
                 # (labels, singletons) keys on itself, preserving the prior exact-match behavior.
-                canonical = canonical_by_member.get(e.name.lower(), e.name)
-                key = canonical.lower()
+                canonical = canonical_by_member.get(fold_entity_name(e.name), e.name)
+                key = fold_entity_name(canonical)
                 group = groups.get(key)
                 if group is None:
                     # Labels key on themselves and the dedup pass only clusters
                     # non-label names, so the first member's is_label holds for
                     # every member of the group.
-                    group = _NameGroup(name=canonical, event_date=e.event_date, is_label=e.is_label)
+                    group = _NameGroup(name=canonical, folded_name=key, event_date=e.event_date, is_label=e.is_label)
                     groups[key] = group
                 elif e.event_date is not None and (group.event_date is None or e.event_date < group.event_date):
                     # Keep the earliest event_date across the cluster ("first seen").
                     group.event_date = e.event_date
                 group.indices.append(e.idx)
 
-            # Sort by lowercase name for deterministic ordering.
+            # Sort by folded name for deterministic ordering matching the conflict target.
             sorted_groups = sorted(groups.items())
             entity_names = [g.name for _, g in sorted_groups]
+            entity_folded_names = [g.folded_name for _, g in sorted_groups]
             entity_dates = [g.event_date for _, g in sorted_groups]
             entity_kinds = ["label" if g.is_label else "regular" for _, g in sorted_groups]
-            # Stored canonical name per lowercase key, so a resurrected parent
+            # Stored canonical name per folded key and lowercase key, so a resurrected parent
             # keeps the name it was created/matched with rather than a fallback.
-            canonical_by_name = {name_lower: g.name for name_lower, g in sorted_groups}
+            canonical_by_name = {key: g.name for key, g in sorted_groups}
+            for _, g in sorted_groups:
+                canonical_by_name[g.name.lower()] = g.name
 
             # INSERT ... ON CONFLICT DO NOTHING — no row lock on already-existing entities.
             # mention_count starts at 0 here; flush_pending_stats() is the sole source of
@@ -1421,44 +1430,44 @@ class EntityResolver:
                 entity_names,
                 entity_dates,
                 entity_kinds,
+                entity_folded_names=entity_folded_names,
             )
 
             # Fallback SELECT for names that conflicted (another worker won the race).
-            #
-            # IMPORTANT: we must let the database do the lowercasing on BOTH sides of the
-            # comparison.  Python's str.lower() and PostgreSQL's LOWER() differ for some
-            # Unicode characters — most notably Turkish İ (U+0130):
-            #   Python:     'İstanbul'.lower()  == 'i\u0307stanbul'  (i + combining dot, 2 chars)
-            #   PostgreSQL: LOWER('İstanbul')   == 'istanbul'         (plain i, 1 char)
-            # Passing a Python-lowercased name to "LOWER(canonical_name) = ANY($2::text[])"
-            # would fail to match the stored entity, leaving entity_id as None and causing
-            # a NOT NULL constraint violation on unit_entities.entity_id.
-            missing_original = [g.name for name_lower, g in sorted_groups if name_lower not in id_by_name]
+            # Look up by folded_name.
+            missing_original = [
+                g.name for key, g in sorted_groups if key not in id_by_name and g.name.lower() not in id_by_name
+            ]
             if missing_original:
+                missing_folded = [fold_entity_name(n) for n in missing_original]
                 existing_rows = await self._ops.fetch_missing_entity_ids(
                     conn,
                     entities_table,
                     bank_id,
                     missing_original,
+                    missing_folded_names=missing_folded,
                 )
                 for row in existing_rows:
-                    id_by_name[row["name_lower"]] = row["id"]
-                    canonical_by_name[row["name_lower"]] = row["canonical_name"]
-                    # Also index by Python's lower() of the original input name so the
-                    # assignment loop (which uses Python-lowercased keys) finds it even
-                    # when Python and the database produce different lowercase strings.
-                    if "input_name" in row:
-                        input_name_lower = row["input_name"].lower()
-                        id_by_name[input_name_lower] = row["id"]
-                        canonical_by_name[input_name_lower] = row["canonical_name"]
+                    if "folded_name" in row and row["folded_name"]:
+                        id_by_name[row["folded_name"]] = row["id"]
+                        canonical_by_name[row["folded_name"]] = row["canonical_name"]
+                    if "name_lower" in row and row["name_lower"]:
+                        id_by_name[row["name_lower"]] = row["id"]
+                        canonical_by_name[row["name_lower"]] = row["canonical_name"]
+                    if "input_name" in row and row["input_name"]:
+                        input_name_folded = fold_entity_name(row["input_name"])
+                        id_by_name[input_name_folded] = row["id"]
+                        canonical_by_name[input_name_folded] = row["canonical_name"]
+                        id_by_name[row["input_name"].lower()] = row["id"]
+                        canonical_by_name[row["input_name"].lower()] = row["canonical_name"]
 
             # Assign entity IDs back and queue one stat per original mention so that
             # flush_pending_stats() increments mention_count by the true mention count,
             # not just 1 per unique name.
-            for name_lower, g in sorted_groups:
-                entity_id = id_by_name.get(name_lower)
+            for key, g in sorted_groups:
+                entity_id = id_by_name.get(key) or id_by_name.get(g.name.lower()) or id_by_name.get(g.name)
                 if entity_id:
-                    canonical_name = canonical_by_name.get(name_lower, g.name)
+                    canonical_name = canonical_by_name.get(key) or canonical_by_name.get(g.name.lower(), g.name)
                     kind = "label" if g.is_label else "regular"
                     for original_idx in g.indices:
                         resolved[original_idx] = ResolvedEntity(
@@ -1519,6 +1528,7 @@ class EntityResolver:
             [entity.entity_id for entity in unique],
             [entity.canonical_name for entity in unique],
             [entity.entity_kind for entity in unique],
+            folded_names=[fold_entity_name(entity.canonical_name) for entity in unique],
         )
 
     async def link_units_to_entities_batch(

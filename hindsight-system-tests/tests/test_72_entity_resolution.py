@@ -95,3 +95,25 @@ async def test_an_unrelated_name_is_never_merged(client, bank_id, settled):
     await _seed_and_supply(client, bank_id, settled, "Bob Jones")
 
     assert await _entities(client, bank_id) == [(EXISTING, 1), ("Bob Jones", 1)]
+
+
+async def test_cjk_script_variants_collapse_whichever_way_the_flag_is_set(client, bank_id, settled):
+    """Traditional and Simplified Chinese variants of the same name collapse into
+    one entity record, even when resolve_entities=False. Like case folding,
+    character script folding normalizes the identity key across writing systems."""
+    # First document supplies Simplified Chinese "用户"
+    item1 = {"content": "The team shipped the release.", "entities": [{"text": "用户", "type": "person"}]}
+    await client.aretain_batch(bank_id=bank_id, items=[item1])
+    await settled(bank_id)
+
+    # Second document supplies Traditional Chinese "用戶" with resolve_entities=False
+    item2 = {
+        "content": "The team shipped the release.",
+        "entities": [{"text": "用戶", "type": "person"}],
+        "resolve_entities": False,
+    }
+    await client.aretain_batch(bank_id=bank_id, items=[item2])
+    await settled(bank_id)
+
+    # Both mentions must collapse onto the initial canonical name "用户"
+    assert await _entities(client, bank_id) == [("用户", 2)]

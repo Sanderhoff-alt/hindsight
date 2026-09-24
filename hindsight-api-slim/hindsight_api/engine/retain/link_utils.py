@@ -47,6 +47,19 @@ def _normalize_entity_name(name: str) -> str:
     return _WHITESPACE_RUN_RE.sub(" ", name).strip()
 
 
+def fold_entity_name(name: str) -> str:
+    """Fold an entity name for canonical identity comparison and indexing.
+
+    Normalizes whitespace, lowercases, and maps Traditional Chinese characters
+    to Simplified Chinese characters so variant scripts/cases collapse to the
+    same lookup key without mutating the original canonical display name.
+    """
+    from .cjk_t2s_table import fold_cjk_t2s
+
+    cleaned = _normalize_entity_name(name).lower()
+    return fold_cjk_t2s(cleaned)
+
+
 def _entity_resolve_flag(ent) -> bool:
     """Whether this candidate name should be resolved against existing entities.
 

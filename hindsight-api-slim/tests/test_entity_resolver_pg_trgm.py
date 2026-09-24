@@ -237,8 +237,8 @@ class TestPgTrgmAutoDetection:
                 labels_cfg=labels_cfg,
             )
 
-        exact_calls = [(sql, args) for sql, args in captured if "= LOWER(q.query_text)" in sql]
-        trigram_calls = [(sql, args) for sql, args in captured if "% LOWER(q.query_text)" in sql]
+        exact_calls = [(sql, args) for sql, args in captured if "e.folded_name = q.folded_text" in sql]
+        trigram_calls = [(sql, args) for sql, args in captured if "e.folded_name % q.folded_text" in sql]
 
         # Label texts are resolved by a single exact-match query — never fuzzy-probed.
         assert len(exact_calls) == 1
@@ -286,7 +286,7 @@ class TestPgTrgmAutoDetection:
                 labels_cfg=labels_cfg,
             )
 
-        fuzzy_sqls = [sql for sql in captured if "% LOWER(q.query_text)" in sql]
-        exact_sqls = [sql for sql in captured if "= LOWER(q.query_text)" in sql]
+        fuzzy_sqls = [sql for sql in captured if "e.folded_name % q.folded_text" in sql]
+        exact_sqls = [sql for sql in captured if "e.folded_name = q.folded_text" in sql]
         assert fuzzy_sqls and all("entity_kind != 'label'" in sql for sql in fuzzy_sqls)
         assert exact_sqls and all("entity_kind" not in sql for sql in exact_sqls)

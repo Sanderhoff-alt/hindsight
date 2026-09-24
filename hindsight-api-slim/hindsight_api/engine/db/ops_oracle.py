@@ -210,36 +210,43 @@ class OracleOps(DataAccessOps):
         entity_names: list[str],
         entity_dates: list,
         entity_kinds: list[str],
+        entity_folded_names: list[str] | None = None,
     ) -> dict[str, str]:
         # Row-by-row insert with duplicate suppression.
         # Can't use RETURNING with ON CONFLICT DO NOTHING reliably,
         # so INSERT (ignoring dups) then SELECT all IDs at the end.
+        if entity_folded_names is None:
+            from ..retain.link_utils import fold_entity_name
+
+            entity_folded_names = [fold_entity_name(name) for name in entity_names]
         id_by_name: dict[str, str] = {}
-        for name, event_date, kind in zip(entity_names, entity_dates, entity_kinds):
+        for name, folded, event_date, kind in zip(entity_names, entity_folded_names, entity_dates, entity_kinds):
             ts = event_date if event_date else datetime.now(UTC)
             await conn.execute(
                 f"""
-                INSERT INTO {table} (bank_id, canonical_name, first_seen, last_seen, mention_count, entity_kind)
-                VALUES ($1, $2, $3, $3, 0, $4)
-                ON CONFLICT (bank_id, LOWER(canonical_name)) DO NOTHING
+                INSERT INTO {table} (bank_id, canonical_name, folded_name, first_seen, last_seen, mention_count, entity_kind)
+                VALUES ($1, $2, $3, $4, $4, 0, $5)
+                ON CONFLICT (bank_id, folded_name) DO NOTHING
                 """,
                 bank_id,
                 name,
+                folded,
                 ts,
                 kind,
             )
         # Now SELECT all the entities we just inserted (or that already existed)
-        for name in entity_names:
+        for folded, name in zip(entity_folded_names, entity_names):
             row = await conn.fetchrow(
                 f"""
-                SELECT id, LOWER(canonical_name) AS name_lower
+                SELECT id, folded_name, LOWER(canonical_name) AS name_lower
                 FROM {table}
-                WHERE bank_id = $1 AND LOWER(canonical_name) = LOWER($2)
+                WHERE bank_id = $1 AND folded_name = $2
                 """,
                 bank_id,
-                name,
+                folded,
             )
             if row:
+                id_by_name[row["folded_name"]] = row["id"]
                 id_by_name[row["name_lower"]] = row["id"]
         return id_by_name
 
@@ -249,17 +256,23 @@ class OracleOps(DataAccessOps):
         table: str,
         bank_id: str,
         missing_names: list[str],
+        missing_folded_names: list[str] | None = None,
     ) -> list[ResultRow]:
         # Query each missing entity individually
+        if missing_folded_names is None:
+            from ..retain.link_utils import fold_entity_name
+
+            missing_folded_names = [fold_entity_name(name) for name in missing_names]
         results: list[ResultRow] = []
-        for orig_name in missing_names:
+        for orig_name, folded in zip(missing_names, missing_folded_names):
             row = await conn.fetchrow(
                 f"""
-                SELECT id, canonical_name, LOWER(canonical_name) AS name_lower
+                SELECT id, canonical_name, folded_name, LOWER(canonical_name) AS name_lower, $3 AS input_name
                 FROM {table}
-                WHERE bank_id = $1 AND LOWER(canonical_name) = LOWER($2)
+                WHERE bank_id = $1 AND folded_name = $2
                 """,
                 bank_id,
+                folded,
                 orig_name,
             )
             if row:
@@ -274,6 +287,7 @@ class OracleOps(DataAccessOps):
         entity_ids: list[str],
         canonical_names: list[str],
         entity_kinds: list[str],
+        folded_names: list[str] | None = None,
     ) -> None:
         # Oracle has no FOR KEY SHARE; FOR UPDATE is the row-lock equivalent that
         # blocks a concurrent prune DELETE until this transaction commits. Lock
@@ -281,6 +295,10 @@ class OracleOps(DataAccessOps):
         # simply absent here), then re-insert any that vanished. The translation
         # layer rewrites ON CONFLICT DO NOTHING to strip-and-catch ORA-00001, so
         # a name recreated under a new id is suppressed rather than raising.
+        if folded_names is None:
+            from ..retain.link_utils import fold_entity_name
+
+            folded_names = [fold_entity_name(name) for name in canonical_names]
         for entity_id in entity_ids:
             await conn.fetchrow(
                 f"SELECT id FROM {table} WHERE id = $1 FOR UPDATE",
@@ -288,13 +306,15 @@ class OracleOps(DataAccessOps):
             )
         await conn.executemany(
             f"""
-            INSERT INTO {table} (id, bank_id, canonical_name, entity_kind)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO {table} (id, bank_id, canonical_name, folded_name, entity_kind)
+            VALUES ($1, $2, $3, $4, $5)
             ON CONFLICT DO NOTHING
             """,
             [
-                (entity_id, bank_id, canonical_name, kind)
-                for entity_id, canonical_name, kind in zip(entity_ids, canonical_names, entity_kinds)
+                (entity_id, bank_id, canonical_name, folded, kind)
+                for entity_id, canonical_name, folded, kind in zip(
+                    entity_ids, canonical_names, folded_names, entity_kinds
+                )
             ],
         )
 

@@ -466,12 +466,15 @@ class DataAccessOps(ABC):
         entity_names: list[str],
         entity_dates: list,
         entity_kinds: list[str],
+        entity_folded_names: list[str] | None = None,
     ) -> dict[str, str]:
-        """Bulk insert entities with ON CONFLICT DO NOTHING, returning id-by-lowercase-name.
+        """Bulk insert entities with ON CONFLICT DO NOTHING, returning id-by-name.
 
         ``entity_kinds`` ("regular"/"label", parallel to ``entity_names``) is
         stored on the row so label entities stay out of the partial trigram
         index (#3208).
+        ``entity_folded_names`` contains the normalized folding keys (parallel to
+        ``entity_names``) for deduplication and unique constraint.
 
         PG uses INSERT ... SELECT FROM unnest() with RETURNING.
         Non-PG inserts row-by-row then SELECTs.
@@ -485,6 +488,7 @@ class DataAccessOps(ABC):
         table: str,
         bank_id: str,
         missing_names: list[str],
+        missing_folded_names: list[str] | None = None,
     ) -> list[ResultRow]:
         """Fetch entity IDs for names that conflicted during insert.
 
@@ -502,6 +506,7 @@ class DataAccessOps(ABC):
         entity_ids: list[str],
         canonical_names: list[str],
         entity_kinds: list[str],
+        folded_names: list[str] | None = None,
     ) -> None:
         """Lock resolved parents and re-create any pruned since Phase-1 resolution.
 

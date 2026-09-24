@@ -353,31 +353,37 @@ class PostgreSQLOps(DataAccessOps):
         entity_names: list[str],
         entity_dates: list,
         entity_kinds: list[str],
+        entity_folded_names: list[str] | None = None,
     ) -> dict[str, str]:
-        # ORDER BY LOWER(name) so every concurrent batch inserts in the same order
-        # as the conflict target (bank_id, LOWER(canonical_name)). ON CONFLICT DO
+        if entity_folded_names is None:
+            from ..retain.link_utils import fold_entity_name
+
+            entity_folded_names = [fold_entity_name(name) for name in entity_names]
+        # ORDER BY folded so every concurrent batch inserts in the same order
+        # as the conflict target (bank_id, folded_name). ON CONFLICT DO
         # NOTHING takes a ShareLock on the inserting transaction of any speculative
         # row it collides with, so two batches with overlapping names inserting in
-        # different orders deadlock. The caller already sorts by Python's
-        # ``str.lower()``, which agrees with the index for ASCII but not for every
-        # locale (see the Turkish-İ note in entity_resolver) — ordering in SQL makes
-        # the database's own collation the single arbiter for all writers.
+        # different orders deadlock.
         inserted_rows = await conn.fetch(
             f"""
-            INSERT INTO {table} (bank_id, canonical_name, first_seen, last_seen, mention_count, entity_kind)
-            SELECT $1, name, COALESCE(event_date, now()), COALESCE(event_date, now()), 0, kind
-            FROM unnest($2::text[], $3::timestamptz[], $4::text[]) AS t(name, event_date, kind)
-            ORDER BY LOWER(name)
-            ON CONFLICT (bank_id, LOWER(canonical_name))
+            INSERT INTO {table} (bank_id, canonical_name, folded_name, first_seen, last_seen, mention_count, entity_kind)
+            SELECT $1, name, folded, COALESCE(event_date, now()), COALESCE(event_date, now()), 0, kind
+            FROM unnest($2::text[], $3::text[], $4::timestamptz[], $5::text[]) AS t(name, folded, event_date, kind)
+            ORDER BY folded
+            ON CONFLICT (bank_id, folded_name)
             DO NOTHING
-            RETURNING id, LOWER(canonical_name) AS name_lower
+            RETURNING id, folded_name, LOWER(canonical_name) AS name_lower
             """,
             bank_id,
             entity_names,
+            entity_folded_names,
             entity_dates,
             entity_kinds,
         )
-        return {row["name_lower"]: row["id"] for row in inserted_rows}
+        res = {row["folded_name"]: row["id"] for row in inserted_rows}
+        for row in inserted_rows:
+            res[row["name_lower"]] = row["id"]
+        return res
 
     async def fetch_missing_entity_ids(
         self,
@@ -385,19 +391,25 @@ class PostgreSQLOps(DataAccessOps):
         table: str,
         bank_id: str,
         missing_names: list[str],
+        missing_folded_names: list[str] | None = None,
     ) -> list[ResultRow]:
+        if missing_folded_names is None:
+            from ..retain.link_utils import fold_entity_name
+
+            missing_folded_names = [fold_entity_name(name) for name in missing_names]
         return await conn.fetch(
             f"""
-            SELECT e.id, e.canonical_name, LOWER(e.canonical_name) AS name_lower, inputs.input_name
+            SELECT e.id, e.canonical_name, e.folded_name, LOWER(e.canonical_name) AS name_lower, inputs.input_name
             FROM {table} e
             JOIN (
-                SELECT LOWER(n) AS input_name_lower, n AS input_name
-                FROM unnest($2::text[]) AS n
-            ) AS inputs ON LOWER(e.canonical_name) = inputs.input_name_lower
+                SELECT folded, n AS input_name
+                FROM unnest($2::text[], $3::text[]) AS inputs(n, folded)
+            ) AS inputs ON e.folded_name = inputs.folded
             WHERE e.bank_id = $1
             """,
             bank_id,
             missing_names,
+            missing_folded_names,
         )
 
     async def bulk_reassert_entities(
@@ -408,6 +420,7 @@ class PostgreSQLOps(DataAccessOps):
         entity_ids: list[str],
         canonical_names: list[str],
         entity_kinds: list[str],
+        folded_names: list[str] | None = None,
     ) -> None:
         # One statement, one round-trip (same shape as bulk_insert_links):
         #   * the CTE takes FOR KEY SHARE on every parent that still exists,
@@ -418,6 +431,10 @@ class PostgreSQLOps(DataAccessOps):
         # ON CONFLICT DO NOTHING (no target) keeps the rare case where another
         # worker recreated the name under a new id from raising — that row stays
         # absent and its unit link is the sole casualty, never the whole batch.
+        if folded_names is None:
+            from ..retain.link_utils import fold_entity_name
+
+            folded_names = [fold_entity_name(name) for name in canonical_names]
         await conn.execute(
             f"""
             WITH locked AS (
@@ -426,15 +443,16 @@ class PostgreSQLOps(DataAccessOps):
                 ORDER BY id
                 FOR KEY SHARE
             )
-            INSERT INTO {table} (id, bank_id, canonical_name, entity_kind)
-            SELECT t.entity_id, $1, t.canonical_name, t.entity_kind
-            FROM unnest($2::uuid[], $3::text[], $4::text[]) AS t(entity_id, canonical_name, entity_kind)
+            INSERT INTO {table} (id, bank_id, canonical_name, folded_name, entity_kind)
+            SELECT t.entity_id, $1, t.canonical_name, t.folded_name, t.entity_kind
+            FROM unnest($2::uuid[], $3::text[], $4::text[], $5::text[]) AS t(entity_id, canonical_name, folded_name, entity_kind)
             WHERE t.entity_id NOT IN (SELECT id FROM locked)
             ON CONFLICT DO NOTHING
             """,
             bank_id,
             entity_ids,
             canonical_names,
+            folded_names,
             entity_kinds,
         )
 

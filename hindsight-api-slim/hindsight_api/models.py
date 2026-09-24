@@ -201,7 +201,9 @@ class Entity(Base):
         UUID(as_uuid=True), primary_key=True, server_default=sql_text("gen_random_uuid()")
     )
     canonical_name: Mapped[str] = mapped_column(Text, nullable=False)
+    folded_name: Mapped[str] = mapped_column(Text, nullable=False)
     bank_id: Mapped[str] = mapped_column(Text, nullable=False)
+    entity_kind: Mapped[str] = mapped_column(Text, nullable=False, server_default="regular")
     entity_metadata: Mapped[dict] = mapped_column("metadata", JSONB, server_default=sql_text("'{}'::jsonb"))
     first_seen: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
     last_seen: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
@@ -227,6 +229,7 @@ class Entity(Base):
         Index("idx_entities_bank_id", "bank_id"),
         Index("idx_entities_canonical_name", "canonical_name"),
         Index("idx_entities_bank_name", "bank_id", "canonical_name"),
+        Index("idx_entities_bank_folded_name", "bank_id", "folded_name", unique=True),
     )
 
 
