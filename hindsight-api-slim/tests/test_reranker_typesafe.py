@@ -17,7 +17,6 @@ from hindsight_api.engine import cross_encoder
 from hindsight_api.engine.cross_encoder import (
     _OPTION_KEY_OVERHEAD,
     TypeSafeCrossEncoder,
-    _water_fill_truncate,
     create_cross_encoder_from_env,
 )
 from hindsight_api.engine.token_encoding import count_tokens
@@ -87,8 +86,15 @@ class _FakeSession:
         return [body for body in self.posted if next(iter(body["questions"].values()))["type"] == "score"]
 
 
-def _encoder(ranking: dict[str, float], cut_level: float = 0.0, **kwargs):
+def _encoder(
+    ranking: dict[str, float],
+    cut_level: float = 0.0,
+    max_question_tokens: int | None = None,
+    **kwargs,
+):
     encoder = TypeSafeCrossEncoder(api_key="k", **kwargs)
+    if max_question_tokens is not None:
+        encoder.MAX_QUESTION_TOKENS = max_question_tokens
     session = _FakeSession(ranking, cut_level)
     encoder._session = session
     return encoder, session
@@ -175,10 +181,9 @@ class TestChunking:
         encoder, session = _encoder({f"c{i}": 1.0 / (i + 1) for i in range(size)})
         scores = await encoder._predict([("q", f"doc {i}") for i in range(size)])
 
-        # Two groups packed into 1 group-stage HTTP request, then one more for their winners.
-        assert len(session.rank_requests) == 2
-        assert sum(len(body["questions"]) for body in session.rank_requests) == 3
-        assert all(len(q["criteria"]) <= 255 for body in session.rank_requests for q in body["questions"].values())
+        # Two groups dispatched concurrently, then one more for their winners.
+        assert len(session.rank_requests) == 3
+        assert all(len(body["questions"]["rank"]["criteria"]) <= 255 for body in session.rank_requests)
         assert len(scores) == size
 
     @pytest.mark.asyncio
@@ -314,26 +319,24 @@ class TestTokenBudgetingAndOrder:
             assert scores[a] > scores[b], f"Expected score[{a}] > score[{b}] by initial RRF order"
 
     @pytest.mark.asyncio
-    async def test_multi_request_concurrency_when_tokens_exceed_request_budget(self):
-        """When total group tokens exceed max_request_tokens, multiple HTTP requests are dispatched concurrently."""
+    async def test_candidate_packing_by_tokens_partitions_long_docs_into_multiple_groups(self):
+        """When total candidate tokens exceed question budget, candidates are partitioned into groups."""
         max_question_tokens = 500
-        max_request_tokens = 500
         long_doc = "word " * 60  # ~61 tokens + 7 key overhead = 68 tokens
         size = 8  # 8 docs: Group 0 has 6 docs (~446 tok), Group 1 has 2 docs (~174 tok)
         encoder, session = _encoder(
             {f"c{i}": 1.0 / (i + 1) for i in range(size)},
             max_question_tokens=max_question_tokens,
-            max_request_tokens=max_request_tokens,
         )
         scores = await encoder._predict([("q", f"{long_doc} {i}") for i in range(size)])
 
-        # 2 group requests (split because 446 + 174 > 500 max_request_tokens) + 1 finals request = 3 total
+        # 2 group requests + 1 finals request = 3 total
         assert len(session.rank_requests) == 3
         assert len(scores) == size
 
     @pytest.mark.asyncio
-    async def test_cut_phase_water_filling_prevents_overflow(self):
-        """When shortlist docs are very long, water-filling truncates them so State tokens stay within budget."""
+    async def test_cut_phase_truncation_prevents_overflow(self):
+        """When shortlist docs are very long, uniform capping truncates them so State tokens stay within budget."""
         max_question_tokens = 800
         long_doc = "information about the project " * 40
         encoder, session = _encoder(
@@ -351,16 +354,14 @@ class TestTokenBudgetingAndOrder:
         assert any(s > 0.0 for s in scores)
 
     @pytest.mark.asyncio
-    async def test_finals_round_water_filling_prevents_overflow(self):
-        """When finalists' total tokens exceed question budget, water-filling truncates them."""
+    async def test_finals_round_truncation_prevents_overflow(self):
+        """When finalists' total tokens exceed question budget, uniform capping truncates them."""
         max_question_tokens = 500
-        max_request_tokens = 1000
         long_doc = "detailed context information " * 15
         size = 16
         encoder, session = _encoder(
             {f"c{i}": 1.0 / (i + 1) for i in range(size)},
             max_question_tokens=max_question_tokens,
-            max_request_tokens=max_request_tokens,
         )
         scores = await encoder._predict([("q", f"{long_doc} {i}") for i in range(size)])
 
@@ -372,50 +373,11 @@ class TestTokenBudgetingAndOrder:
         assert total_criteria_tokens <= max_question_tokens
 
     @pytest.mark.asyncio
-    async def test_finals_option_count_strictly_bounded_under_many_groups(self):
-        """When token budgets force many small groups (e.g. 40+ groups for 300 candidates),
-        finals options must never breach MAX_OPTIONS (250) or over-truncate documents."""
-        doc = "detailed context information " * 20
-        size = 300
-        encoder, session = _encoder(
-            {f"c{i}": 1.0 / (i + 1) for i in range(size)},
-            max_question_tokens=1000,
-            max_request_tokens=5000,
-        )
-        scores = await encoder._predict([("q", f"{doc} {i}") for i in range(size)])
-        assert len(scores) == size
-
-        finals_request = session.rank_requests[-1]
-        criteria = finals_request["questions"]["rank"]["criteria"]
-        assert len(criteria) <= TypeSafeCrossEncoder.MAX_OPTIONS
-        assert len(criteria) == 24  # exactly 1 champion per each of the 24 groups
-
-    @pytest.mark.asyncio
-    async def test_finals_hard_capped_at_max_options_when_groups_exceed_250(self):
-        """When group count exceeds MAX_OPTIONS (e.g. 260 groups), finalists are capped at
-        MAX_OPTIONS (250) and overflow champions fall back into rest by initial RRF order."""
-        size = 260
-        # 500 words per doc (~500 tokens) ensures each candidate exceeds net_question_budget (~450 tokens),
-        # producing exactly 260 single-item groups.
-        doc = "word " * 500
-        encoder, session = _encoder(
-            {f"c{i}": 1.0 / (i + 1) for i in range(size)},
-            max_question_tokens=500,
-            max_request_tokens=50000,
-        )
-        scores = await encoder._predict([("q", f"{doc} {i}") for i in range(size)])
-        assert len(scores) == size
-
-        finals_request = session.rank_requests[-1]
-        criteria = finals_request["questions"]["rank"]["criteria"]
-        assert len(criteria) == TypeSafeCrossEncoder.MAX_OPTIONS
-
-    @pytest.mark.asyncio
     async def test_choice_questions_never_have_fewer_than_two_options(self):
         """Regression test for [P1]: Choice questions must NEVER have fewer than 2 options.
 
         Jev strictly rejects single-option Choice questions with 4xx ('criteria must map 2 or more options').
-        Even when oversized documents force single-candidate groups in Level 1 packing,
+        Even when oversized documents force single-candidate groups in token packing,
         preliminary rounds for 1-candidate groups are skipped, and candidates are resolved
         in the finals where at least 2 options are present.
         """
@@ -471,34 +433,26 @@ class TestTokenBudgetingAndOrder:
         )
 
     @pytest.mark.asyncio
-    async def test_all_questions_and_requests_strictly_obey_token_ceilings(self):
-        """Invariant check: In every dispatched HTTP request, total request tokens <= max_request_tokens,
-        and in every choice question, question tokens <= max_question_tokens."""
+    async def test_all_questions_strictly_obey_token_ceilings(self):
+        """Invariant check: In every choice question, total tokens <= max_question_tokens."""
         max_question_tokens = 600
-        max_request_tokens = 1500
         doc = "sample context words " * 25
         size = 30
         encoder, session = _encoder(
             {f"c{i}": 1.0 / (i + 1) for i in range(size)},
             max_question_tokens=max_question_tokens,
-            max_request_tokens=max_request_tokens,
         )
         scores = await encoder._predict([("q", f"{doc} {i}") for i in range(size)])
         assert len(scores) == size
 
         for body in session.posted:
             state_tokens = count_tokens(body["state"])
-            total_req_tokens = state_tokens
             for q_id, q_data in body.get("questions", {}).items():
                 instr_tokens = count_tokens(q_data.get("instructions", ""))
                 crit_tokens = sum(count_tokens(text) for text in q_data.get("criteria", {}).values())
                 envelope = len(q_data.get("criteria", {})) * _OPTION_KEY_OVERHEAD
                 q_tokens = instr_tokens + crit_tokens + envelope
-                # Question invariant: strictly within question budget including JSON envelope
                 assert state_tokens + q_tokens <= max_question_tokens, f"Question {q_id} exceeded question budget"
-                total_req_tokens += q_tokens
-            # Request invariant: strictly within request budget
-            assert total_req_tokens <= max_request_tokens, "Request exceeded request budget"
 
     @pytest.mark.asyncio
     async def test_single_overlong_candidate_safely_pre_truncated(self):
@@ -521,12 +475,8 @@ class TestTokenBudgetingAndOrder:
 
     @pytest.mark.asyncio
     async def test_pre_truncated_candidate_carries_truncated_text_into_finals(self):
-        """When an outlier document is pre-truncated in Level 1 packing, the pre-truncated text
+        """When an outlier document is pre-truncated in packing, the pre-truncated text
         (not the original oversized document) must be passed into the finals round.
-
-        On previous versions without effective_docs propagation, finalist_docs was populated
-        with the raw docs[index], so the text entering _water_fill_truncate was the untruncated
-        huge_doc. This test verifies that the text entering the finals pipeline is already pre-truncated.
         """
         max_question_tokens = 500
         huge_doc = "outlier document content " * 300
@@ -535,14 +485,13 @@ class TestTokenBudgetingAndOrder:
             {"c0": 0.6, "c1": 0.4},
             max_question_tokens=max_question_tokens,
         )
-        with patch.object(cross_encoder, "_water_fill_truncate", wraps=cross_encoder._water_fill_truncate) as mock_wf:
+        with patch.object(encoder, "_rank_once", wraps=encoder._rank_once) as mock_rank_once:
             scores = await encoder._predict([("q", huge_doc), ("q", normal_doc)])
             assert len(scores) == 2
 
-            # Assert the candidate text passed into the finals water-filling pipeline
-            # is already pre-truncated (discriminating against raw docs[index] pass-through)
-            passed_texts = mock_wf.call_args[0][0]
-            assert len(passed_texts[0]) < len(huge_doc)
+            # The call to _rank_once must receive pre-truncated text in effective_docs
+            passed_docs = mock_rank_once.call_args[0][1]
+            assert len(passed_docs[0]) < len(huge_doc)
 
         finals_request = session.rank_requests[-1]
         criteria = finals_request["questions"]["rank"]["criteria"]
@@ -564,26 +513,3 @@ class TestTokenBudgetingAndOrder:
         for body in session.rank_requests:
             state_tokens = count_tokens(body["state"])
             assert state_tokens <= max_question_tokens
-
-
-class TestWaterFillTruncate:
-    def test_empty_and_non_positive_budget(self):
-        assert _water_fill_truncate([], 100) == []
-        assert _water_fill_truncate(["hello", "world"], 0) == ["", ""]
-        assert _water_fill_truncate(["hello", "world"], -10) == ["", ""]
-
-    def test_preserves_short_clamps_long_and_obeys_budget(self):
-        short_doc = "cat dog fish"
-        med_doc = "the quick brown fox jumps over lazy dog today"
-        long_doc = "word " * 60
-        docs = [short_doc, med_doc, long_doc]
-        budget = 35
-
-        truncated = _water_fill_truncate(docs, budget)
-        assert len(truncated) == 3
-        # Total tokens must strictly obey the budget
-        assert sum(count_tokens(t) for t in truncated) <= budget
-        # Short doc should be 100% preserved
-        assert truncated[0] == short_doc
-        # Long doc should be clamped
-        assert len(truncated[2]) < len(long_doc)

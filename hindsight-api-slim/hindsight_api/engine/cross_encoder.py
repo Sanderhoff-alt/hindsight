@@ -12,7 +12,6 @@ import logging
 import warnings
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
 from typing import Any
 
 import aiohttp
@@ -55,7 +54,7 @@ from .local_device import (
 )
 from .remote_retry import RetryPolicy, acall_with_retry
 from .tei_retry import TEI_KEEPALIVE_EXPIRY_SECONDS, is_retryable_tei_transport_error, tei_retry_delay
-from .token_encoding import count_tokens, truncate_many_to_tokens, truncate_to_tokens
+from .token_encoding import count_tokens, truncate_to_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -912,58 +911,6 @@ class SiliconFlowCrossEncoder(CrossEncoderModel):
         return await self._client.predict(pairs)
 
 
-def _water_fill_truncate(
-    texts: list[str],
-    max_total_tokens: int,
-    tokens: list[int] | None = None,
-) -> list[str]:
-    """Max-Min Fairness token budget allocation (Water-filling algorithm).
-
-    Ensures sum(count_tokens(t) for t in result) <= max_total_tokens.
-    Short texts are preserved intact, while long texts are uniformly capped.
-    """
-    if not texts:
-        return []
-    if max_total_tokens <= 0:
-        logger.warning(f"Water-fill allocation received non-positive budget: {max_total_tokens}")
-        return ["" for _ in texts]
-
-    if tokens is None:
-        tokens = [count_tokens(t) for t in texts]
-    total_tokens = sum(tokens)
-    if total_tokens <= max_total_tokens:
-        return list(texts)
-
-    # Binary search for uniform token cap C
-    low = 0
-    high = max(tokens)
-    best_cap = 0
-    while low <= high:
-        mid = (low + high) // 2
-        alloc = sum(min(t, mid) for t in tokens)
-        if alloc <= max_total_tokens:
-            best_cap = mid
-            low = mid + 1
-        else:
-            high = mid - 1
-
-    if best_cap == 0:
-        logger.warning(
-            f"Water-fill allocation cap is 0 for {len(texts)} texts with budget {max_total_tokens}; "
-            "all candidates will be truncated to empty strings."
-        )
-        return ["" for _ in texts]
-
-    num_truncated = sum(1 for t in tokens if t > best_cap)
-    logger.debug(
-        f"TypeSafe: water-fill capped {num_truncated}/{len(texts)} texts at uniform cap {best_cap} tokens "
-        f"(total budget {max_total_tokens})"
-    )
-
-    truncated_results = truncate_many_to_tokens(texts, best_cap)
-    return [r.text for r in truncated_results]
-
-
 # Single source of truth for prompt templates and overheads
 _RANK_INSTRUCTIONS_PREFIX = "Which candidate answers the question: "
 _CUT_INSTRUCTIONS = (
@@ -971,34 +918,15 @@ _CUT_INSTRUCTIONS = (
     "Count a candidate as relevant only if it helps answer the question."
 )
 
-_OPTION_KEY_OVERHEAD = 7  # JSON envelope overhead per choice option: key '"c249": "' (5-6 toks) + comma/newline
-_SAFETY_MARGIN = 50  # Defensive buffer for token truncation boundaries
+_OPTION_KEY_OVERHEAD = 7  # JSON envelope overhead per choice option: '"c249": "' + comma/newline
 _LISTING_ITEM_OVERHEAD = 10  # Formatting overhead per item in cut listing: "[1] ...\n\n"
 _MAX_QUERY_TOKENS = 2_000  # Defensive ceiling on query tokens in reranker
-
-
-@dataclass(slots=True)
-class _CandidateGroup:
-    """Group of candidates packed into a single Choice question."""
-
-    indices: list[int]
-    docs: list[str]
-    tokens: int
-
-
-def _get_static_instruction_overhead() -> int:
-    """Static token overhead for a choice question's instructions and JSON structure.
-
-    Accounts for the prompt prefix ('Which candidate answers the question: ') plus ~30 tokens
-    for the top-level JSON envelope structure ('questions', 'type', 'choice', 'instructions').
-    """
-    return count_tokens(_RANK_INSTRUCTIONS_PREFIX) + 30
 
 
 def _get_static_cut_overhead() -> int:
     """Static token overhead for the cut question's instructions and criteria."""
     criteria_tokens = sum(count_tokens(c) for c in TypeSafeCrossEncoder.CUT_LEVELS)
-    return count_tokens(_CUT_INSTRUCTIONS) + criteria_tokens + _SAFETY_MARGIN
+    return count_tokens(_CUT_INSTRUCTIONS) + criteria_tokens + 50
 
 
 class TypeSafeCrossEncoder(CrossEncoderModel):
@@ -1044,14 +972,10 @@ class TypeSafeCrossEncoder(CrossEncoderModel):
     # keeps a handful, so a longer list costs tokens to no purpose.
     SHORTLIST = 12
 
-    # Context window safety limits for Jev /v1/systemone.
-    # Single question context limit is 32k; request-wide ceiling is 64k.
-    # Token counting uses Hindsight's shared tokenizer (toktok o200k_base),
-    # which may diverge slightly from Jev's server-side vocabulary. A deliberate
-    # ~20% defensive safety margin (26k vs 32k, 52k vs 64k) absorbs cross-tokenizer
-    # divergence and JSON envelope formatting overheads.
+    # Context window safety limit for Jev /v1/systemone.
+    # Single question context limit is 32k. A defensive safety margin (26k vs 32k)
+    # absorbs cross-tokenizer divergence and JSON envelope formatting overheads.
     MAX_QUESTION_TOKENS = 26_000
-    MAX_REQUEST_TOKENS = 52_000
 
     # Ordered depths for the cut. The model picks the level; these are the
     # granularity offered, which is a design choice and not a tuned threshold.
@@ -1078,8 +1002,6 @@ class TypeSafeCrossEncoder(CrossEncoderModel):
         timeout: float = DEFAULT_RERANKER_TYPESAFE_TIMEOUT,
         max_concurrent: int = DEFAULT_RERANKER_TYPESAFE_MAX_CONCURRENT,
         prune_candidates: bool = DEFAULT_RERANKER_TYPESAFE_PRUNE_CANDIDATES,
-        max_question_tokens: int = MAX_QUESTION_TOKENS,
-        max_request_tokens: int = MAX_REQUEST_TOKENS,
     ):
         # Tolerate an unset-but-present value ("VAR=" in a compose file, or a config
         # built with every field zeroed) by falling back to the default.
@@ -1087,10 +1009,6 @@ class TypeSafeCrossEncoder(CrossEncoderModel):
         self.base_url = (base_url or DEFAULT_RERANKER_TYPESAFE_BASE_URL).rstrip("/")
         self.timeout = timeout
         self.prunes_candidates = bool(prune_candidates)
-        # Token bounds default to class constants (MAX_QUESTION_TOKENS / MAX_REQUEST_TOKENS);
-        # constructor parameters allow dependency injection in tests without oversized fixtures.
-        self.max_question_tokens = max_question_tokens or self.MAX_QUESTION_TOKENS
-        self.max_request_tokens = max_request_tokens or self.MAX_REQUEST_TOKENS
         # CrossLoopSemaphore, not asyncio.Semaphore: one encoder instance is built at
         # startup and reached from every loop in the process (worker threads run their
         # own via asyncio.run), and an asyncio.Semaphore binds to whichever loop first
@@ -1124,48 +1042,30 @@ class TypeSafeCrossEncoder(CrossEncoderModel):
                 await raise_for_status(response)
                 return await response.json(content_type=None)
 
-    async def _execute_group_request(
-        self,
-        query: str,
-        request_groups: list[_CandidateGroup],
-    ) -> list[list[int]]:
-        """Execute one HTTP request containing one or more group choice questions."""
-        is_single = len(request_groups) == 1
-        questions = {}
-        for q_idx, group in enumerate(request_groups):
-            q_id = "rank" if is_single else f"rank_{q_idx}"
-            questions[q_id] = {
-                "type": "choice",
-                "instructions": f"{_RANK_INSTRUCTIONS_PREFIX}{query}",
-                "criteria": {f"c{position}": group.docs[position] for position in range(len(group.indices))},
-            }
-
+    async def _rank_once(self, query: str, docs: list[str], indices: list[int]) -> list[int]:
+        """Rank one group of candidates, returning their indices best first."""
         body = {
             "state": f"Question: {query}",
             "model": self.model,
-            "questions": questions,
+            "questions": {
+                "rank": {
+                    "type": "choice",
+                    "instructions": f"{_RANK_INSTRUCTIONS_PREFIX}{query}",
+                    "criteria": {f"c{position}": docs[index] for position, index in enumerate(indices)},
+                }
+            },
         }
         result = await self._ask(body)
-        answers = result["answers"]
-
-        ranked_results = []
-        for q_idx, group in enumerate(request_groups):
-            q_id = "rank" if is_single else f"rank_{q_idx}"
-            probabilities = answers[q_id]["probabilities"]
-            # Sort the option positions, not the indices themselves: the option key encodes
-            # the position, and two candidates can carry the same index-independent text.
-            by_probability = sorted(
-                range(len(group.indices)),
-                key=lambda position: -float(probabilities[f"c{position}"]),
-            )
-            ranked_results.append([group.indices[position] for position in by_probability])
-
-        return ranked_results
+        probabilities = result["answers"]["rank"]["probabilities"]
+        # Sort the option positions, not the indices themselves: the option key encodes
+        # the position, and two candidates can carry the same index-independent text.
+        by_probability = sorted(range(len(indices)), key=lambda position: -float(probabilities[f"c{position}"]))
+        return [indices[position] for position in by_probability]
 
     async def _rank(self, query: str, docs: list[str], indices: list[int]) -> list[int]:
-        """Rank a whole pool best first, in rounds when it exceeds the option cap or token budget.
+        """Rank a whole pool best first, in rounds when it exceeds option or token limits.
 
-        Each round's probabilities are normalised within its own question, so the winners
+        Each round's probabilities are normalised within its own call, so the winners
         are ranked against each other in a finals round. Candidates that do not make the
         finals maintain their caller input order (initial RRF rank) behind the finalists,
         discarding intra-group model ranks since probabilities across separate rounds
@@ -1174,167 +1074,92 @@ class TypeSafeCrossEncoder(CrossEncoderModel):
         if not indices:
             return []
 
-        # 1. Calculate budget constraints
-        state_text = f"Question: {query}"
-        state_tokens = count_tokens(state_text)
-        instruction_overhead = _get_static_instruction_overhead() + count_tokens(query)
-        net_question_budget = max(50, self.max_question_tokens - state_tokens - instruction_overhead)
+        # Available token budget for candidate options in one choice question.
+        state_tokens = count_tokens(f"Question: {query}")
+        instr_tokens = count_tokens(f"{_RANK_INSTRUCTIONS_PREFIX}{query}") + 30
+        net_budget = max(50, self.MAX_QUESTION_TOKENS - state_tokens - instr_tokens)
 
-        # Cache token counts and pre-truncated texts for candidate documents
-        doc_token_cache: dict[int, int] = {index: count_tokens(docs[index]) for index in indices}
-        effective_docs: dict[int, str] = {index: docs[index] for index in indices}
-
-        # 2. Level 1: Candidate -> Question Packing
-        # Pack candidates into groups: len(group) <= MAX_OPTIONS (250) and tokens <= net_question_budget
-        groups: list[_CandidateGroup] = []
-        curr_indices: list[int] = []
-        curr_docs: list[str] = []
-        curr_tokens = 0
-
+        # Pre-truncate outlier documents that individually exceed the question budget,
+        # and copy docs so we don't mutate caller's list.
+        effective_docs = list(docs)
+        doc_tokens: dict[int, int] = {}
         for index in indices:
-            doc_text = docs[index]
-            doc_tokens = doc_token_cache[index]
-            item_tokens = doc_tokens + _OPTION_KEY_OVERHEAD
+            t = count_tokens(effective_docs[index])
+            if t + _OPTION_KEY_OVERHEAD > net_budget:
+                cap = max(10, net_budget - _OPTION_KEY_OVERHEAD)
+                effective_docs[index] = truncate_to_tokens(effective_docs[index], cap).text
+                t = count_tokens(effective_docs[index])
+            doc_tokens[index] = t
 
-            # Single-doc Guard: prevent an individual candidate from exceeding group budget
-            if item_tokens > net_question_budget:
-                cap = max(10, net_question_budget - _OPTION_KEY_OVERHEAD - _SAFETY_MARGIN)
-                trunc = truncate_to_tokens(doc_text, cap)
-                logger.debug(
-                    f"TypeSafe: candidate at index {index} exceeds group budget "
-                    f"({doc_tokens} tokens > {net_question_budget}), pre-truncating to {cap} tokens"
-                )
-                doc_text = trunc.text
-                doc_tokens = count_tokens(doc_text)
-                doc_token_cache[index] = doc_tokens
-                effective_docs[index] = doc_text
-                item_tokens = doc_tokens + _OPTION_KEY_OVERHEAD
-
-            if len(curr_indices) >= self.MAX_OPTIONS or (curr_tokens + item_tokens > net_question_budget):
-                if curr_indices:
-                    groups.append(_CandidateGroup(curr_indices, curr_docs, curr_tokens + instruction_overhead))
-                curr_indices = [index]
-                curr_docs = [doc_text]
+        # Pack candidates into groups bounded by MAX_OPTIONS and net_budget.
+        groups: list[list[int]] = []
+        curr_group: list[int] = []
+        curr_tokens = 0
+        for index in indices:
+            item_tokens = doc_tokens[index] + _OPTION_KEY_OVERHEAD
+            if curr_group and (len(curr_group) >= self.MAX_OPTIONS or curr_tokens + item_tokens > net_budget):
+                groups.append(curr_group)
+                curr_group = [index]
                 curr_tokens = item_tokens
             else:
-                curr_indices.append(index)
-                curr_docs.append(doc_text)
+                curr_group.append(index)
                 curr_tokens += item_tokens
+        if curr_group:
+            groups.append(curr_group)
 
-        if curr_indices:
-            groups.append(_CandidateGroup(curr_indices, curr_docs, curr_tokens + instruction_overhead))
-
-        # Fast path: If all candidates fit into exactly 1 group, no finals round needed!
+        # Fast path: all candidates fit into a single group.
         if len(groups) == 1:
-            ranked = await self._execute_group_request(query, [groups[0]])
-            return ranked[0]
+            return await self._rank_once(query, effective_docs, groups[0])
 
-        # Preliminary groups with >= 2 candidates are ranked via Jev Choice questions.
+        # Groups with >= 2 candidates are ranked via Jev Choice questions in parallel.
         # Single-candidate groups skip the preliminary round: a 1-candidate Choice
-        # is both trivial (winner is predetermined) and strictly rejected by Jev
-        # with 4xx ("criteria must map 2 or more options").
-        multi_groups: list[_CandidateGroup] = []
-        multi_group_indices: list[int] = []
-        ranked_groups: list[list[int]] = [[] for _ in groups]
-
-        for g_idx, group in enumerate(groups):
-            if len(group.indices) >= 2:
-                multi_groups.append(group)
-                multi_group_indices.append(g_idx)
-            else:
-                ranked_groups[g_idx] = list(group.indices)
-
-        if multi_groups:
-            # 3. Level 2: Question -> Request Packing
-            # Pack group questions into HTTP requests: state_tokens + sum(q.tokens) <= max_request_tokens
-            request_batches: list[list[_CandidateGroup]] = []
-            curr_batch: list[_CandidateGroup] = []
-            curr_batch_tokens = state_tokens
-
-            for group in multi_groups:
-                if curr_batch and (curr_batch_tokens + group.tokens > self.max_request_tokens):
-                    request_batches.append(curr_batch)
-                    curr_batch = [group]
-                    curr_batch_tokens = state_tokens + group.tokens
-                else:
-                    curr_batch.append(group)
-                    curr_batch_tokens += group.tokens
-
-            if curr_batch:
-                request_batches.append(curr_batch)
-
-            # 4. Level 3: Concurrently execute all group requests
-            batch_results = await asyncio.gather(
-                *(self._execute_group_request(query, batch) for batch in request_batches)
+        # is rejected by Jev ("criteria must map 2 or more options") and the winner is trivial.
+        multi_indices = [i for i, g in enumerate(groups) if len(g) >= 2]
+        ranked_groups: list[list[int]] = [list(g) for g in groups]
+        if multi_indices:
+            ranked_multi = await asyncio.gather(
+                *(self._rank_once(query, effective_docs, groups[i]) for i in multi_indices)
             )
-            flat_results = [res for batch_res in batch_results for res in batch_res]
-            for g_idx, ranked_res in zip(multi_group_indices, flat_results):
-                ranked_groups[g_idx] = ranked_res
+            for i, r in zip(multi_indices, ranked_multi):
+                ranked_groups[i] = r
 
-        # 5. Extract finalists and non-finalists
-        # A pool larger than MAX_OPTIONS is split into M groups. In the original
-        # design with 250-item chunks (M <= 2), each group advanced SHORTLIST (12)
-        # winners, totaling <= 24 finalists. When token budgets split the pool into
-        # many smaller groups (large M), advancing 12 from each group would both
-        # breach MAX_OPTIONS (250) and over-truncate candidates during water-filling.
-        # Scale quota dynamically so total finalists stay around ~SHORTLIST * 2 (24)
-        # (fast and lightweight for finals, which only feeds the top 12 to _cut).
-        quota = max(1, min(self.SHORTLIST, (self.SHORTLIST * 2) // len(groups)))
-        finalists = [index for group in ranked_groups for index in group[:quota]]
-        rest = [index for group in ranked_groups for index in group[quota:]]
-
-        # Defensive hard cap: In extreme scenarios with >250 groups, cap finalists
-        # at MAX_OPTIONS to strictly prevent API overflow. Groups beyond MAX_OPTIONS
-        # fall back to rest, retaining their initial input order.
-        if len(finalists) > self.MAX_OPTIONS:
-            rest.extend(finalists[self.MAX_OPTIONS :])
-            finalists = finalists[: self.MAX_OPTIONS]
-
-        # For candidates that do not make the finals, preserve caller input order (initial
-        # RRF rank) instead of intra-group model probability ordering. Unnormalized model
-        # probabilities from separate rounds cannot be meaningfully compared, so non-finalists
-        # fall back to the initial retrieval order (#4599).
+        # Advance top SHORTLIST from each group to the finals; rest fall back to RRF order (#4599).
+        finalists = [index for group in ranked_groups for index in group[: self.SHORTLIST]]
+        rest = [index for group in ranked_groups for index in group[self.SHORTLIST :]]
         index_pos = {idx: pos for pos, idx in enumerate(indices)}
         rest.sort(key=lambda idx: index_pos[idx])
 
-        # 6. Finals Round
-        finalist_docs = [effective_docs[index] for index in finalists]
-        finalist_doc_tokens = [doc_token_cache[index] for index in finalists]
-        finalist_envelope_overhead = len(finalists) * _OPTION_KEY_OVERHEAD
-        available_finals_budget = max(10, net_question_budget - finalist_envelope_overhead - _SAFETY_MARGIN)
-        total_finalist_tokens = sum(finalist_doc_tokens)
-        if total_finalist_tokens > available_finals_budget:
-            logger.debug(
-                f"TypeSafe: finalist documents ({len(finalists)} candidates, {total_finalist_tokens} tokens) "
-                f"exceed available budget {available_finals_budget}; applying water-fill truncation"
-            )
-            finalist_docs = _water_fill_truncate(finalist_docs, available_finals_budget, tokens=finalist_doc_tokens)
+        # Finals round: if finalists exceed budget, cap each doc evenly (budget // n).
+        finalist_tokens = sum(doc_tokens[idx] + _OPTION_KEY_OVERHEAD for idx in finalists)
+        if finalist_tokens > net_budget:
+            cap = max(10, (net_budget - len(finalists) * _OPTION_KEY_OVERHEAD) // len(finalists))
+            for idx in finalists:
+                if doc_tokens[idx] > cap:
+                    effective_docs[idx] = truncate_to_tokens(effective_docs[idx], cap).text
 
-        # tokens=0 because finals group is executed directly and never packed in request batches
-        finals_group = _CandidateGroup(indices=finalists, docs=finalist_docs, tokens=0)
-        ranked_finalists_res = await self._execute_group_request(query, [finals_group])
-        ranked_finalists = ranked_finalists_res[0]
-
+        ranked_finalists = await self._rank_once(query, effective_docs, finalists)
         return ranked_finalists + rest
 
     async def _cut(self, query: str, docs: list[str], order: list[int]) -> int:
         """How many of the ranked candidates are relevant, as the model sees it."""
-        cut_overhead = _get_static_cut_overhead()
         shortlist = order[: self.SHORTLIST]
+        if not shortlist:
+            return 0
+
+        cut_overhead = _get_static_cut_overhead()
         prefix = f"Question: {query}\n\nCandidates, already ranked best first:\n"
         prefix_tokens = count_tokens(prefix)
-        available_listing_tokens = max(100, self.max_question_tokens - cut_overhead - prefix_tokens)
+        available_listing_tokens = max(100, self.MAX_QUESTION_TOKENS - cut_overhead - prefix_tokens)
 
+        # Truncate shortlist documents if they exceed the available listing budget
         shortlist_docs = [docs[index] for index in shortlist]
         shortlist_tokens = [count_tokens(d) for d in shortlist_docs]
         total_shortlist_tokens = sum(shortlist_tokens) + len(shortlist) * _LISTING_ITEM_OVERHEAD
         if total_shortlist_tokens > available_listing_tokens:
-            alloc_tokens = max(50, available_listing_tokens - len(shortlist) * _LISTING_ITEM_OVERHEAD)
-            logger.debug(
-                f"TypeSafe: cut shortlist ({len(shortlist)} candidates, {total_shortlist_tokens} tokens) "
-                f"exceeds listing budget {available_listing_tokens}; applying water-fill truncation"
-            )
-            shortlist_docs = _water_fill_truncate(shortlist_docs, alloc_tokens, tokens=shortlist_tokens)
+            cap = max(10, (available_listing_tokens - len(shortlist) * _LISTING_ITEM_OVERHEAD) // len(shortlist))
+            shortlist_docs = [
+                truncate_to_tokens(d, cap).text if t > cap else d for d, t in zip(shortlist_docs, shortlist_tokens)
+            ]
 
         listing = "\n\n".join(f"[{position + 1}] {shortlist_docs[position]}" for position in range(len(shortlist)))
         body = {
@@ -1357,17 +1182,12 @@ class TypeSafeCrossEncoder(CrossEncoderModel):
         if not indices:
             return
 
-        # Query appears in both State and instructions across both rank and cut.
-        # Defensively bound query tokens here so that _rank and _cut share the identical
+        # Query appears in both State and instructions across rank and cut.
+        # Defensively bound query tokens so that _rank and _cut share the identical
         # bounded query, preventing context overflow in _cut and eliminating semantic drift.
-        max_allowed_query = max(50, (self.max_question_tokens - 200) // 2)
+        max_allowed_query = max(50, (self.MAX_QUESTION_TOKENS - 200) // 2)
         effective_query_cap = min(_MAX_QUERY_TOKENS, max_allowed_query)
-        orig_query_tokens = count_tokens(query)
-        if orig_query_tokens > effective_query_cap:
-            logger.debug(
-                f"TypeSafe: query exceeds cap of {effective_query_cap} tokens "
-                f"(original: {orig_query_tokens}), truncating query for rank and cut"
-            )
+        if count_tokens(query) > effective_query_cap:
             query = truncate_to_tokens(query, effective_query_cap).text
 
         order = await self._rank(query, docs, indices)
