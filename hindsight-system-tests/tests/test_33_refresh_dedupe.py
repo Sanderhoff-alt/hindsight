@@ -33,6 +33,7 @@ import pytest
 
 from hindsight_system_tests import reflect_loop
 from hindsight_system_tests.payloads import consolidation, extracted, fact
+from hindsight_system_tests.server import WORKER_POLL_INTERVAL_MS
 
 pytestmark = pytest.mark.asyncio
 
@@ -40,12 +41,13 @@ ANSWER = "Alice lives in Berlin."
 
 #: Long enough for the worker to have tried, and failed, to claim what is queued.
 #:
-#: It polls every 500 ms (``HINDSIGHT_API_WORKER_POLL_INTERVAL_MS``) and re-polls
-#: immediately after a successful claim, so anything still pending after this waited
-#: because it *cannot* be claimed — not because nobody has looked yet. Asserting
-#: without the wait would pass on either behaviour: a burst finishes inside a single
-#: poll interval, so the queue has not been touched yet whatever the rules are.
-_CLAIM_GRACE_SECONDS = 1.5
+#: Three poll intervals (the server pins ``HINDSIGHT_API_WORKER_POLL_INTERVAL_MS``),
+#: and the worker re-polls immediately after a successful claim, so anything still
+#: pending after this waited because it *cannot* be claimed — not because nobody has
+#: looked yet. Asserting without the wait would pass on either behaviour: a burst
+#: finishes inside a single poll interval, so the queue has not been touched yet
+#: whatever the rules are.
+_CLAIM_GRACE_SECONDS = 3 * WORKER_POLL_INTERVAL_MS / 1000
 
 
 @pytest.fixture

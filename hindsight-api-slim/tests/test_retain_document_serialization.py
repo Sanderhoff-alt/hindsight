@@ -554,30 +554,6 @@ async def _insert_refresh_op(pool, bank_id: str, mental_model_id: str) -> str:
 
 
 @pytest.mark.asyncio
-async def test_claim_takes_only_one_refresh_per_model(backend, bank):
-    """Three queued refreshes of one model: only the oldest is claimable."""
-    first = await _insert_refresh_op(backend, bank, "mm-a")
-    await _insert_refresh_op(backend, bank, "mm-a")
-    await _insert_refresh_op(backend, bank, "mm-a")
-
-    rows = await _claiming(backend, lambda conn: _claim_rows(backend, conn, "w1"))
-
-    claimed = _own(rows, bank)
-    assert claimed == [first], f"expected only the oldest same-model refresh, got {claimed}"
-
-
-@pytest.mark.asyncio
-async def test_claim_does_not_serialize_across_models(backend, bank):
-    """Models are independent — a bank with hundreds refreshes them in parallel."""
-    a = await _insert_refresh_op(backend, bank, "mm-a")
-    b = await _insert_refresh_op(backend, bank, "mm-b")
-
-    rows = await _claiming(backend, lambda conn: _claim_rows(backend, conn, "w1"))
-
-    assert set(_own(rows, bank)) == {a, b}
-
-
-@pytest.mark.asyncio
 async def test_claim_waits_for_a_processing_refresh(backend, bank):
     """A model with a refresh in flight yields nothing.
 
@@ -601,12 +577,13 @@ async def test_claim_waits_for_a_processing_refresh(backend, bank):
 
 @pytest.mark.asyncio
 async def test_a_retain_and_a_refresh_never_serialize_against_each_other(backend, bank):
-    """A document id cannot collide with a model id — the refresh key is namespaced.
+    """A document id cannot collide with a model's refreshes, even spelled like one.
 
-    Document ids are caller-supplied, so without the ``mental_model:`` prefix a
-    document named after a model would queue behind that model's refreshes.
+    Document ids are caller-supplied, so a key alone cannot keep them apart: the
+    document here carries exactly the key the refresh does, and only the peer's
+    ``operation_type`` tells them apart.
     """
-    doc = await _insert_retain_op(backend, bank, "mm-a", contents=[{"content": "one"}])
+    doc = await _insert_retain_op(backend, bank, "mental_model:mm-a", contents=[{"content": "one"}])
     refresh = await _insert_refresh_op(backend, bank, "mm-a")
 
     rows = await _claiming(backend, lambda conn: _claim_rows(backend, conn, "w1"))

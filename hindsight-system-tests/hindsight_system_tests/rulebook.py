@@ -28,7 +28,6 @@ from typing import Any
 
 from pydantic import BaseModel
 
-_HOLD_POLL_SECONDS = 0.01
 _HOLD_ARRIVAL_TIMEOUT = 20.0
 
 
@@ -272,27 +271,19 @@ class Hold:
         self.release()
 
     async def reached(self, timeout: float = _HOLD_ARRIVAL_TIMEOUT) -> None:
-        """Wait until a matching call is parked — i.e. its operation is running.
-
-        Polls rather than awaits the event, because the event belongs to no loop.
-        """
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        while not self._arrived.is_set():
-            if loop.time() > deadline:
-                raise AssertionError(f"no call reached the hold on {self.anchor!r} within {timeout}s")
-            await asyncio.sleep(_HOLD_POLL_SECONDS)
+        """Wait until a matching call is parked — i.e. its operation is running."""
+        if not await asyncio.to_thread(self._arrived.wait, timeout):
+            raise AssertionError(f"no call reached the hold on {self.anchor!r} within {timeout}s")
 
     async def park(self) -> None:
         """Hold the calling request until the story releases it.
 
-        Awaited from the stub server's loop, so the same polling reason applies as in
-        :meth:`reached` — and awaiting rather than blocking keeps that loop free to
-        serve the embeddings and rerank calls the rest of the pipeline is making.
+        Awaited from the stub server's loop; waiting in a thread rather than blocking
+        keeps that loop free to serve the embeddings and rerank calls the rest of the
+        pipeline is making.
         """
         self._arrived.set()
-        while not self.released:
-            await asyncio.sleep(_HOLD_POLL_SECONDS)
+        await asyncio.to_thread(self._released.wait)
 
 
 class LLMStub:

@@ -101,7 +101,9 @@ def key_serialization_sql(table: str, alias: str) -> str:
 
     This predicate makes the queue reflect that: a candidate is claimable only
     when no peer for the same key is already ``processing``, and only when it is
-    the oldest claimable pending peer for that key.
+    the oldest claimable pending peer for that key. Peers must also share the
+    candidate's ``operation_type``: document ids are caller-supplied, so a key
+    alone cannot keep a document from colliding with a model's refreshes.
 
     Ordering, not just exclusion, is the point. Appends are cumulative, so the
     order they commit in is the order the document ends up in; claiming them by
@@ -135,6 +137,7 @@ def key_serialization_sql(table: str, alias: str) -> str:
             SELECT 1 FROM {table} doc_peer
             WHERE doc_peer.bank_id = {alias}.bank_id
               AND doc_peer.serialization_key = {alias}.serialization_key
+              AND doc_peer.operation_type = {alias}.operation_type
               AND (
                   doc_peer.status = 'processing'
                   OR (doc_peer.status = 'pending'

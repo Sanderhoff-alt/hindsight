@@ -227,9 +227,9 @@ _REFRESH_AUTOMATIC_KEY = "_automatic"
 def refresh_serialization_key(mental_model_id: str) -> str:
     """The claim-time serialisation key for a mental model's refreshes.
 
-    Namespaced because the column is shared with per-document retains, whose key is a
-    caller-supplied document id — without the prefix a document named ``mm-...`` would
-    queue behind a mental model's refreshes for no reason.
+    The column is shared with per-document retains, whose key is a caller-supplied
+    document id. The claim predicate keeps the two apart by also matching on
+    ``operation_type``; the prefix just makes a refresh's key readable as one.
     """
     return f"mental_model:{mental_model_id}"
 
@@ -23227,11 +23227,11 @@ class MemoryEngine(MemoryEngineInterface):
 
         Rows are also serialised per model at claim time: the operation carries
         ``serialization_key = mental_model:<id>``, so a bank runs at most one refresh
-        per model at a time and runs them in submission order. Dedupe alone does not
-        give that — it only bounds the *queue*, and a refresh queued behind a running
-        one used to be claimed immediately and write the same model beside it, where
-        whichever finished last won regardless of which read more. Models are
-        independent, so a bank with hundreds of them keeps refreshing them in parallel.
+        per model at a time. Dedupe alone does not give that — it only bounds the
+        *queue*, and a refresh queued behind a running one used to be claimed
+        immediately and write the same model beside it, where whichever finished last
+        won regardless of which read more. Models are independent, so a bank with
+        hundreds of them keeps refreshing them in parallel.
 
         Returns:
             Dict with operation_id — the surviving operation's when this submit was
