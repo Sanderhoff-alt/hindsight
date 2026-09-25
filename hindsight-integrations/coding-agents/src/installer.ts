@@ -1592,6 +1592,7 @@ const dcode: HarnessInstaller = {
 const DSH_MARKER_START = "# HINDSIGHT_CODING_AGENTS_DSH_START";
 const DSH_MARKER_END = "# HINDSIGHT_CODING_AGENTS_DSH_END";
 const DSH_BLOCK_RE = new RegExp(`\\n?${DSH_MARKER_START}[\\s\\S]*?${DSH_MARKER_END}\\n?`);
+
 /**
  * What `uninstall` leaves behind when our block was the only thing in the file. dsh reads this file
  * as a top-level YAML array and fails BOOT on anything else, so an emptied file still has to parse;
