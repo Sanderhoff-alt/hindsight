@@ -21,7 +21,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import BaseModel
 
-from hindsight_api.engine.llm_interface import LLM_TOOL_CHOICE_NONE, LLM_TOOL_CHOICE_REQUIRED, LLMToolChoice
+from hindsight_api.engine.llm_interface import (
+    LLM_TOOL_CHOICE_AUTO,
+    LLM_TOOL_CHOICE_NONE,
+    LLM_TOOL_CHOICE_REQUIRED,
+    LLMToolChoice,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -158,6 +163,8 @@ async def test_call_with_tools_marks_system_and_last_message():
         (LLMToolChoice.named("recall"), {"type": "tool", "name": "recall"}),
         (LLM_TOOL_CHOICE_REQUIRED, {"type": "any"}),
         (LLM_TOOL_CHOICE_NONE, {"type": "none"}),
+        # auto is Anthropic's default: the field stays off the wire.
+        (LLM_TOOL_CHOICE_AUTO, None),
     ],
 )
 async def test_call_with_tools_maps_tool_choice_without_narrowing(choice, expected):
@@ -177,7 +184,7 @@ async def test_call_with_tools_maps_tool_choice_without_narrowing(choice, expect
         )
 
     params = provider._client.messages.create.await_args.kwargs
-    assert params["tool_choice"] == expected
+    assert params.get("tool_choice") == expected
     assert [tool["name"] for tool in params["tools"]] == ["recall", "done"]
 
 
