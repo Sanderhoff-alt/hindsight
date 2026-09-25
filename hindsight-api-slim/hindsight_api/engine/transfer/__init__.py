@@ -34,7 +34,6 @@ from .schema import (
     TransferObservationSource,
     TransferScope,
 )
-from .stream_archive import ZipStreamer
 
 __all__ = [
     "SCHEMA_VERSION",
@@ -50,7 +49,6 @@ __all__ = [
     "TransferObservation",
     "TransferObservationSource",
     "TransferScope",
-    "ZipStreamer",
     "build_bank_archive",
     "export_bank",
     "export_documents",

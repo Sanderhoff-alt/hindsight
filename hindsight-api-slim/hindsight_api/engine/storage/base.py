@@ -3,6 +3,7 @@
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
+from datetime import timedelta
 from typing import Any
 
 import obstore as obs
@@ -42,7 +43,7 @@ class FileStorage(ABC):
         """Store file from an async byte stream.
 
         Default implementation buffers stream into memory and calls :meth:`store`.
-        Streaming-capable backends override this for O(1) memory transfer.
+        Streaming-capable backends override this so a large file is never held whole.
         """
         chunks: list[bytes] = []
         async for chunk in stream:
@@ -70,7 +71,7 @@ class FileStorage(ABC):
         """Retrieve file as an async stream of bytes.
 
         Default implementation calls :meth:`retrieve` and yields the full bytes.
-        Streaming-capable backends override this for O(1) memory transfer.
+        Streaming-capable backends override this so a large file is never held whole.
         """
         data = await self.retrieve(key)
         yield data
@@ -140,6 +141,12 @@ async def delete_object_store_prefix(store, prefix: str) -> int:
     return deleted
 
 
+def _is_not_found(error: Exception) -> bool:
+    """obstore raises one generic error type; S3, GCS and Azure each word a missing key differently."""
+    message = str(error).lower()
+    return "not found" in message or "nosuchkey" in message or "blobnotfound" in message
+
+
 class ObstoreFileStorage(FileStorage):
     """Shared base class for obstore-backed object storage backends (S3, GCS, Azure)."""
 
@@ -191,7 +198,7 @@ class ObstoreFileStorage(FileStorage):
             # its declared contract.
             return bytes(await response.bytes_async())
         except Exception as e:
-            if "not found" in str(e).lower() or "nosuchkey" in str(e).lower() or "blobnotfound" in str(e).lower():
+            if _is_not_found(e):
                 raise FileNotFoundError(f"File not found: {key}") from e
             raise
 
@@ -201,7 +208,7 @@ class ObstoreFileStorage(FileStorage):
             async for chunk in response.stream():
                 yield bytes(chunk)
         except Exception as e:
-            if "not found" in str(e).lower() or "nosuchkey" in str(e).lower() or "blobnotfound" in str(e).lower():
+            if _is_not_found(e):
                 raise FileNotFoundError(f"File not found: {key}") from e
             raise
 
@@ -219,18 +226,13 @@ class ObstoreFileStorage(FileStorage):
             return False
 
     async def get_download_url(self, key: str, expires_in: int = 3600) -> str:
-        from datetime import timedelta
-
         return await obs.sign_async(self._store, "GET", key, timedelta(seconds=expires_in))
 
     async def get_size(self, key: str) -> int | None:
         try:
             head = await obs.head_async(self._store, key)
-            if isinstance(head, dict):
-                return head.get("size")
-            return getattr(head, "size", None)
         except Exception as e:
-            if "not found" in str(e).lower() or "nosuchkey" in str(e).lower() or "blobnotfound" in str(e).lower():
+            if _is_not_found(e):
                 return None
-            logger.warning("Failed to retrieve size for object %s from storage: %s", key, e)
-            return None
+            raise
+        return head["size"]

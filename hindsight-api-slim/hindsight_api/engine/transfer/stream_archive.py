@@ -1,4 +1,4 @@
-"""O(1) memory streaming ZIP archive generator using PKZIP Data Descriptors.
+"""Streaming ZIP archive writer using PKZIP Data Descriptors, so no entry is ever held whole.
 
 Design Rationale:
 -----------------
@@ -19,7 +19,7 @@ Design Rationale:
    - Third-party packages rely almost exclusively on synchronous generator interfaces
      (`def ... yield`), requiring threadpool dispatch (`anyio.to_thread`) and channel
      queues to bridge into asyncio. This introduces thread-switching overhead and memory
-     buffering that erodes O(1) memory guarantees.
+     buffering that erodes the bounded-memory guarantee.
    - `hindsight-api-slim` enforces a strictly audited, minimal supply-chain footprint.
      The PKZIP Bit 3 protocol is compact and stable (~270 LOC) and can be fully
      implemented using Python's built-in `struct` and `zlib` without adding external
@@ -42,6 +42,9 @@ Design Rationale:
      funzip) without buffering the full blob in memory for CRC/size pre-computation.
    - Event-loop friendly: periodically yields control via `asyncio.sleep(0)` during chunk
      streaming across entries to avoid blocking concurrent requests.
+   - Bounded pieces: whatever size the source yields, the compressor is fed at most
+     `CHUNK_SIZE` at a time, so its output never grows with a blob. The central
+     directory (one small record per entry) is the only state that grows with the archive.
 """
 
 from __future__ import annotations
@@ -88,8 +91,21 @@ class _ZipEntry:
     offset: int
 
 
+async def _bounded(chunk_stream: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+    """Re-slice a stream so no piece handed to the compressor exceeds ``CHUNK_SIZE``.
+
+    A source is free to yield its data in one piece (a storage backend that reads a
+    whole row). Compressing that piece in one call would make the compressor emit
+    an output buffer as large as the input, doubling the peak for the largest blob.
+    """
+    async for chunk in chunk_stream:
+        view = memoryview(chunk)
+        for start in range(0, len(view), CHUNK_SIZE):
+            yield view[start : start + CHUNK_SIZE]
+
+
 class ZipStreamer:
-    """Async generator for streaming PKZIP archives with O(1) memory footprint.
+    """Async writer for streaming PKZIP archives without holding any entry in memory.
 
     Employs PKZIP General Purpose Bit 3 (0x0008) so that files can be compressed
     and emitted on the fly without knowing the compressed or uncompressed size or CRC
@@ -160,15 +176,10 @@ class ZipStreamer:
         comp_size = 0
         compressor = zlib.compressobj(level=level, method=zlib.DEFLATED, wbits=-15) if compress else None
 
-        async for chunk in chunk_stream:
-            if not chunk:
-                continue
+        async for chunk in _bounded(chunk_stream):
             crc = zlib.crc32(chunk, crc)
             uncomp_size += len(chunk)
-            if compressor:
-                out = compressor.compress(chunk)
-            else:
-                out = chunk
+            out = compressor.compress(chunk) if compressor else bytes(chunk)
             if out:
                 comp_size += len(out)
                 self.offset += len(out)

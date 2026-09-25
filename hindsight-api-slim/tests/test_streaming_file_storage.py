@@ -1,27 +1,22 @@
-"""Tests for O(1) memory streaming exports and storage backends."""
+"""Streaming exports: the ZIP writer and the file-storage backends it streams through."""
 
 import io
 import json
+import uuid
 import zipfile
 import zlib
 from collections.abc import AsyncIterator
-from typing import Any
 
 import pytest
-from starlette.responses import StreamingResponse
-
-import obstore
 from obstore.store import MemoryStore
+from starlette.responses import StreamingResponse
 
 from hindsight_api.engine.storage.azure import AzureFileStorage
 from hindsight_api.engine.storage.gcs import GCSFileStorage
-from hindsight_api.engine.storage.postgresql import (
-    _CHUNKED_MANIFEST_SIGNATURE,
-    PG_STREAM_CHUNK_SIZE,
-    PostgreSQLFileStorage,
-)
+from hindsight_api.engine.storage.postgresql import _CHUNKED_MANIFEST_SIGNATURE, PG_STREAM_CHUNK_SIZE
 from hindsight_api.engine.storage.s3 import S3FileStorage
 from hindsight_api.engine.transfer.stream_archive import (
+    CHUNK_SIZE,
     SIG_ZIP64_EOCD,
     SIG_ZIP64_LOCATOR,
     ZipStreamer,
@@ -72,149 +67,6 @@ async def test_store_and_retrieve_stream_cloud(cls):
     # Clean up
     await fs.delete(key)
     assert not await fs.exists(key)
-
-
-class FakePostgresConnection:
-    """In-memory simulation of asyncpg connection with file_storage table."""
-
-    def __init__(self, table_data: dict[str, bytes]):
-        self.table = table_data
-
-    async def execute(self, query: str, *args: Any) -> str:
-        q = query.strip().upper()
-        if "INSERT INTO" in q:
-            key, val = args[0], args[1]
-            self.table[key] = bytes(val)
-            return "INSERT 0 1"
-        elif "DELETE FROM" in q:
-            if "STORAGE_KEY = ANY($1)" in q:
-                chunk_keys = args[0]
-                deleted = 0
-                for k in chunk_keys:
-                    if k in self.table:
-                        del self.table[k]
-                        deleted += 1
-                return f"DELETE {deleted}"
-            elif "LIKE" in q:
-                pattern = args[0]
-                prefix = pattern.replace("!!", "!").replace("!%", "%").replace("!_", "_").rstrip("%")
-                to_delete = [k for k in self.table if k.startswith(prefix)]
-                for k in to_delete:
-                    del self.table[k]
-                return f"DELETE {len(to_delete)}"
-            elif "WHERE STORAGE_KEY = $1" in q:
-                key = args[0]
-                if key in self.table:
-                    del self.table[key]
-                    return "DELETE 1"
-                return "DELETE 0"
-        return "OK"
-
-    async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
-        key = args[0]
-        if key in self.table:
-            val = self.table[key]
-            sig_len = len(_CHUNKED_MANIFEST_SIGNATURE)
-            return {
-                "data": val,
-                "len": len(val),
-                "sig": val[:sig_len],
-            }
-        return None
-
-
-class FakePool:
-    def __init__(self, table_data: dict[str, bytes]):
-        self.table_data = table_data
-
-    async def acquire(self):
-        return FakePostgresConnection(self.table_data)
-
-    async def release(self, conn: Any) -> None:
-        pass
-
-    def get_size(self) -> int:
-        return 1
-
-    def get_idle_size(self) -> int:
-        return 1
-
-
-async def test_postgresql_file_storage_small_stream_single_row():
-    """Streams under 4MB are stored as standard single BYTEA rows."""
-    table: dict[str, bytes] = {}
-    pool = FakePool(table)
-    fs = PostgreSQLFileStorage(lambda: pool)
-
-    small_payload = b"small data < 4MB"
-
-    async def gen():
-        yield small_payload
-
-    key = await fs.store_stream("small.txt", gen())
-    assert key == "small.txt"
-    # Verify stored as single row directly
-    assert list(table.keys()) == ["small.txt"]
-    assert table["small.txt"] == small_payload
-
-    # Retrieve
-    assert await fs.retrieve(key) == small_payload
-    stream_data = b"".join([c async for c in fs.retrieve_stream(key)])
-    assert stream_data == small_payload
-
-    # Delete
-    await fs.delete(key)
-    assert len(table) == 0
-
-
-async def test_postgresql_file_storage_chunked_streaming_and_atomic_cleanup():
-    """Streams exceeding 4MB are stored as virtual chunks and cleaned up atomically."""
-    table: dict[str, bytes] = {}
-    pool = FakePool(table)
-    fs = PostgreSQLFileStorage(lambda: pool)
-
-    # 10 MB payload (exceeds 4MB chunk size)
-    ten_mb = b"X" * (10 * 1024 * 1024)
-
-    async def gen():
-        chunk_size = 1024 * 1024
-        for i in range(0, len(ten_mb), chunk_size):
-            yield ten_mb[i : i + chunk_size]
-
-    key = await fs.store_stream("large.zip", gen())
-    assert key == "large.zip"
-
-    # Should have manifest row + 3 chunks (4MB + 4MB + 2MB)
-    assert "large.zip" in table
-    assert "large.zip#chunk=000000" in table
-    assert "large.zip#chunk=000001" in table
-    assert "large.zip#chunk=000002" in table
-    assert len(table) == 4
-
-    # Verify manifest contents
-    manifest_raw = table["large.zip"]
-    assert manifest_raw.startswith(_CHUNKED_MANIFEST_SIGNATURE)
-    manifest = json.loads(manifest_raw[len(_CHUNKED_MANIFEST_SIGNATURE) :])
-    assert manifest["format"] == "chunked_v1"
-    assert manifest["chunks"] == 3
-    assert manifest["total_bytes"] == len(ten_mb)
-
-    # Verify retrieve_stream reassembles without holding > 4MB chunk in memory
-    chunks = []
-    async for chunk in fs.retrieve_stream(key):
-        chunks.append(chunk)
-    assert len(chunks) == 3
-    assert len(chunks[0]) == PG_STREAM_CHUNK_SIZE
-    assert len(chunks[1]) == PG_STREAM_CHUNK_SIZE
-    assert len(chunks[2]) == 2 * 1024 * 1024
-    assert b"".join(chunks) == ten_mb
-
-    # Verify transparent retrieve() backwards compatibility
-    assert await fs.retrieve(key) == ten_mb
-
-    # Verify atomic multi-row cleanup deletes manifest AND all chunk rows
-    await fs.delete(key)
-    assert len(table) == 0, f"Expected table to be empty, but had: {list(table.keys())}"
 
 
 async def test_zip_streamer_roundtrip_and_deflate():
@@ -271,25 +123,6 @@ async def test_store_and_retrieve_empty_file_cloud(cls):
     assert not await fs.exists(key)
 
 
-async def test_store_and_retrieve_empty_file_postgres():
-    """Empty files (0 bytes) can be stored, sized, and retrieved in PostgreSQL storage."""
-    table: dict[str, bytes] = {}
-    pool = FakePool(table)
-    fs = PostgreSQLFileStorage(lambda: pool)
-
-    async def empty_gen() -> AsyncIterator[bytes]:
-        if False:
-            yield b""
-
-    key = await fs.store_stream("empty.bin", empty_gen())
-    assert await fs.exists(key)
-    assert await fs.get_size(key) == 0
-    assert await fs.retrieve(key) == b""
-    assert [c async for c in fs.retrieve_stream(key)] == [b""]
-    await fs.delete(key)
-    assert len(table) == 0
-
-
 async def test_zip_streamer_empty_entries_and_zero_bytes():
     """ZipStreamer properly handles 0-byte files with and without compression."""
     zs = ZipStreamer()
@@ -328,50 +161,6 @@ async def test_cloud_storage_cancellation_cleanup(cls):
     assert not await fs.exists("aborted.bin")
 
 
-async def test_postgres_storage_cancellation_cleanup():
-    """When a chunked stream aborts with an exception, partial chunks are cleaned up."""
-    table: dict[str, bytes] = {}
-    pool = FakePool(table)
-    fs = PostgreSQLFileStorage(lambda: pool)
-
-    async def failing_chunked_gen():
-        # Yield first chunk exceeding 4MB to trigger chunk row write
-        yield b"A" * (4 * 1024 * 1024)
-        yield b"B" * (1024 * 1024)
-        raise RuntimeError("Network disconnect during stream")
-
-    with pytest.raises(RuntimeError, match="Network disconnect during stream"):
-        await fs.store_stream("aborted_large.bin", failing_chunked_gen())
-
-    # Verify no leaked chunks or manifest
-    assert len(table) == 0, f"Expected table to be empty after abort, but had: {list(table.keys())}"
-
-
-async def test_postgres_key_escaping_with_special_characters():
-    """Storage keys with %, _, and ! are handled safely without wildcard collision."""
-    table: dict[str, bytes] = {}
-    pool = FakePool(table)
-    fs = PostgreSQLFileStorage(lambda: pool)
-
-    # Store items where wildcard collision could happen
-    # E.g. 'banks/bank_1/file' vs 'banks/bank_10/file'
-    await fs.store(b"bank 1 file", "banks/bank_1/file%20!_test.txt")
-    await fs.store(b"bank 10 file", "banks/bank_10/file%20!_test.txt")
-
-    assert await fs.get_size("banks/bank_1/file%20!_test.txt") == len(b"bank 1 file")
-    assert await fs.retrieve("banks/bank_1/file%20!_test.txt") == b"bank 1 file"
-
-    # delete_prefix for bank_1 should NOT delete bank_10
-    deleted = await fs.delete_prefix("banks/bank_1/")
-    assert deleted == 1
-    assert not await fs.exists("banks/bank_1/file%20!_test.txt")
-    assert await fs.exists("banks/bank_10/file%20!_test.txt")
-
-    # Clean up remainder
-    await fs.delete("banks/bank_10/file%20!_test.txt")
-    assert len(table) == 0
-
-
 async def test_stream_export_bank_empty_bank_manifest():
     """Verify stream_export_bank outputs a valid ZIP archive with an empty manifest for an empty bank."""
     from unittest.mock import AsyncMock
@@ -400,77 +189,6 @@ async def test_stream_export_bank_empty_bank_manifest():
     assert manifest_data["document_count"] == 0
     assert manifest_data["archive_type"] == "bank"
     assert zf.testzip() is None
-
-
-async def test_postgresql_chunked_get_size():
-    """Verify get_size accurately parses total bytes from a chunked storage manifest."""
-    table: dict[str, bytes] = {}
-    pool = FakePool(table)
-    fs = PostgreSQLFileStorage(lambda: pool)
-
-    six_mb = b"Z" * (6 * 1024 * 1024)
-
-    async def gen():
-        for i in range(0, len(six_mb), 1024 * 1024):
-            yield six_mb[i : i + 1024 * 1024]
-
-    key = await fs.store_stream("six_mb.bin", gen())
-    assert await fs.get_size(key) == len(six_mb)
-    await fs.delete(key)
-    assert len(table) == 0
-
-
-async def test_postgresql_corrupt_manifest_delete():
-    """Verify delete cleans up root row gracefully when manifest row is corrupted."""
-    table: dict[str, bytes] = {}
-    pool = FakePool(table)
-    fs = PostgreSQLFileStorage(lambda: pool)
-
-    table["corrupt.bin"] = _CHUNKED_MANIFEST_SIGNATURE + b"not-a-valid-json-manifest"
-    await fs.delete("corrupt.bin")
-    assert "corrupt.bin" not in table
-
-
-async def test_retrieve_bank_file_stream_dataclass_and_chunked_e2e():
-    """Verify retrieve_bank_file_stream returns BankFileStream dataclass and streams >4MB chunked files."""
-    from unittest.mock import AsyncMock
-
-    from hindsight_api.engine.memory_engine import BankFileStream, MemoryEngine
-    from hindsight_api.models import RequestContext
-
-    table: dict[str, bytes] = {}
-    pool = FakePool(table)
-    fs = PostgreSQLFileStorage(lambda: pool)
-
-    engine = MemoryEngine.__new__(MemoryEngine)
-    engine._file_storage = fs
-    engine._get_backend = AsyncMock(return_value=pool)
-    engine.get_bank_profile = AsyncMock(return_value={"bank_id": "test_bank"})
-
-    # Store 5MB file across chunk boundary
-    five_mb = b"B" * (5 * 1024 * 1024)
-
-    async def gen():
-        for i in range(0, len(five_mb), 1024 * 1024):
-            yield five_mb[i : i + 1024 * 1024]
-
-    key = "banks/test_bank/exports/export.zip"
-    await fs.store_stream(key, gen())
-
-    ctx = RequestContext(tenant_id="default")
-    file_info = await engine.retrieve_bank_file_stream("test_bank", key, ctx)
-
-    assert isinstance(file_info, BankFileStream)
-    assert file_info.size == len(five_mb)
-
-    # Reassemble stream
-    chunks = []
-    async for chunk in file_info.stream:
-        chunks.append(chunk)
-    assert b"".join(chunks) == five_mb
-
-    await fs.delete(key)
-    assert len(table) == 0
 
 
 async def test_zip_streamer_deflate_level_0_sequential_unpack():
@@ -545,3 +263,119 @@ async def test_zipstreamer_zip64_many_entries():
         assert zf.testzip() is None
         assert zf.read("0.txt") == b""
         assert zf.read(f"{num_entries - 1}.txt") == b""
+
+
+# --- PostgreSQL file storage, against the real database -------------------------
+
+
+def _pg_key(name: str) -> str:
+    return f"tests/streaming/{uuid.uuid4().hex}/{name}"
+
+
+async def _pieces(data: bytes, size: int = 1024 * 1024) -> AsyncIterator[bytes]:
+    for i in range(0, len(data), size):
+        yield data[i : i + size]
+
+
+async def test_postgres_short_stream_is_one_plain_row(memory):
+    """A stream under one chunk is stored exactly as store() would store it."""
+    fs = memory._file_storage
+    key = _pg_key("small.txt")
+    try:
+        await fs.store_stream(key, _pieces(b"small data"))
+        assert await fs.retrieve(key) == b"small data"
+        assert not await fs.exists(f"{key}#chunk=000000")
+    finally:
+        await fs.delete(key)
+
+
+async def test_postgres_empty_file(memory):
+    fs = memory._file_storage
+    key = _pg_key("empty.bin")
+    try:
+        await fs.store_stream(key, _pieces(b""))
+        assert await fs.exists(key)
+        assert await fs.get_size(key) == 0
+        assert await fs.retrieve(key) == b""
+        assert b"".join([c async for c in fs.retrieve_stream(key)]) == b""
+    finally:
+        await fs.delete(key)
+    assert not await fs.exists(key)
+
+
+async def test_postgres_plain_row_is_streamed_in_bounded_ranges(memory):
+    """A large file written by store() — every attachment — never comes back in one piece."""
+    fs = memory._file_storage
+    key = _pg_key("attachment.bin")
+    data = bytes(range(256)) * (10 * 1024 * 1024 // 256)  # 10 MiB, not a chunked file
+    try:
+        await fs.store(data, key)
+        pieces = [c async for c in fs.retrieve_stream(key)]
+        assert [len(p) for p in pieces] == [PG_STREAM_CHUNK_SIZE, PG_STREAM_CHUNK_SIZE, 2 * 1024 * 1024]
+        assert b"".join(pieces) == data
+        assert await fs.get_size(key) == len(data)
+    finally:
+        await fs.delete(key)
+
+
+async def test_postgres_aborted_stream_leaves_nothing(memory):
+    fs = memory._file_storage
+    key = _pg_key("aborted.bin")
+
+    async def failing() -> AsyncIterator[bytes]:
+        yield b"A" * PG_STREAM_CHUNK_SIZE
+        yield b"B" * 1024
+        raise RuntimeError("disconnect")
+
+    with pytest.raises(RuntimeError, match="disconnect"):
+        await fs.store_stream(key, failing())
+    assert not await fs.exists(key)
+    assert not await fs.exists(f"{key}#chunk=000000")
+
+
+@pytest.mark.parametrize("rewrite", ["store", "store_stream"])
+async def test_postgres_overwriting_a_chunked_file_drops_its_old_chunks(memory, rewrite):
+    """Replacing a chunked file must not strand the previous version's chunk rows."""
+    fs = memory._file_storage
+    key = _pg_key("rewritten.bin")
+    try:
+        await fs.store_stream(key, _pieces(b"X" * (9 * 1024 * 1024)))
+        assert await fs.exists(f"{key}#chunk=000002")
+        if rewrite == "store":
+            await fs.store(b"short", key)
+        else:
+            await fs.store_stream(key, _pieces(b"Y" * (5 * 1024 * 1024)))
+        assert not await fs.exists(f"{key}#chunk=000002")
+        if rewrite == "store":
+            assert not await fs.exists(f"{key}#chunk=000000")
+            assert await fs.retrieve(key) == b"short"
+        else:
+            assert await fs.retrieve(key) == b"Y" * (5 * 1024 * 1024)
+    finally:
+        await fs.delete(key)
+
+
+async def test_postgres_row_that_only_looks_like_a_manifest_is_a_plain_file(memory):
+    fs = memory._file_storage
+    key = _pg_key("lookalike.bin")
+    data = _CHUNKED_MANIFEST_SIGNATURE + b"not-a-manifest"
+    await fs.store(data, key)
+    assert await fs.retrieve(key) == data
+    assert await fs.get_size(key) == len(data)
+    await fs.delete(key)
+    assert not await fs.exists(key)
+
+
+async def test_zip_streamer_never_hands_on_more_than_one_chunk_at_a_time():
+    """A source that yields a blob in one piece still leaves the writer as bounded pieces."""
+    blob = bytes(range(256)) * (3 * CHUNK_SIZE // 256 + 7)
+
+    async def one_piece() -> AsyncIterator[bytes]:
+        yield blob
+
+    for level in (0, 6):
+        zs = ZipStreamer()
+        out = [c async for c in zs.write_file_chunks("blob.bin", one_piece(), compression_level=level)]
+        assert max(len(c) for c in out) <= CHUNK_SIZE + 64  # deflate framing on a stored block
+        archive = b"".join(out) + zs.finish()
+        assert zipfile.ZipFile(io.BytesIO(archive)).read("blob.bin") == blob
