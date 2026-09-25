@@ -923,12 +923,6 @@ _LISTING_ITEM_OVERHEAD = 10  # Formatting overhead per item in cut listing: "[1]
 _MAX_QUERY_TOKENS = 2_000  # Defensive ceiling on query tokens in reranker
 
 
-def _get_static_cut_overhead() -> int:
-    """Static token overhead for the cut question's instructions and criteria."""
-    criteria_tokens = sum(count_tokens(c) for c in TypeSafeCrossEncoder.CUT_LEVELS)
-    return count_tokens(_CUT_INSTRUCTIONS) + criteria_tokens + 50
-
-
 class TypeSafeCrossEncoder(CrossEncoderModel):
     """
     TypeSafe reranker (https://typesafe.ai), Jev by default.
@@ -1076,6 +1070,7 @@ class TypeSafeCrossEncoder(CrossEncoderModel):
 
         # Available token budget for candidate options in one choice question.
         state_tokens = count_tokens(f"Question: {query}")
+        # +30: cushion for the question's JSON framing (type, keys) around the instructions.
         instr_tokens = count_tokens(f"{_RANK_INSTRUCTIONS_PREFIX}{query}") + 30
         net_budget = max(50, self.MAX_QUESTION_TOKENS - state_tokens - instr_tokens)
 
@@ -1123,9 +1118,15 @@ class TypeSafeCrossEncoder(CrossEncoderModel):
             for i, r in zip(multi_indices, ranked_multi):
                 ranked_groups[i] = r
 
-        # Advance top SHORTLIST from each group to the finals; rest fall back to RRF order (#4599).
-        finalists = [index for group in ranked_groups for index in group[: self.SHORTLIST]]
-        rest = [index for group in ranked_groups for index in group[self.SHORTLIST :]]
+        # Advance the top of each group to the finals; the rest fall back to RRF order (#4599).
+        # The finals is one Choice, so the finalists must fit MAX_OPTIONS too: long documents
+        # can split a pool into more than MAX_OPTIONS // SHORTLIST groups, so the per-group
+        # quota shrinks, and past MAX_OPTIONS groups the lowest-input-ranked winners overflow
+        # into the rest.
+        quota = max(1, min(self.SHORTLIST, self.MAX_OPTIONS // len(ranked_groups)))
+        finalists = [index for group in ranked_groups for index in group[:quota]]
+        rest = [index for group in ranked_groups for index in group[quota:]] + finalists[self.MAX_OPTIONS :]
+        finalists = finalists[: self.MAX_OPTIONS]
         index_pos = {idx: pos for pos, idx in enumerate(indices)}
         rest.sort(key=lambda idx: index_pos[idx])
 
@@ -1146,7 +1147,8 @@ class TypeSafeCrossEncoder(CrossEncoderModel):
         if not shortlist:
             return 0
 
-        cut_overhead = _get_static_cut_overhead()
+        # Instructions and levels are fixed, plus a cushion for the request's JSON framing.
+        cut_overhead = count_tokens(_CUT_INSTRUCTIONS) + sum(count_tokens(c) for c in self.CUT_LEVELS) + 50
         prefix = f"Question: {query}\n\nCandidates, already ranked best first:\n"
         prefix_tokens = count_tokens(prefix)
         available_listing_tokens = max(100, self.MAX_QUESTION_TOKENS - cut_overhead - prefix_tokens)

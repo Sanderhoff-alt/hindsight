@@ -13,7 +13,6 @@ from unittest.mock import patch
 import pytest
 
 from hindsight_api.config import HindsightConfig
-from hindsight_api.engine import cross_encoder
 from hindsight_api.engine.cross_encoder import (
     _OPTION_KEY_OVERHEAD,
     TypeSafeCrossEncoder,
@@ -55,24 +54,23 @@ class _FakeSession:
     async def _post(self, url, headers=None, json=None):
         self.urls.append(url)
         self.posted.append(json)
-        answers = {}
-        for question_id, question in json["questions"].items():
-            if question["type"] == "choice":
-                keys = list(question["criteria"])
-                answers[question_id] = {
-                    "type": "choice",
-                    "choice": keys[0],
-                    "probabilities": {key: self.ranking.get(key, 0.0) for key in keys},
-                    "confidence": 0.9,
-                }
-            else:
-                answers[question_id] = {
-                    "type": "score",
-                    "score": self.cut_level,
-                    "legend": dict(enumerate(question["criteria"])),
-                    "confidence": 0.9,
-                }
-        yield _FakeResponse({"answers": answers, "usage": {"input_tokens": 1, "output_tokens": 1}})
+        question_id, question = next(iter(json["questions"].items()))
+        if question["type"] == "choice":
+            keys = list(question["criteria"])
+            answer = {
+                "type": "choice",
+                "choice": keys[0],
+                "probabilities": {key: self.ranking.get(key, 0.0) for key in keys},
+                "confidence": 0.9,
+            }
+        else:
+            answer = {
+                "type": "score",
+                "score": self.cut_level,
+                "legend": dict(enumerate(question["criteria"])),
+                "confidence": 0.9,
+            }
+        yield _FakeResponse({"answers": {question_id: answer}, "usage": {"input_tokens": 1, "output_tokens": 1}})
 
     def post(self, url, headers=None, json=None):
         return self._post(url, headers=headers, json=json)
@@ -181,7 +179,7 @@ class TestChunking:
         encoder, session = _encoder({f"c{i}": 1.0 / (i + 1) for i in range(size)})
         scores = await encoder._predict([("q", f"doc {i}") for i in range(size)])
 
-        # Two groups dispatched concurrently, then one more for their winners.
+        # Two rounds over the halves, then one more over their winners.
         assert len(session.rank_requests) == 3
         assert all(len(body["questions"]["rank"]["criteria"]) <= 255 for body in session.rank_requests)
         assert len(scores) == size
@@ -513,3 +511,19 @@ class TestTokenBudgetingAndOrder:
         for body in session.rank_requests:
             state_tokens = count_tokens(body["state"])
             assert state_tokens <= max_question_tokens
+
+    @pytest.mark.asyncio
+    async def test_finals_never_exceed_the_option_cap_when_long_docs_make_many_groups(self):
+        """Long documents split the pool into many groups; the finals is still one Choice <= MAX_OPTIONS.
+
+        Here ~3 documents fit a group, so 30 candidates make ~10 groups whose winners, at a
+        fixed 12 per group, would all reach a finals capped at 10. In production the same
+        happens once a pool splits into more than 250 // 12 = 20 groups.
+        """
+        size = 30
+        encoder, session = _encoder({f"c{i}": 1.0 / (i + 1) for i in range(size)}, max_question_tokens=400)
+        encoder.MAX_OPTIONS = 10
+        scores = await encoder._predict([("q", "long document words " * 40 + str(i)) for i in range(size)])
+
+        assert len(scores) == size
+        assert all(len(body["questions"]["rank"]["criteria"]) <= 10 for body in session.rank_requests)
