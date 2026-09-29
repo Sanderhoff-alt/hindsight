@@ -24,6 +24,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from openai import APIStatusError
 
 from hindsight_api.engine.providers.openai_compatible_llm import OpenAICompatibleLLM
 
@@ -158,3 +159,44 @@ class TestToolPathReasoningEffort:
 
         assert ("reasoning_effort" in tool_params) == ("reasoning_effort" in plain_params)
         assert tool_params["reasoning_effort"] == plain_params["reasoning_effort"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model", ["gpt-6", "gpt-6-luna"])
+    async def test_gpt6_omits_temperature_on_tool_and_plain_paths(self, model):
+        """GPT-6 reasoning models reject temperature, so both paths must omit it (#4891)."""
+        llm = _make_llm(model, "none")
+        tool_params = await _capture_call_params(llm)
+        assert "temperature" not in tool_params
+
+        plain_response = MagicMock(error=None)
+        plain_response.model_dump.return_value = {}
+        plain_response.usage.prompt_tokens = 10
+        plain_response.usage.completion_tokens = 5
+        plain_response.usage.total_tokens = 15
+        plain_response.usage.completion_tokens_details = None
+        plain_response.choices = [MagicMock(finish_reason="stop", message=MagicMock(content="ok", tool_calls=None))]
+        with patch.object(llm._client.chat.completions, "create", new_callable=AsyncMock) as create:
+            create.return_value = plain_response
+            await llm.call(messages=[{"role": "user", "content": "hi"}], temperature=0.7, max_retries=0)
+        assert "temperature" not in create.await_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_tool_path_fails_fast_on_responses_endpoint_error(self, caplog):
+        """When OpenAI chat/completions rejects tools on reasoning models, fail fast and log guidance (#4891)."""
+        llm = _make_llm("gpt-6-luna", "none")
+        err_body = {
+            "error": {
+                "message": (
+                    "Function tools with reasoning_effort are not supported for gpt-6-luna in /v1/chat/completions. "
+                    "To use function tools, use /v1/responses or set reasoning_effort to 'none'."
+                )
+            }
+        }
+        fake_resp = MagicMock(status_code=400, text=json.dumps(err_body))
+        status_error = APIStatusError(message="HTTP 400", response=fake_resp, body=err_body)
+        with patch.object(llm._client.chat.completions, "create", new_callable=AsyncMock) as create:
+            create.side_effect = status_error
+            with pytest.raises(APIStatusError):
+                await llm.call_with_tools(messages=[{"role": "user", "content": "hi"}], tools=TOOLS, max_retries=5)
+        assert create.call_count == 1
+        assert "HINDSIGHT_API_LLM_PROVIDER=openai-responses" in caplog.text

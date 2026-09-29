@@ -51,7 +51,7 @@ class TestMaxTokensParamName:
         assert azure_gpt5._max_tokens_param_name() == "max_completion_tokens"
 
         # Even a Mistral-style custom base_url must not downgrade a reasoning model
-        for model in ("gpt-5", "gpt-5-mini", "o1-mini", "o3", "deepseek-r1"):
+        for model in ("gpt-5", "gpt-5-mini", "gpt-6", "gpt-6-luna", "o1-mini", "o3", "deepseek-r1"):
             llm = _make("openai", model, base_url="https://some-proxy.example.com/v1")
             assert llm._max_tokens_param_name() == "max_completion_tokens", model
 

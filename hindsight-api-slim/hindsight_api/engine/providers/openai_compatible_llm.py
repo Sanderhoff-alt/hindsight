@@ -1032,7 +1032,7 @@ class OpenAICompatibleLLM(LLMInterface):
         return any(x in model_lower for x in ["gpt-4o", "gpt-4.1", "gpt-4-", "gpt-3.5"])
 
     def _supports_reasoning_model(self) -> bool:
-        """Check if the current model is a reasoning model (o1, o3, GPT-5, DeepSeek).
+        """Check if the current model is a reasoning model (o1, o3, GPT-5, GPT-6, DeepSeek).
 
         **Deprecated as a capability check — this list is frozen. Do not add models to
         it.** Guessing capability from a name never worked outside OpenAI's own products:
@@ -1052,7 +1052,7 @@ class OpenAICompatibleLLM(LLMInterface):
             # DeepSeek model as a reasoning model injects reasoning_effort,
             # which conflicts with thinking-disabled flash calls.
             return any(x in model_lower for x in ["v4-pro", "reasoner", "r1", "thinking"])
-        return any(x in model_lower for x in ["gpt-5", "o1", "o3"])
+        return any(x in model_lower for x in ["gpt-5", "gpt-6", "o1", "o3"])
 
     def _get_max_reasoning_tokens(self) -> int | None:
         """Get max reasoning tokens for reasoning models."""
@@ -1795,11 +1795,29 @@ class OpenAICompatibleLLM(LLMInterface):
                     e, provider=self.provider, model=self.model, scope=scope, max_backoff=max_backoff
                 )
 
+                error_summary = _summarize_status_error(e)
+                # OpenAI specifically rejects reasoning models + function tools on /v1/chat/completions
+                # (issues #2983, #4891) with an HTTP 400 instructing callers to use /v1/responses
+                # or set reasoning_effort="none". Other providers (DeepSeek, etc.) allow reasoning
+                # alongside tools on chat/completions without issue.
+                # When targeting OpenAI, retrying will not help because the endpoint contract is
+                # fundamentally incompatible, so fail fast and guide the operator to the solution.
+                if e.status_code == 400 and (
+                    "/v1/responses" in error_summary or "function tools with reasoning" in error_summary.lower()
+                ):
+                    logger.error(
+                        f"Reasoning model '{self.model}' does not support function tools on "
+                        f"{self.provider} (/v1/chat/completions): {error_summary}. "
+                        f"To use reasoning models with function tools, switch to HINDSIGHT_API_LLM_PROVIDER=openai-responses "
+                        f"or set HINDSIGHT_API_LLM_REASONING_EFFORT=none."
+                    )
+                    raise
+
                 last_exception = e
                 if attempt < max_retries:
                     logger.warning(
                         f"APIStatusError in tool call ({self.provider}/{self.model}, scope={scope}, "
-                        f"attempt {attempt + 1}/{max_retries + 1}): {_summarize_status_error(e)}"
+                        f"attempt {attempt + 1}/{max_retries + 1}): {error_summary}"
                     )
                     await asyncio.sleep(min(initial_backoff * (2**attempt), max_backoff))
                     continue
