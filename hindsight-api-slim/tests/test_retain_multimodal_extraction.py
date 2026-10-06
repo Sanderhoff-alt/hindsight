@@ -143,13 +143,14 @@ async def test_a_text_only_retain_is_unaffected_by_a_non_vision_llm(api_client, 
     assert (await _retain(api_client, bank_id, "plain text", document_id="t")).status_code == 200
 
 
-@pytest.mark.asyncio
-async def test_multi_document_batch_preserves_multimodal_attachments(api_client, memory):
-    """Multi-doc grouping recursion in retain_batch() forwards attachment_loader."""
-    bank_id = f"vis-{uuid.uuid4().hex[:8]}"
-    memory._retain_llm_config._provider_impl.clear_mock_calls()
-
-    items = [
+# A batch whose items name different documents is split by document and each slice
+# re-entered as its own retain. That recursion used to drop the attachment loader
+# and the vision slot, so every image in such a batch reached the model as a bare
+# placeholder. Both shapes below take that path: explicit per-item document_ids,
+# and anonymous items -- which the API gives a generated document id each as soon
+# as they carry an attachment, making "two screenshots in one call" the common case.
+_GROUPED_BATCHES = {
+    "explicit document ids": [
         {
             "content": [_text_block("Doc 1 intro:"), _image_block(), _text_block("...Doc 1 end.")],
             "document_id": "doc-1",
@@ -158,99 +159,56 @@ async def test_multi_document_batch_preserves_multimodal_attachments(api_client,
             "content": [_text_block("Doc 2 intro:"), _image_block(), _text_block("...Doc 2 end.")],
             "document_id": "doc-2",
         },
-    ]
-    response = await api_client.post(
-        f"/v1/default/banks/{bank_id}/memories",
-        json={"items": items, "async": False},
-    )
-    assert response.status_code == 200, response.text
-
-    messages = _retain_messages(memory)
-    assert len(messages) >= 2, f"expected at least 2 extraction calls, got {len(messages)}"
-
-    for call_messages in messages:
-        user_content = call_messages[-1]["content"]
-        assert isinstance(user_content, list), "user message stayed plain string; image was dropped in grouped batch"
-        kinds = [part["type"] for part in user_content]
-        assert kinds == ["text", "image_url", "text"], f"unexpected message parts: {kinds}"
-        assert "intro:" in user_content[0]["text"]
-        assert "end." in user_content[2]["text"]
-
-
-@pytest.mark.asyncio
-async def test_anonymous_multimodal_items_trigger_grouping_and_preserve_attachments(api_client, memory):
-    """Items without document_id receive synthetic retain_{uuid} keys, triggering grouping recursion.
-    Each item's extraction call must still resolve attachments into prompt blocks."""
-    bank_id = f"vis-{uuid.uuid4().hex[:8]}"
-    memory._retain_llm_config._provider_impl.clear_mock_calls()
-
-    items = [
+    ],
+    "generated document ids": [
         {"content": [_text_block("Item 1 intro:"), _image_block(), _text_block("...Item 1 end.")]},
         {"content": [_text_block("Item 2 intro:"), _image_block(), _text_block("...Item 2 end.")]},
-    ]
-    response = await api_client.post(
-        f"/v1/default/banks/{bank_id}/memories",
-        json={"items": items, "async": False},
-    )
+    ],
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("items", _GROUPED_BATCHES.values(), ids=_GROUPED_BATCHES.keys())
+async def test_every_document_of_a_batch_sends_its_image_in_position(api_client, memory, items):
+    bank_id = f"vis-{uuid.uuid4().hex[:8]}"
+    memory._retain_llm_config._provider_impl.clear_mock_calls()
+
+    response = await api_client.post(f"/v1/default/banks/{bank_id}/memories", json={"items": items, "async": False})
     assert response.status_code == 200, response.text
 
     messages = _retain_messages(memory)
-    assert len(messages) >= 2, f"expected at least 2 extraction calls, got {len(messages)}"
+    assert len(messages) == len(items), f"expected one extraction call per document, got {len(messages)}"
 
     for call_messages in messages:
         user_content = call_messages[-1]["content"]
-        assert isinstance(user_content, list), "user message stayed plain string; image was dropped in grouped batch"
-        kinds = [part["type"] for part in user_content]
-        assert kinds == ["text", "image_url", "text"], f"unexpected message parts: {kinds}"
+        assert isinstance(user_content, list), "the user message stayed a plain string; the image was dropped"
+        assert [part["type"] for part in user_content] == ["text", "image_url", "text"]
         assert "intro:" in user_content[0]["text"]
         assert "end." in user_content[2]["text"]
 
 
 @pytest.mark.asyncio
-async def test_multi_document_batch_routes_to_custom_vlm(api_client, memory):
-    """When a distinct VLM slot is configured, multi-doc grouping recursion forwards vlm_config
-    so the vision model (not the retain LLM) receives the multimodal extraction calls."""
+async def test_a_batch_spanning_documents_still_reaches_the_dedicated_vision_slot(api_client, memory):
+    """A separate VLM is configured precisely so the retain LLM never sees images."""
     bank_id = f"vis-{uuid.uuid4().hex[:8]}"
-    vlm_config = LLMConfig(provider="mock", api_key="", base_url="", model="custom-vision-slot")
-    memory._vlm_config = vlm_config
+    memory._vlm_config = LLMConfig(provider="mock", api_key="", base_url="", model="custom-vision-slot")
 
     memory._retain_llm_config._provider_impl.clear_mock_calls()
-    vlm_config._provider_impl.clear_mock_calls()
+    memory._vlm_config._provider_impl.clear_mock_calls()
 
-    items = [
-        {
-            "content": [_text_block("Doc A intro:"), _image_block(), _text_block("...Doc A end.")],
-            "document_id": "doc-a",
-        },
-        {
-            "content": [_text_block("Doc B intro:"), _image_block(), _text_block("...Doc B end.")],
-            "document_id": "doc-b",
-        },
-    ]
-    response = await api_client.post(
-        f"/v1/default/banks/{bank_id}/memories",
-        json={"items": items, "async": False},
-    )
+    items = _GROUPED_BATCHES["explicit document ids"]
+    response = await api_client.post(f"/v1/default/banks/{bank_id}/memories", json={"items": items, "async": False})
     assert response.status_code == 200, response.text
 
-    # The vision slot must receive the extraction calls for the multimodal chunks
-    vlm_calls = [
-        call["messages"]
-        for call in vlm_config._provider_impl.get_mock_calls()
-        if call["scope"] == "retain_extract_facts"
-    ]
-    assert len(vlm_calls) >= 2, f"expected at least 2 VLM extraction calls, got {len(vlm_calls)}"
+    def _extraction_calls(config) -> list[list[dict]]:
+        provider = config._provider_impl
+        return [call["messages"] for call in provider.get_mock_calls() if call["scope"] == "retain_extract_facts"]
 
-    # The default retain LLM must not have handled these multimodal chunks
-    retain_calls = [
-        call["messages"]
-        for call in memory._retain_llm_config._provider_impl.get_mock_calls()
-        if call["scope"] == "retain_extract_facts"
-    ]
-    assert len(retain_calls) == 0, f"retain LLM unexpectedly received {len(retain_calls)} extraction calls"
+    vlm_calls = _extraction_calls(memory._vlm_config)
+    assert len(vlm_calls) == len(items), f"expected one VLM extraction call per document, got {len(vlm_calls)}"
+    assert _extraction_calls(memory._retain_llm_config) == [], "the retain LLM handled a multimodal chunk"
 
     for call_messages in vlm_calls:
         user_content = call_messages[-1]["content"]
-        assert isinstance(user_content, list), "VLM message stayed plain string"
-        kinds = [part["type"] for part in user_content]
-        assert kinds == ["text", "image_url", "text"]
+        assert isinstance(user_content, list), "the VLM message stayed a plain string"
+        assert [part["type"] for part in user_content] == ["text", "image_url", "text"]
